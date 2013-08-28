@@ -119,13 +119,17 @@ def diff_to_html(diff):
         with open(txttmp, 'w') as txt:
             txt.write(diff)
         # Call vim(1) on it.
+        DEVZERO = open('/dev/zero', 'r')  # yes(1) is not happy without stdin
+        DEVNULL = open('/dev/null', 'w')
         output = subprocess.check_output(
-            'vim -n -T builtin_ansi -c '
+            'yes | vim -n -T builtin_ansi -c '
             "'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' "
             '"%(txttmp)s" 2>&1 >/dev/null | '
             "grep -v '^Vim: Warning: '; true" % {'txttmp': txttmp},
-            stdin=None, stderr=None, shell=True
+            stdin=DEVZERO, stderr=DEVNULL, shell=True
         )
+        DEVZERO.close()
+        DEVNULL.close()
         if output:
             raise ValueError('vim returned this: %r' % (output,))
         # Read htmltmp.
