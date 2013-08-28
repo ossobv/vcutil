@@ -32,7 +32,7 @@
 # Settings:
 MAIL_FROM="svn@example.com"
 MAIL_TO="commits@example.com" # space separated list of recipients
-SUBJECT='[$PROJECT] r$REV $AUTHOR: $DESC' # these get expanded later
+SUBJECT='[$PROJECT] r$REV $AUTHOR: $SUMMARY' # these get expanded later
 
 # Input:
 REPOS="$1"
@@ -45,7 +45,7 @@ AUTHOR="`svn log -r "$REV" "$DIR" | sed -e '2!d;s/^[^|]*|[[:blank:]]*\([^[:blank
 if test -z "$AUTHOR"; then
 	echo "Error" 2>&1 && exit 1
 fi
-DESC="`svn log -r "$REV" "$DIR" | sed -ne4p`"
+SUMMARY="`svn log -r "$REV" "$DIR" | sed -ne4p`"
 
 colormail() {
 	txt="`mktemp`" # no --suffix.. debian does not like
