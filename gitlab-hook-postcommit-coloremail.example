@@ -1,0 +1,36 @@
+{
+   "repository" : {
+      "homepage" : "https://YOUR_GITLAB/test",
+      "url" : "git@YOUR_GITLAB:test.git",
+      "name" : "TestProject",
+      "description" : null
+   },
+   "ref" : "refs/heads/master",
+   "total_commits_count" : 2,
+   "user_name" : "Walter TEST Doekes",
+   "after" : "29ee331f63e5634314635d2d658c78f39cb85269",
+   "commits" : [
+      {
+         "timestamp" : "2013-03-22T16:18:55+01:00",
+         "url" : "https://YOUR_GITLAB/test/commit/404ce9f03d47fb478872cf2438695b1b18000c4a",
+         "author" : {
+            "email" : "walter@example.com",
+            "name" : "Walter TEST Doekes"
+         },
+         "id" : "404ce9f03d47fb478872cf2438695b1b18000c4a",
+         "message" : "Merge develop."
+      },
+      {
+         "timestamp" : "2013-03-22T16:20:21+01:00",
+         "url" : "https://YOUR_GITLAB/test/commit/412b1cd7b30ce29cd57291dea2b2b404d8140eeb",
+         "author" : {
+            "email" : "walter@example.com",
+            "name" : "Walter TEST Doekes"
+         },
+         "id" : "412b1cd7b30ce29cd57291dea2b2b404d8140eeb",
+         "message" : "Oops."
+      }
+   ],
+   "user_id" : 4,
+   "before" : "24d3adcab7621c109789f1760448fc868f8d8e8f"
+}

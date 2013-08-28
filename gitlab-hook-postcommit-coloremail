@@ -1,0 +1,208 @@
+#!/usr/bin/env python
+# gitlab-hook-postcommit-coloremail (part of ossobv/vcutil) // wdoekes/2013
+#   // Public Domain
+#
+# Sends out a nice colored e-mail with the committed changeset for
+# each committed revision. It uses the awesome vim(1) syntax
+# highlighting to colorize the patch files.
+#
+# Installation:
+#
+#     Read about web hooks here: http://YOUR_GITLAB/help/web_hooks
+#     Basically, it sends out a JSON blob as HTTP POST data to your web
+#     hook. You can configure this script to run on a CGI webserver
+#     on the local machine.
+#
+#     Then, go to: https://YOUR_GITLAB/YOUR_PROJECT/hooks
+#     Add the URL to the local CGI webserver, e.g.:
+#         http://127.0.0.1:81/hooks/gitlab-hook-postcommit-coloremail
+#
+# Example usage:
+#
+#     ./gitlab-hook-postcommit-coloremail \
+#         < gitlab-hook-postcommit-coloremail.example
+#
+# Todo:
+#
+#     * Allow MAIL_TO to be passed as QUERY_STRING.
+#
+import json
+import os
+import smtplib
+import subprocess
+import string
+import tempfile
+import traceback
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+
+# Settings:
+REPOSITORIES_ROOT = '/home/git/repositories/'
+MAIL_FROM = 'svn@example.com'
+MAIL_TO = ['commits@example.com']  # list of recipients
+SUBJECT = '[%(project)s] %(shortid)s %(author)s: %(summary)s'
+BODY_PREFIX = 'URL: %(homepage)s/commit/%(id)s\n\n'
+BODY_SUFFIX = '\n\n----\n\nDEBUG: %(gitlab_json)s\n'
+
+# Sanity checks:
+os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
+
+
+def is_daemon_child():
+    pid = os.fork()
+    if pid:
+        # Reap the zombie by fetching the return value. The second fork ensures
+        # that that's done quickly.
+        os.waitpid(pid, 0)
+        return False
+
+    # For a process to be truly daemonized (ran in the background) we should
+    # ensure that the session leader is killed so that there is no possibility
+    # of the session ever taking control of the TTY.
+    os.setsid()
+
+    # Second fork, do it as soon as possible.
+    if os.fork():
+        os._exit(0)
+
+    # Begin cleanup after ourselves. Release mount points and close fd's.
+    os.chdir('/')
+    os.closerange(0, 4095)
+
+    # We're daemonized.
+    return True
+
+
+def usernameify(full_name):
+    """
+    Take initials of full name, join and convert to lowercase.
+
+    >>> usernameify('Walter Jakob Doekes')
+    'wjdoekes'
+    """
+    names = [i.strip() for i in full_name.split(' ') if i.strip()]
+    surname = names.pop(-1)
+    username = ''.join(i[0] for i in names) + surname
+    username = ''.join(i for i in username.lower()
+                       if i in string.ascii_lowercase + string.digits)
+    return username
+
+
+def diff_to_html(diff):
+    """
+    Ask vim(1) to colorize the diff and return it as html.
+    """
+    txttmp = tempfile.mktemp()  # vim will write to txttmp+'.html'(!)
+    htmltmp = txttmp + '.html'
+    try:
+        # Write text to txttmp.
+        with open(txttmp, 'w') as txt:
+            txt.write(diff)
+        # Call vim(1) on it.
+        output = subprocess.check_output(
+            'vim -n -T builtin_ansi -c '
+            "'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' "
+            '"%(txttmp)s" 2>&1 >/dev/null | '
+            "grep -v '^Vim: Warning: '; true" % {'txttmp': txttmp},
+            stdin=None, stderr=None, shell=True
+        )
+        if output:
+            raise ValueError('vim returned this: %r' % (output,))
+        # Read htmltmp.
+        with open(htmltmp, 'r') as html:
+            diff_html = html.read()
+    finally:
+        try:
+            os.unlink(txttmp)
+            os.unlink(htmltmp)
+        except:
+            pass
+
+    return diff_html
+
+
+def send_mails(decoded):
+    # Init vars.
+    pushvars = {}
+    pushvars['project'] = decoded['repository']['name']
+    pushvars['pusher'] = decoded['user_name']
+    pushvars['homepage'] = decoded['repository']['homepage']
+    pushvars['commit_count'] = decoded['total_commits_count']
+    pushvars['gitlab_json'] = json.dumps(decoded, indent=4)
+
+    # Fetch changeset and colorize it.
+    os.chdir(os.path.join(REPOSITORIES_ROOT,
+                          decoded['repository']['url'].split(':', 1)[-1]))
+    for commit in decoded['commits']:
+        # Get local vars.
+        commitvars = pushvars.copy()
+        commitvars['id'] = commit['id'][0:7]
+        commitvars['shortid'] = commit['id'][0:7]
+        commitvars['author'] = usernameify(commit['author']['name'])
+        commitvars['summary'] = commit['message'].split('\n')[0].strip()
+        # `git show -p` output already provides enough info to populate a body.
+        changes = subprocess.check_output(['git', 'show', '-p', commit['id']],
+                                          stdin=None, stderr=None, shell=False)
+        # Prefix the changes with a bit of extra body.
+        changes = ((BODY_PREFIX % commitvars) +
+                   changes +
+                   (BODY_SUFFIX % commitvars))
+        # Colorize it using vim.
+        changes_html = diff_to_html(changes)
+        # Compile a mail and send.
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = SUBJECT % commitvars
+        msg['From'] = MAIL_FROM
+        msg['To'] = ', '.join(MAIL_TO)
+        msg.attach(MIMEText(changes, 'plain'))
+        msg.attach(MIMEText(changes_html, 'html'))
+        s = smtplib.SMTP('localhost')
+        s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
+        s.quit()
+
+
+def get_stdin():
+    data = []
+    try:
+        while True:
+            input = raw_input()
+            if not input:
+                break
+            data.append(input)
+    except EOFError:
+        pass
+    return '\n'.join(data)
+
+
+# Get/parse input
+stdin = get_stdin()
+decoded = json.loads(stdin)
+
+# If this is a POST request, daemonize and send OK to caller. If we're
+# ran from the CLI, don't daemonize and don't print any HTTP status.
+is_cgi = (os.environ.get('REQUEST_METHOD') == 'POST')
+
+if not is_cgi:
+    # Do everything in the foreground (testing mode).
+    send_mails(decoded)
+
+elif is_daemon_child():
+    # Do that mailing as a background job.
+    try:
+        send_mails(decoded)
+    except:
+        backtrace = traceback.format_exc()
+        msg = MIMEText(backtrace + '\n\n\n' + stdin)
+        msg['Subject'] = 'ERROR in gitlab-hook-postcommit-coloremail'
+        msg['From'] = MAIL_FROM
+        msg['To'] = ', '.join(MAIL_TO)
+        s = smtplib.SMTP('localhost')
+        s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
+        s.quit()
+
+else:
+    # Output back to webserver.
+    print "Content-Type: text/plain\r\n\r\nOK"
+
+# vim: set ts=8 sw=4 sts=4 et ai tw=79:
