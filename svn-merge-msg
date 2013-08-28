@@ -1,0 +1,85 @@
+#!/bin/sh
+# svn-merge-msg (part of ossobv/vcutil) // wdoekes/2011 // Public Domain
+#
+# After merging, svn diff shows an "Merged ...r1,r2" line. This tool
+# fetches that output and compiles the corresponding commit messages
+# into a new commit message (written in ../merge.msg).
+#
+# Example:
+#
+#     $ svn merge -c 3488 ../project-trunk
+#
+#     $ svn diff
+#     Modified: svn:mergeinfo
+#     Merged /trunk:r3488
+#
+#     $ svn-merge-msg ../project-trunk
+#     (overwrites(!) ../merge.msg without warning)
+#
+#     $ cat ../merge.msg
+#     Merged /trunk:r3488
+#     {{{
+#         ----------------------------------------------------
+#         r3488 | walter | 2013-08-27 16:42:23 +0200 | 2 lines
+#         Fix typo in FoorBarTastic engine.
+#         ----------------------------------------------------
+#     }}}
+#
+# This is obviously more useful when you merge more than a single
+# commit. Now you can commit the merge into your current branch with
+# `svn commit -F ../merge.msg`, optionally after adding a little
+# additional description in that file,
+#
+# Usage:
+#
+#     svn-merge-msg [PATH_OF_MERGE_SOURCE]
+#
+# If PATH_OF_MERGE_SOURCE is not supplied, "live-" is stripped from
+# the current path. It assumed you're working in ~/src/live-project and
+# ~/src/project.
+#  
+# See also:
+#
+#     svn-show-mergable (to use before `svn merge`)
+#
+sourcepath="$1"
+dest=../merge.msg
+
+# check that source path exists
+if [ ! -d "$sourcepath" ]; then
+	if [ -z "$sourcepath" ]; then
+		sourcepath="../`basename "\`pwd\`" | sed -e 's/^live-//'`"
+	fi
+	if [ ! -d "$sourcepath" ]; then
+		echo "need merge source path as first argument" 2>/dev/null
+		exit 1
+	fi
+fi
+
+merged_revs=`svn diff 2>/dev/null | sed -ne 's/^[[:blank:]]*Merged \/trunk:r\(.*\)/\1/p;/^r/q'`
+[ -z "$merged_revs" ] && echo "svn diff did not produce a Merged.../trunk line" 2>/dev/null && exit 1
+
+# Split up revs from "r1-2,4,5-6" to a list
+revs=""
+for rev_part in `echo $merged_revs | tr ',' ' '`; do
+	echo $rev_part | grep -q -- -
+	if [ $? = 0 ]; then
+		for rev in `seq \`echo $rev_part | tr '-' ' '\``; do
+			revs="$revs,$rev"
+		done
+	else
+		revs="$revs,$rev_part"
+	fi
+done
+revs="`echo $revs | sed -e 's/^,//'`"
+
+# svn log these revisions with a bit of context
+(
+	echo "Merged /trunk:r$merged_revs"
+	echo
+	echo "{{{"
+	# awk reduces multiple blank lines to a single blank line, sed adds a bit of space
+	# (add space and not something more intrusive so e.g. SQL-in-comments is still valid)
+	svn log -c "$revs" "$sourcepath" | awk 1 RS= ORS="\n" | sed -e 's/^/    /'
+	echo "}}}"
+) | tee "$dest"

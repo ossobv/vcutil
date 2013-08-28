@@ -1,0 +1,12 @@
+#!/usr/bin/env perl
+# wdiffcount (part of ossobv/vcutil) // wdoekes/2010 // Public Domain
+#
+# Takes a unified diff file as input and calculates how many lines are
+# added/removed.
+#
+# Usage:
+#
+#     cat some.patch | wdiffcount
+# 
+for(<>){/^([+-])(?!\1\1)/&&++$d{$1eq"-"}};
+print "$d{''} - $d{1} = ".($d{""}-$d{1})."\n";

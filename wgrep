@@ -1,0 +1,18 @@
+#!/bin/sh
+# wdiffcount (part of ossobv/vcutil) // wdoekes/2010 // Public Domain
+#
+# Greps only these hardcoded file types for the arguments. Arguments to
+# grep are still supported. Use this to search a directory tree while
+# ignoring non-text files (like binary objects or images).
+#
+# Usage:
+#
+#    wgrep /path/to/location 'search-regex'
+#    wgrep /path/to/location -F 'search-string'
+# 
+path="$1"; shift
+find "$path" \
+    -regextype posix-extended \
+    -iregex '.*\.(asp|c|conf|cpp|css|cxx|h|hpp|htm|html|java|js|php|po|py|rb|sh|sql|tpl|template|txt|xml)' \
+    -print0 \
+    | xargs -0 -- grep --color=auto "$@"

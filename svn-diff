@@ -1,0 +1,20 @@
+#!/bin/sh
+# svn-diff (part of ossobv/vcutil) // wdoekes/2013 // Public Domain
+#
+# Show the differences between the current svn checkout and the local
+# changes. Use this because the regular svn has an undefined file sort
+# order. With this you view take diffs of diffs without pain.
+#
+# Usage:
+#
+#     svn-diff
+#
+# See also:
+#
+#     svn-status
+#
+svn status -q |
+	sed -e 's/^........//' |
+	sort |
+	while read -r f; do test -f "$f" && echo $f; done |
+	xargs -d\\n svn diff --non-recursive "$@"

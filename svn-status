@@ -1,0 +1,2 @@
+#!/bin/sh
+svn status "$@" | sort -k1
