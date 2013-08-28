@@ -1,0 +1,86 @@
+#!/bin/sh
+# svn-hook-postcommit-coloremail (part of ossobv/vcutil) // wdoekes/2012
+#   // Public Domain
+#
+# Sends out a nice colored e-mail with the committed changeset for
+# each committed revision. It uses the awesome vim(1) syntax
+# highlighting to colorize the patch files.
+#
+# Installation:
+#
+#     $ cd /path/to/svn/master/repo
+#     $ ln -s /usr/local/bin/svn-hook-postcommit-coloremail hooks/post-commit
+#
+# Usage:
+#
+#     svn-hook-postcommit-coloremail PATH_TO_MASTER_REPO COMMITTED_REV
+#
+# Issues:
+#
+#     * "svn: Unable to open an ra_local session to URL"
+#
+#       This means you're not running this on the SVN master
+#       repository.
+#
+#     * Committing takes longer than before.
+#
+#       Yes, the email is generated during commit time. That means that
+#       the submitter of a commit has to wait until the e-mail is
+#       generated and sent.
+#
+
+# Settings:
+MAIL_FROM="svn@example.com"
+MAIL_TO="commits@example.com" # space separated list of recipients
+SUBJECT='[$PROJECT] r$REV $AUTHOR: $DESC' # these get expanded later
+
+# Input:
+REPOS="$1"
+REV="$2"
+
+# Fetch data:
+DIR="file://$REPOS"
+PROJECT="`basename $REPOS`"
+AUTHOR="`svn log -r "$REV" "$DIR" | sed -e '2!d;s/^[^|]*|[[:blank:]]*\([^[:blank:]]\+\).*/\1/'`"
+if test -z "$AUTHOR"; then
+	echo "Error" 2>&1 && exit 1
+fi
+DESC="`svn log -r "$REV" "$DIR" | sed -ne4p`"
+
+colormail() {
+	txt="`mktemp`" # no --suffix.. debian does not like
+	head -n1000 > "$txt" # limit mail to 1000 lines
+	html="$txt.html" # unsafe, but we don't care
+	yes |
+		vim -n -T builtin_ansi -c 'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' "$txt" 2>&1 >/dev/null |
+		grep -v '^Vim: Warning: '
+	# mail the stuff
+	(
+		echo 'This is MIME mail.'
+		echo
+		echo '--e89a8f3ba551e83b0e04cdf77b8c'
+		echo 'Content-Type: text/plain; charset=utf-8'
+		echo
+		cat "$txt"
+		echo
+		echo '--e89a8f3ba551e83b0e04cdf77b8c'
+		echo 'Content-Type: text/html; charset=utf-8'
+		echo
+		cat "$txt.html"
+		echo
+		echo '--e89a8f3ba551e83b0e04cdf77b8c--'
+	) | mail -a 'MIME-Version: 1.0' \
+	         -a 'Content-Type: multipart/alternative; boundary=e89a8f3ba551e83b0e04cdf77b8c' \
+	         "$@"
+	# clean up
+	rm "$txt" "$html"
+}
+
+(
+	# Print the log message
+	svn log -r "$REV" "$DIR"
+	echo
+	# Print the entire changeset
+	svn diff -c "$REV" "$DIR"
+	echo
+) | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO
