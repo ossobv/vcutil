@@ -61,7 +61,8 @@ MAIL_FROM = 'svn@example.com'
 MAIL_TO = ['commits@example.com']  # list of recipients
 SUBJECT = '[%(project)s] %(shortid)s %(author)s: %(summary)s'
 BODY_PREFIX = 'URL: %(homepage)s/commit/%(id)s\n\n'
-BODY_SUFFIX = '\n\n----\n\nDEBUG: %(gitlab_json)s\n'
+BODY_SUFFIX = ('diff ENDS HERE\n' + (72 * '=') + '\n'
+               'DEBUG: %(gitlab_json)s\n')
 
 # Sanity checks:
 os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
