@@ -1,0 +1,64 @@
+#!/bin/bash
+# scp(1) wrapper that tries to do an indirect copy if a direct copy
+# between two hosts fails.
+#
+# Walter Doekes (C) 2012, Public Domain.
+#
+# Imagine a scenario where your Desktop has access to ServerA and
+# ServerB, but they don't have access to each other. Using regular scp
+# on Desktop to copy stuff from ServerA to ServerB will then fail. This
+# script adds an indirect copy fallback, copying the data via Desktop.
+#
+# Installation:
+#
+#     cd /usr/local/bin
+#     wget http://wjd.nu/files/2012/02/indirect-scp.sh -O indirect-scp
+#     chmod 755 indirect-scp
+#     ln -s indirect-scp scp
+#
+# Usage:
+#
+#     scp user@serverA:/path/to/file user@serverB:/path/to/
+#
+
+# Step 1: try regular scp. Skip this step if the wrapper isn't called
+# as scp (but as indirect-scp).
+[ "`basename "$0"`" = scp ] && /usr/bin/scp "$@"
+ret=$?
+
+# Did it go well? Exit.
+[ $ret -eq 0 ] && exit 0
+
+# Guess whether this was a copy between two machines. It should have at
+# least two colons (':') in the argument list. One for the source and
+# one for the destination host.
+colons=`echo "$@" | sed -e 's/[^:]//g'`
+if [ ${#colons} -le 1 ]; then
+	# One or zero colons.
+	exit $ret
+fi
+
+# Step 2: try again, but use a local copy. The $@-stuff below is bash
+# specific.
+echo "(falling back to indirect copy...)" >&2
+dir="`mktemp -d`" || exit 1 # and mktemp -d isn't supported everywhere
+n_args=$#
+n_args_minus_one=$((n_args - 1))
+# Copy sources local...
+/usr/bin/scp "${@:1:$n_args_minus_one}" "$dir"/
+ret=$?
+# Copy local to destination...
+if [ $ret -eq 0 ]; then
+	echo "(copy from here to destination...)" >&2
+	/usr/bin/scp -p -r "$dir"/* "${@:$n_args:1}"
+	ret=$?
+fi
+
+# Remove temp dir. First run shred over the files to make recovery
+# harder.
+echo "(cleaning up temporary files...)" >&2
+[ -x `which shred` ] && find "$dir" -type f -print0 | xargs -0 shred
+rm -rf "$dir"
+
+# Return status
+exit $ret
