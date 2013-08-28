@@ -1,0 +1,69 @@
+# vim: set syn=make:
+#
+# Makefile with tests for udiff(1) by Walter Doekes 2011
+# http://wjd.nu/notes/2011#diff-memory-exhausted-udiff
+# 
+# Usage:
+#
+#     make -f udiff.selftest
+#     make -f udiff.selftest clean
+#
+.PHONY: all test test.diff test.udiff test-inv.diff test-inv.udiff
+
+# Make sure submake gets the right Makefile.
+EXTRA_MAKEFLAGS = -f udiff.selftest
+
+all: run_tests
+clean:
+	rm left.txt right.txt *.diff *.udiff
+
+left.txt:
+	@if [ "$(mode)" = 1 ]; then cat /dev/null > left.txt ; \
+	elif [ "$(mode)" = 2 ]; then seq 99 | sed -e1d > left.txt ; \
+	else bash -c 'for x in `seq 100`; do seq 3 | shuf ; done' > left.txt ; \
+	fi
+right.txt:
+	@if [ "$(mode)" = 1 ]; then seq 20 > right.txt ; \
+	elif [ "$(mode)" = 2 ]; then seq 100 | sed -e32d > right.txt ; \
+	else bash -c 'for x in `seq 100`; do seq 3 | shuf ; done' > right.txt ; \
+	fi
+output.diff: left.txt right.txt
+	@diff -u left.txt right.txt | sed -e 's/^\(\(---\|+++\)[^\t]*\t[^.]*\.\).*/\1../' > output.diff
+output.udiff: left.txt right.txt
+	@./udiff left.txt right.txt | sed -e 's/^\(\(---\|+++\)[^\t]*\t[^.]*\.\).*/\1../' > output.udiff
+output-inv.diff: left.txt right.txt
+	@diff -u right.txt left.txt | sed -e 's/^\(\(---\|+++\)[^\t]*\t[^.]*\.\).*/\1../' > output-inv.diff
+output-inv.udiff: left.txt right.txt
+	@./udiff right.txt left.txt | sed -e 's/^\(\(---\|+++\)[^\t]*\t[^.]*\.\).*/\1../' > output-inv.udiff
+left-to-right.diff: left.txt output.diff
+	@cp left.txt left-to-right.diff
+	@patch left-to-right.diff output.diff
+left-to-right.udiff: left.txt output.udiff
+	@cp left.txt left-to-right.udiff
+	@patch left-to-right.udiff output.udiff
+right-to-left.diff: right.txt output-inv.diff
+	@cp right.txt right-to-left.diff
+	@patch right-to-left.diff output-inv.diff
+right-to-left.udiff: right.txt output-inv.udiff
+	@cp right.txt right-to-left.udiff
+	@patch right-to-left.udiff output-inv.udiff
+test.diff: left-to-right.diff right.txt
+	@cmp left-to-right.diff right.txt && echo 'left.txt patched against regular diff: success (obviously)'
+test.udiff: left-to-right.udiff right.txt
+	@cmp left-to-right.udiff right.txt && echo 'left.txt patched against udiff: success (w00t)'
+test-inv.diff: right-to-left.diff left.txt
+	@cmp right-to-left.diff left.txt && echo 'right.txt patched against regular diff: success (obviously)'
+test-inv.udiff: right-to-left.udiff left.txt
+	@cmp right-to-left.udiff left.txt && echo 'right.txt patched against udiff: success (w00t)'
+test: test.diff test.udiff test-inv.diff test-inv.udiff
+
+run_tests:
+	@echo '==> Testing empty file handling...'
+	@rm -f left.txt right.txt
+	$(MAKE) $(EXTRA_MAKEFLAGS) mode=1 test
+	@echo '==> Testing begin and end of file handling...'
+	@rm -f left.txt right.txt
+	$(MAKE) $(EXTRA_MAKEFLAGS) mode=2 test
+	@echo '==> Testing lots of differences handling...'
+	@rm -f left.txt right.txt
+	$(MAKE) $(EXTRA_MAKEFLAGS) mode=3 test
