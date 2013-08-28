@@ -17,6 +17,24 @@
 #     Add the URL to the local CGI webserver, e.g.:
 #         http://127.0.0.1:81/hooks/gitlab-hook-postcommit-coloremail
 #
+# Example lighttpd config:
+#
+#     server.pid-file             = "/var/run/lighttpd.pid"
+#     server.username             = "www-data"
+#     # Observe that we need gitlab read powers!
+#     server.groupname            = "git"
+#     server.bind                 = "127.0.0.1"
+#     server.port                 = 81
+#     server.errorlog             = "/var/log/lighttpd/error.log"
+#     server.breakagelog          = "/var/log/lighttpd/breakage.log" 
+#     server.document-root        = "/srv/lighttpd-cgi"
+#     server.modules = (
+#         "mod_cgi"
+#     )
+#     cgi.execute-x-only = "enable"
+#     # (Add .py suffix to this script.)
+#     cgi.assign = (".py" => "/usr/bin/python")
+#
 # Example usage:
 #
 #     ./gitlab-hook-postcommit-coloremail \
