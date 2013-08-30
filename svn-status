@@ -1,2 +1,16 @@
 #!/bin/sh
+# svn-status (part of ossobv/vcutil) // wdoekes/2013 // Public Domain
+#
+# Show the output of svn status in a sorted fashion. This makes the
+# output a lot more usable.
+#
+# Usage:
+#
+#     svn-status [OPTIONAL_ARGUMENTS]
+#     svn-status -q
+#
+# See also:
+#
+#     svn-diff
+#
 svn status "$@" | sort -k1
