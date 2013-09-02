@@ -26,7 +26,7 @@
 #     server.bind                 = "127.0.0.1"
 #     server.port                 = 81
 #     server.errorlog             = "/var/log/lighttpd/error.log"
-#     server.breakagelog          = "/var/log/lighttpd/breakage.log" 
+#     server.breakagelog          = "/var/log/lighttpd/breakage.log"
 #     server.document-root        = "/srv/lighttpd-cgi"
 #     server.modules = (
 #         "mod_cgi"
@@ -57,12 +57,12 @@ from email.mime.text import MIMEText
 
 # Settings:
 REPOSITORIES_ROOT = '/home/git/repositories/'
-MAIL_FROM = 'svn@example.com'
+MAIL_FROM = 'gitlab@example.com'
 MAIL_TO = ['commits@example.com']  # list of recipients
 SUBJECT = '[%(project)s] %(shortid)s %(author)s: %(summary)s'
-BODY_PREFIX = 'URL: %(homepage)s/commit/%(id)s\n\n'
-BODY_SUFFIX = ('diff ENDS HERE\n' + (72 * '=') + '\n'
-               'DEBUG: %(gitlab_json)s\n')
+BODY_PREFIX = 'URL: %(url)s\n\n'
+BODY_SUFFIX = (u'diff ENDS HERE\n' + (72 * u'=') + u'\n'
+               u'D\u20acBUG: %(gitlab_json)s\n')
 
 # Sanity checks:
 os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
@@ -117,13 +117,13 @@ def diff_to_html(diff):
     try:
         # Write text to txttmp.
         with open(txttmp, 'w') as txt:
-            txt.write(diff)
+            txt.write(diff.encode('UTF-8'))
         # Call vim(1) on it.
         DEVZERO = open('/dev/zero', 'r')  # yes(1) is not happy without stdin
         DEVNULL = open('/dev/null', 'w')
         output = subprocess.check_output(
             'yes | vim -n -T builtin_ansi -c '
-            "'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' "
+            "'syn on|set syn=diff|set enc=utf8|set bg=dark|runtime syntax/2html.vim|wqa' "
             '"%(txttmp)s" 2>&1 >/dev/null | '
             "grep -v '^Vim: Warning: '; true" % {'txttmp': txttmp},
             stdin=DEVZERO, stderr=DEVNULL, shell=True
@@ -135,6 +135,9 @@ def diff_to_html(diff):
         # Read htmltmp.
         with open(htmltmp, 'r') as html:
             diff_html = html.read()
+        # Should not fail, but let's just handle the case when some crap
+        # does enter the output.
+        diff_html = diff_html.decode('UTF-8', 'replace')
     finally:
         try:
             os.unlink(txttmp)
@@ -160,26 +163,39 @@ def send_mails(decoded):
     for commit in decoded['commits']:
         # Get local vars.
         commitvars = pushvars.copy()
-        commitvars['id'] = commit['id'][0:7]
+        commitvars['id'] = commit['id']
         commitvars['shortid'] = commit['id'][0:7]
         commitvars['author'] = usernameify(commit['author']['name'])
         commitvars['summary'] = commit['message'].split('\n')[0].strip()
+        commitvars['url'] = commit['url']
         # `git show -p` output already provides enough info to populate a body.
         changes = subprocess.check_output(['git', 'show', '-p', commit['id']],
                                           stdin=None, stderr=None, shell=False)
+        try:
+            changes = changes.decode('UTF-8')
+        except UnicodeDecodeError:
+            # From: WIKIPEDIA/Windows-1252
+            # > Most modern web browsers and e-mail clients treat the MIME
+            # > charset ISO-8859-1 as Windows-1252 to accommodate such
+            # > mislabeling. This is now standard behavior in the draft
+            # > HTML 5 specification, which requires that documents
+            # > advertised as ISO-8859-1 actually be parsed with the
+            # > Windows-1252 encoding.
+            # This is probably the most common 8-bit encoding.
+            changes = changes.decode('CP1252', 'replace')
         # Prefix the changes with a bit of extra body.
-        changes = ((BODY_PREFIX % commitvars) +
+        changes = ((unicode(BODY_PREFIX) % commitvars) +
                    changes +
-                   (BODY_SUFFIX % commitvars))
+                   (unicode(BODY_SUFFIX) % commitvars))
         # Colorize it using vim.
         changes_html = diff_to_html(changes)
         # Compile a mail and send.
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = SUBJECT % commitvars
+        msg['Subject'] = unicode(SUBJECT) % commitvars
         msg['From'] = MAIL_FROM
         msg['To'] = ', '.join(MAIL_TO)
-        msg.attach(MIMEText(changes, 'plain'))
-        msg.attach(MIMEText(changes_html, 'html'))
+        msg.attach(MIMEText(changes, 'plain', _charset='UTF-8'))
+        msg.attach(MIMEText(changes_html, 'html', _charset='UTF-8'))
         s = smtplib.SMTP('localhost')
         s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
         s.quit()
