@@ -15,7 +15,7 @@
 #
 #     svn-hook-postcommit-coloremail PATH_TO_MASTER_REPO COMMITTED_REV
 #
-# Issues:
+# FAQ:
 #
 #     * "svn: Unable to open an ra_local session to URL"
 #
@@ -26,7 +26,15 @@
 #
 #       Yes, the email is generated during commit time. That means that
 #       the submitter of a commit has to wait until the e-mail is
-#       generated and sent.
+#       generated and sent. We could disown this job and have it run in
+#       the background, if needed.
+#
+#     * Does it cope with non-ASCII?
+#
+#       It is encoding-agnostic. The mail however assumes everything is
+#       in UTF-8. (And the also subject gets sent verbatim. Any
+#       non-ASCII in the summary line will be technically invalid, but
+#       parsed by modern e-mail clients.)
 #
 
 # Settings:
