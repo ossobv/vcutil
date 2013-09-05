@@ -15,6 +15,6 @@
 #
 svn status -q |
 	sed -e 's/^........//' |
-	sort |
+	LC_COLLATE=C sort |
 	while read -r f; do test -f "$f" && echo $f; done |
 	xargs -d\\n svn diff --non-recursive "$@"

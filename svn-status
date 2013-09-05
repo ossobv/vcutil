@@ -13,4 +13,4 @@
 #
 #     svn-diff
 #
-svn status "$@" | sort -k1
+svn status "$@" | LC_COLLATE=C sort -k1
