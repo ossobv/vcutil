@@ -1,5 +1,5 @@
 #!/bin/sh
-# wdiffcount (part of ossobv/vcutil) // wdoekes/2010 // Public Domain
+# wgrep (part of ossobv/vcutil) // wdoekes/2010 // Public Domain
 #
 # Greps only these hardcoded file types for the arguments. Arguments to
 # grep are still supported. Use this to search a directory tree while
