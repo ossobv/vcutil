@@ -89,6 +89,6 @@ colormail() {
 	svn log -r "$REV" "$DIR"
 	echo
 	# Print the entire changeset
-	svn diff -c "$REV" "$DIR"
+	svn diff -x -p -c "$REV" "$DIR"
 	echo
 ) | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO
