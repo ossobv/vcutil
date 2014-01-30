@@ -1,4 +1,21 @@
 #!/bin/sh
+# uwsgi-kill (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+#
+# Sends the TERM signal to the parent uwsgi(-core) process to make it
+# restart all children. Instead of doing /etc/init.d/uwsgi restart, this
+# is quicker (less downtime).
+#
+# As an added bonus, you can select which parent you want to kill by
+# adding arguments.
+#
+# Usage:
+#
+#    uwsgi-kill
+#    # kills all uwsgi parents
+#
+#    uwsgi-kill somesite
+#    # kills the uwsgi parent that matches "somesite"
+#
 args=`echo "$*" | sed -e 's#[^A-Za-z0-9]\+#.*#g'`
 pids=`ps fax | sed -e '/[0-9] \/usr\/bin\/uwsgi.*'"$args"'/!d;s/^ *//;s/ .*//'`
 test -z "$pids" && echo "Nothing matches..." >&2 && exit 1
