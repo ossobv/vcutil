@@ -20,16 +20,24 @@
 # The second two markers can be used to censor an entire block.
 #
 #     This is shown.
-#     #BEGIN_CENSORED#
+#     #BEGIN_CENSORED\#
 #     This is hidden.
-#     #END_CENSORED#
+#     #END_CENSORED\#
+#
+# WARNING! BUG!
+#
+#     Using the block-form is NOT recommended right now. If it is part
+#     of a unified diff, we might not see the BEGIN_CENSORED marker, and
+#     the censorship will not be in effect.
+#
+#     (We should probably fix that by recognising unified diff format.)
 #
 # Usage:
 #
-#    git diff | censored-for-email | mail -s commits root@localhost
-#    # takes a diff
-#    # replaces the sensitive lines with #CENSORED\#
-#    # sends the mail over an unsecure link
+#     git diff | censored-for-email | mail -s commits root@localhost
+#     # takes a diff
+#     # replaces the sensitive lines with #CENSORED\#
+#     # sends the mail over an unsecure link
 #
 # The markers were chosen with this in mind:
 # - The hash '#' is the most common comment marker. Angle brackets were
@@ -38,14 +46,17 @@
 #   has to be closed too (e.g. /*...*/ in C).
 #
 # See test_censored for an example.
-#
-censored() {
+
+censored()
+{
 	# Here we add some extra quotes to split up #whatever# to avoid
 	# censorship of this file.
 	sed -e '
 		s/.*#CENSORED''#.*/#CENSORED''#/g
-		/#BEGIN_CENSORED#/,/#END_CENSORED#/s/.*/#CENSORED#/
+		/#BEGIN_CENSORED''#/,/#END_CENSORED''#/s/.*/#CENSORED''#/
 	'
+	# Prepare valid return value.
+	true
 }
 
 test_censored()
