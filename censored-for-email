@@ -1,0 +1,103 @@
+#!/bin/sh
+# censored-for-email (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+#
+# Censors lines explicitly marked as private from standard input. Used
+# in combination with e-mailing of repository commits (which may contain
+# sensitive information).
+#
+# The markers are:
+#   #CENSORED\#
+#   #BEGIN_CENSORED\#
+#   #END_CENSORED\#
+# (all without the backslash, which I added so that these lines aren't
+# censored themselves)
+#
+# The first marker can be used anywhere on a line to censor the entire
+# line. Example:
+#
+#     secret=My_Password ; #CENSORED\#
+#
+# The second two markers can be used to censor an entire block.
+#
+#     This is shown.
+#     #BEGIN_CENSORED#
+#     This is hidden.
+#     #END_CENSORED#
+#
+# Usage:
+#
+#    git diff | censored-for-email | mail -s commits root@localhost
+#    # takes a diff
+#    # replaces the sensitive lines with #CENSORED\#
+#    # sends the mail over an unsecure link
+#
+# The markers were chosen with this in mind:
+# - The hash '#' is the most common comment marker. Angle brackets were
+#   avoided because they have meanings in SGML/XML.
+# - It can be anywhere on a line, because in some languages a comment
+#   has to be closed too (e.g. /*...*/ in C).
+#
+# See test_censored for an example.
+#
+censored() {
+	# Here we add some extra quotes to split up #whatever# to avoid
+	# censorship of this file.
+	sed -e '
+		s/.*#CENSORED''#.*/#CENSORED''#/g
+		/#BEGIN_CENSORED#/,/#END_CENSORED#/s/.*/#CENSORED#/
+	'
+}
+
+test_censored()
+{
+	INPUT="abc=def
+ghi=jkl
+password=password ; #CENSORED#
+
+# Whatever.
+int main() {
+  /*#BEGIN_CENSORED#*/
+  top secret code
+  goes here;
+  /*#END_CENSORED#*/
+}
+
+#BEGIN_CENSORED#
+(test that this is a second block)
+(and that a missing endblock censors)
+(till the end)"
+	EXPECTED="abc=def
+ghi=jkl
+#CENSORED#
+
+# Whatever.
+int main() {
+#CENSORED#
+#CENSORED#
+#CENSORED#
+#CENSORED#
+}
+
+#CENSORED#
+#CENSORED#
+#CENSORED#
+#CENSORED#"
+	OUTPUT=`echo "$INPUT" | censored`
+	if test "$OUTPUT" = "$EXPECTED"; then
+		echo "test_censored: OK"
+	else
+		echo "test_censored: FAILURE"
+		expectedf=`mktemp`; echo "$EXPECTED" > "$expectedf"
+		outputf=`mktemp`; echo "$OUTPUT" > "$outputf"
+		diff -u "$expectedf" "$outputf"
+		rm -f "$expectedf" "$outputf"
+		exit 1
+	fi
+}
+
+# The actual call.
+if test "$#" = 1 -a "$1" = "TestCase"; then
+	test_censored
+else
+	censored
+fi
