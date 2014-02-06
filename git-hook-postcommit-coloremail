@@ -1,26 +1,27 @@
 #!/bin/sh
-# svn-hook-postcommit-coloremail (part of ossobv/vcutil) // wdoekes/2012
+# git-hook-postcommit-coloremail (part of ossobv/vcutil) // wdoekes/2014
 #   // Public Domain
 #
 # Sends out a nice colored e-mail with the committed changeset for
 # each committed revision. It uses the awesome vim(1) syntax
 # highlighting to colorize the patch files.
 #
+# Use this for git repositories that are local only.
+#
 # Installation:
 #
-#     $ cd /path/to/svn/master/repo
+#     $ cd /path/to/local/git/checkout/.git
 #     $ ln -s /usr/local/bin/svn-hook-postcommit-coloremail hooks/post-commit
 #
 # Usage:
 #
-#     svn-hook-postcommit-coloremail PATH_TO_MASTER_REPO COMMITTED_REV
+#     git-hook-postcommit-coloremail
 #
 # FAQ:
 #
-#     * "svn: Unable to open an ra_local session to URL"
+#     * I don't want my passwords mailed.
 #
-#       This means you're not running this on the SVN master
-#       repository.
+#       Use the #CENSORED\# tag on the same line, see censored-for-email.
 #
 #     * Committing takes longer than before.
 #
@@ -38,23 +39,14 @@
 #
 
 # Settings:
-MAIL_FROM="svn@example.com"
+MAIL_FROM="git@example.com"
 MAIL_TO="commits@example.com" # space separated list of recipients
-SUBJECT='[$PROJECT] r$REV $AUTHOR: $SUMMARY' # these get expanded later
-
-# Input:
-REPOS="$1"
-REV="$2"
+SUBJECT='[$PROJECT] r$REV: $SUMMARY' # these get expanded later
 
 # Fetch data:
-DIR="file://$REPOS"
-PROJECT="`basename $REPOS`"
-AUTHOR="`svn log -r "$REV" "$DIR" | sed -e '2!d;s/^[^|]*|[[:blank:]]*\([^[:blank:]]\+\).*/\1/'`"
-if test -z "$AUTHOR"; then
-	echo "Error" 2>&1 && exit 1
-fi
-SUMMARY="`svn log -r "$REV" "$DIR" | sed -ne4p`"
-CENSOR=`which censored-for-email 2>/dev/null || which cat`
+REV="`git log -1 HEAD --format=%h`"
+PROJECT="`hostname -s`:`basename "\`pwd\`"`"
+SUMMARY="`git log -1 HEAD --format=%s`"
 
 colormail()
 {
@@ -87,10 +79,7 @@ colormail()
 }
 
 (
-	# Print the log message
-	svn log -r "$REV" "$DIR"
-	echo
-	# Print the entire changeset
-	svn diff -x -p -c "$REV" "$DIR"
+	# Print log message and diff
+	git show -p -1 HEAD
 	echo
 ) | "$CENSOR" | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO
