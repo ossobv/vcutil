@@ -54,6 +54,7 @@ if test -z "$AUTHOR"; then
 	echo "Error" 2>&1 && exit 1
 fi
 SUMMARY="`svn log -r "$REV" "$DIR" | sed -ne4p`"
+CENSOR=`which censored-for-email 2>/dev/null || which cat`
 
 colormail() {
 	txt="`mktemp`" # no --suffix.. debian does not like
@@ -91,4 +92,4 @@ colormail() {
 	# Print the entire changeset
 	svn diff -x -p -c "$REV" "$DIR"
 	echo
-) | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO
+) | "$CENSOR" | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO

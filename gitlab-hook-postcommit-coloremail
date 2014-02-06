@@ -47,12 +47,12 @@
 import json
 import os
 import smtplib
-import subprocess
 import string
 import tempfile
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from subprocess import check_output  # python2.7+
 
 
 # Settings:
@@ -121,9 +121,10 @@ def diff_to_html(diff):
         # Call vim(1) on it.
         DEVZERO = open('/dev/zero', 'r')  # yes(1) is not happy without stdin
         DEVNULL = open('/dev/null', 'w')
-        output = subprocess.check_output(
+        output = check_output(
             'yes | vim -n -T builtin_ansi -c '
-            "'syn on|set syn=diff|set enc=utf8|set bg=dark|runtime syntax/2html.vim|wqa' "
+            "'syn on|set syn=diff|set enc=utf8|set bg=dark|runtime "
+            "syntax/2html.vim|wqa' "
             '"%(txttmp)s" 2>&1 >/dev/null | '
             "grep -v '^Vim: Warning: '; true" % {'txttmp': txttmp},
             stdin=DEVZERO, stderr=DEVNULL, shell=True
@@ -169,8 +170,24 @@ def send_mails(decoded):
         commitvars['summary'] = commit['message'].split('\n')[0].strip()
         commitvars['url'] = commit['url']
         # `git show -p` output already provides enough info to populate a body.
-        changes = subprocess.check_output(['git', 'show', '-p', commit['id']],
-                                          stdin=None, stderr=None, shell=False)
+        changes = check_output(['git', 'show', '-p', commit['id']],
+                               stdin=None, stderr=None, shell=False)
+        # `echo "$changes" | censored-for-email` to censor #CENSORED\# bits.
+        with tempfile.NamedTemporaryFile() as changes_file:
+            changes_file.write(changes)
+            changes_file.flush()
+            changes_file.seek(0)
+            try:
+                # Why do we call an external app? Because we don't want to
+                # duplicate the censorship code. Recoding the censored-for-
+                # email app into python is easy, but less flexible.
+                changes = check_output(['censored-for-email'],
+                                       stdin=changes_file, stderr=None,
+                                       shell=False)
+            except OSError:
+                # The censored-for-email(1) program wasn't found. Never mind.
+                pass
+        # Translate to unicode so we can recode non-UTF-8 to UTF-8.
         try:
             changes = changes.decode('UTF-8')
         except UnicodeDecodeError:
