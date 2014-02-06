@@ -47,6 +47,7 @@ SUBJECT='[$PROJECT] r$REV: $SUMMARY' # these get expanded later
 REV="`git log -1 HEAD --format=%h`"
 PROJECT="`hostname -s`:`basename "\`pwd\`"`"
 SUMMARY="`git log -1 HEAD --format=%s`"
+CENSOR=`which censored-for-email 2>/dev/null || which cat`
 
 colormail()
 {
