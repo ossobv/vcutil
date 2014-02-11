@@ -1,0 +1,52 @@
+#!/bin/sh
+# crt-expiry-check (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+#
+# Checks the certificates passed on the command line for expiry.
+# This way you can get notified about pending certificate expirations,
+# avoiding the "untrusted" pages for your site visitors.
+#
+# Installation means putting something like this in your daily cron:
+#
+#     crt-expiry-check 30 /etc/ssl/private/*.key
+#
+# You pass the key files instead of the crt/pem files, because the fact that
+# you have the key, means that the certificate is yours to monitor.
+#
+minsecs=`expr $1 '*' 86400`
+test -z "$minsecs" && echo "Usage: $0 DAYS KEYFILE.." >&2 && exit 1
+shift
+
+now=`date +%s`
+for key in "$@"; do
+    if ! test -f "$key"; then
+        echo "$0: $key not found" >&2
+        continue
+    fi
+
+    crt=`basename "$key" | sed '-es/.key$//'`
+    
+    # Check for the *.{crt,pem} file in /etc/ssl/certs and
+    # /etc/ssl/private.
+    files=`find /etc/ssl/certs/$crt.crt /etc/ssl/certs/$crt.pem \
+                /etc/ssl/private/$crt.crt /etc/ssl/private/$crt.pem \
+                -type f 2>/dev/null`
+    if test -z "$files"; then
+        echo "$0: crt/pem for $key not found" >&2
+        continue
+    fi
+    
+    echo "$files" | while read crt; do
+        expires=`openssl x509 -in "$crt" -text | sed -e '
+            /^[[:blank:]]*Validity[[:blank:]]*$/,/^[[:blank:]]*Not After/!d
+            /Not After/!d;s/.*Not After : //
+        '`
+        expiretime=`date +%s -d "$expires"`
+        leftsecs=`expr $expiretime - $now`
+        if test $leftsecs -lt $minsecs; then
+            leftdays=`expr $leftsecs / 86400`
+            printf "WARNING: %s expires in %d days\n" "$crt" $leftdays
+        fi
+    done
+done
+
+# vim: set ts=8 sw=4 sts=4 et ai tw=79:
