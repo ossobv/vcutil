@@ -1,0 +1,45 @@
+#!/bin/sh
+# wcheckrestart (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+#
+# Checks which services need to be restarted after an upgrade. Inspired
+# by:
+# - checkrestart (from debian-goodies), a more complicated version of this
+# - https://locallost.net/?p=233
+# - http://askubuntu.com/questions/194/how-can-i-install-just-\
+#     security-updates-from-the-command-line
+#
+# Usage:
+#
+#    sudo wcheckrestart
+#    sudo /etc/init.d/this-and-that restart  # :)
+#    sudo wcheckrestart -v | grep libssl
+# 
+verbose=0
+test "$1" = "-v" && verbose=1
+
+if test $(whoami) != root; then
+    echo "must be root" 2>/dev/null
+    exit 1
+fi
+
+ps hax -o pid | while read pid; do
+    res=$(egrep '\.so(\..*)? \(deleted\)$' /proc/$pid/maps 2>/dev/null)
+    if test $? -eq 0; then
+        ppid=$(awk '{print $4}' /proc/$pid/stat)
+
+        # The PID=1 or PPID=1 check does block a few items from the 
+        # list that might require a restart. But generally, all proper
+        # daemons are children of init. To be sure you got everything,
+        # rerun with -v.
+        if test $verbose -eq 1 || test $pid = 1 || test $ppid = 1; then
+            cmdline=$(sed -e 's/\x00/ /g' /proc/$pid/cmdline)
+            printf "PID $pid $cmdline\n"
+            if test $verbose -eq 1; then
+                echo "$res" | sed -e "s/^/    $pid /"
+                echo
+            fi
+        fi
+    fi
+done
+
+# vim: set ts=8 sw=4 sts=4 et:
