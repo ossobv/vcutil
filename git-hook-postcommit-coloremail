@@ -33,7 +33,7 @@
 #     * Does it cope with non-ASCII?
 #
 #       It is encoding-agnostic. The mail however assumes everything is
-#       in UTF-8. (And the also subject gets sent verbatim. Any
+#       in UTF-8. (And also the subject gets sent verbatim. Any
 #       non-ASCII in the summary line will be technically invalid, but
 #       parsed by modern e-mail clients.)
 #
