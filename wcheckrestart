@@ -10,36 +10,64 @@
 #
 # Usage:
 #
+#    sudo wcheckrestart [-v] [options_to_ps]
+#    sudo wcheckrestart -vv
+#
+# Examples:
+#
+#    # Check which processes need a restart and restart them.
 #    sudo wcheckrestart
 #    sudo /etc/init.d/this-and-that restart  # :)
-#    sudo wcheckrestart -v | grep libssl
+#
+#    # Check which PIDs still have an old libssl loaded.
+#    sudo wcheckrestart -vv | grep libssl
+#
+#    # Pass options 'h' and '-o pid' to 'ps', to get the PIDs only.
+#    sudo wcheckrestart -v h -o pid  # | awk NF=NF RS= OFS=,
 # 
 verbose=0
-test "$1" = "-v" && verbose=1
+options_to_ps=f
+if test "$*" = "-vv"; then
+    verbose=2
+elif test "$1" = "-v"; then
+    verbose=1
+    shift
+fi
+if test -n "$*"; then
+    options_to_ps="$@"
+fi
 
 if test $(whoami) != root; then
     echo "must be root" 2>/dev/null
     exit 1
 fi
 
-ps hax -o pid | while read pid; do
+shown=""
+toshow=""
+for pid in `ps fhax -opid`; do  # we need 'f' for the right order
     res=$(egrep '\.so(\..*)? \(deleted\)$' /proc/$pid/maps 2>/dev/null)
     if test $? -eq 0; then
         ppid=$(awk '{print $4}' /proc/$pid/stat)
+        shown="$shown $pid "
 
-        # The PID=1 or PPID=1 check does block a few items from the 
-        # list that might require a restart. But generally, all proper
-        # daemons are children of init. To be sure you got everything,
-        # rerun with -v.
-        if test $verbose -eq 1 || test $pid = 1 || test $ppid = 1; then
+        # If not verbose, and parentpid is not 1 (in case we've already shown
+        # /sbin/init) and we've already shown the parent, then don't show it.
+        if test $verbose -eq 0 -a $ppid != 1 && echo "$shown" | grep -q " $ppid "; then
+            continue
+        fi
+
+        toshow="$toshow,$pid"
+        if test $verbose -ge 2; then
             cmdline=$(sed -e 's/\x00/ /g' /proc/$pid/cmdline)
             printf "PID $pid $cmdline\n"
-            if test $verbose -eq 1; then
-                echo "$res" | sed -e "s/^/    $pid /"
-                echo
-            fi
+            echo "$res" | sed -e "s/^/    $pid /"
+            echo 
         fi
     fi
 done
+
+if test $verbose -le 1 -a -n "$toshow"; then
+    ps $options_to_ps -p $(echo "$toshow" | sed -e 's/^.//')
+fi
 
 # vim: set ts=8 sw=4 sts=4 et:
