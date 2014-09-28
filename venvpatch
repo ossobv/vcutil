@@ -1,0 +1,133 @@
+#!/bin/sh
+# venvpatch (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+#
+# Automatically applies one or more patches to the current python environment.
+#
+# Use this to apply a set of patches to a python virtualenv and optionally the
+# system packages. Group the patches you want to apply in a single directory
+# and venvpatch will apply all unapplied ones at once. Specify --apply to
+# actually do it.
+#
+# Usage:
+#
+#     venvpatch PATH_WITH_PATCH_FILES [--apply]
+#     venvpatch SINGLE_PATCH_FILE [--apply]
+#
+# Common python project deployment workflow goes like this:
+#
+# - Create a virtual environment:
+#   $ mkvirtualenv PROJECT
+# - Install the requirements:
+#   $ pip install -r requirements.txt
+# - Apply a set of patches to the requirements:
+#   $ cdsitepackages
+#   $ patch -p1 < /path/to/project/patches/somepatch.patch
+#   $ patch -p0 < /path/to/project/patches/anotherpatch.patch
+#
+# The venvpatch utility will take care of:
+#
+# - Applying multiple patch files at once.
+# - Checking whether a patch is applied already, and ignoring it otherwise.
+# - Autodetecting -p0 and -p1.
+# - Autodetecting the destination path, be it in the virtualenv site-packages
+#   or in the system-global-packages.
+#
+# In the following example, the first patch has been applied already:
+#
+#     # ls ./docs/patches/1.4/
+#     issue16211+14029-query-expression-extra-operators-1.4.patch
+#     pisa3-reportlab-version.patch
+#
+#     # venvpatch ./docs/patches/1.4/
+#     source = /srv/django-projects/test/docs/patches/1.4/
+#      [X] issue16211+14029-query-expression-extra-operators-1.4.patch => \
+#            /srv/virtualenvs/test/lib/python2.7/site-packages
+#      [ ] pisa3-reportlab-version.patch => /usr/lib/pymodules/python2.7
+#
+#     # venvpatch ./docs/patches/1.4/ --apply
+#     source = /srv/django-projects/test/docs/patches/1.4/
+#      [X] issue16211+14029-query-expression-extra-operators-1.4.patch => \
+#            /srv/virtualenvs/test/lib/python2.7/site-packages
+#      [N] pisa3-reportlab-version.patch => /usr/lib/pymodules/python2.7
+#     patching file sx/pisa3/pisa_util.py
+#
+# A re-run of venvpatch would now show [X] next to both patches. In case of
+# errors, an [E] would be shown.
+#
+patchpath="$1"
+test -z "$patchpath" &&
+    echo "venvpatch: Need SOURCE_PATCH_PATH as first argument" >&2 &&
+    exit 1
+apply="$2"
+
+
+# Init globals.
+local_packages=`python -c 'import distutils;
+                           print(distutils.sysconfig.get_python_lib())' \
+                2>/dev/null`
+other_packages=`python -c 'import sys; print " ".join(sys.path)'`
+cwd=`pwd`/
+patchpath=`echo "$patchpath" | sed -e 's#^\([^/]\)#'$cwd'\1#'`
+
+
+# Echo source path so manual intervention is eased.
+if test -f "$patchpath"; then
+    echo "source = `dirname "$patchpath"`"
+else
+    echo "source = $patchpath"
+fi
+
+
+# Collect possible patches, and loop over them:
+find "$patchpath" -maxdepth 1 -type f -name '*.patch' | sort |
+while read patch; do
+    patch_basename=`basename "$patch"`
+
+    # Get the first file to be patched.
+    path1=`grep ^+++ "$patch" | head -n1 | awk '{print $2}'`
+
+    # Does it begin with a/ ? Then we should check the second path
+    # element.
+    if echo "$path1" | grep -q '^a/'; then
+        dir=`echo "$path1" | sed -e 's#^a/\([^/]*\)/.*#\1#'`
+        level=1
+    else
+        dir=`echo "$path1" | sed -e 's#^\([^/]*\)/.*#\1#'`
+        level=0
+    fi
+
+    # Where do we patch? In VIRTUAL_ENV or in global?
+    dest=
+    for path in $local_packages $other_packages; do
+        if test -d "$path/$dir"; then
+            dest="$path"
+            break
+        fi
+    done
+    if test -z "$dest"; then
+        echo "venvpatch: No sensible patch location found for: $patch" >&2
+        echo "venvpatch: Forgot to enable virtualenv?" >&2
+        exit 1
+    fi
+
+    # Very well. Let's see what a dry-run does. And if --apply is
+    # passed as arg2, let's rock.
+    cd "$dest"
+    output=`patch -p$level -i$patch --follow-symlinks --dry-run \
+            </dev/null 2>&1`
+    if test $? -eq 0; then
+        if test "$apply" = "--apply"; then
+            echo " [N] $patch_basename => $dest"
+            patch -p$level -i$patch --follow-symlinks || exit 1
+        else
+            echo " [ ] $patch_basename => $dest"
+        fi
+    elif echo "$output" | grep -q ^Reversed; then
+        echo " [X] $patch_basename => $dest"
+    else
+        echo " [E] $patch_basename => $dest"
+        echo "     ($patch)"
+    fi
+done
+
+# vim: set ts=8 sw=4 sts=4 et ai tw=79:
