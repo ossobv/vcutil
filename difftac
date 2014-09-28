@@ -5,7 +5,7 @@
 #
 # Usage:
 #
-#    difftac some/patch.diff > some/reversedpatch.diff
+#     difftac some/patch.diff > some/reversedpatch.diff
 #
 # Original author: Lie Ryan (2010)
 # Source: http://stackoverflow.com/questions/3902388/
