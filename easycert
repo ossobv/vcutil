@@ -47,6 +47,11 @@ run_help() {
 }
 
 run_test() {
+    show_certchain "$@"
+    echo "Expires in `get_expiry "$@"` days"
+}
+
+show_certchain() {
     host="$1"
     port="$2"
     echo "The list below should be logically ordered,"
@@ -61,6 +66,30 @@ run_test() {
         exit 1
     fi
     echo "$output"
+}
+
+get_expiry() {
+    host="$1"
+    port="$2"
+    openssl s_client -connect "$host:$port" -showcerts </dev/null 2>/dev/null |
+      openssl x509 -text |
+      sed -n 's/\( *Not After : *\|.*Subject.* CN=\)//p' 2>/dev/null | (
+        read date
+        read cn
+        if test "$host" = "$cn"; then
+            :
+        elif test "*.$host" = "$cn"; then
+            :
+        elif test "$host" = "www.$cn"; then
+            :
+        elif echo "$host" | grep -q `echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'`; then
+            :
+        else
+            echo "($host!=$cn)"
+            exit 0
+        fi
+        echo $(( (`date -d "$date" +%s` - `date +%s`) / 86400 ))  # days
+    )
 }
 
 run_generate() {
