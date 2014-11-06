@@ -71,9 +71,15 @@ show_certchain() {
 get_expiry() {
     host="$1"
     port="$2"
-    openssl s_client -connect "$host:$port" -showcerts </dev/null 2>/dev/null |
-      openssl x509 -text |
-      sed -n 's/\( *Not After : *\|.*Subject.* CN=\)//p' 2>/dev/null | (
+    certinfo=`openssl s_client -connect "$host:$port" -showcerts </dev/null \
+              2>/dev/null | openssl x509 -text`
+    sigalgo=`echo "$certinfo" |
+             sed -n 's/^ *Signature Algorithm: \([^ ]*\).*/\1/p' | head -n1`
+    if test "$sigalgo" = "sha1WithRSAEncryption"; then
+        echo "WARNING: Uses old SHA-1 hash" >&2
+    fi
+    echo "$certinfo" | sed -n 's/^\( *Not After : *\|.*Subject.* CN=\)//p' \
+            2>/dev/null | (
         read date
         read cn
         if test "$host" = "$cn"; then
