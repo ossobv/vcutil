@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+# vim: set ts=8 sw=4 sts=4 et ai:
+"""
+Simple utility to display BSON files.
+
+Adapted from http://bson-lazy.readthedocs.org/en/latest/_modules/bson2json.html
+to work without bson_lazy.
+
+Walter Doekes, OSSO B.V., 2014.
+"""
+
+import errno
+import sys
+from bson import ObjectId, decode_all
+from datetime import datetime
+from json import JSONEncoder, dumps
+
+usage = '''
+Usage: %s FILE... [OPTIONS]
+
+Options:
+  --pretty  Pretty print JSON
+  --help    Print this help message
+'''.strip() % sys.argv[0]
+
+
+class CustomEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)  # or.. what?
+        if isinstance(obj, datetime):
+            if obj.utcoffset().seconds:
+                return obj.strftime('%Y-%m-%dT%H:%M:%S%z')  # iso8601
+            else:
+                return obj.strftime('%Y-%m-%dT%H:%M:%SZ')  # iso8601
+        # Raise the typeerror through the superclass.
+        return JSONEncoder.default(self, obj)
+
+
+def main():
+    args = sys.argv[1:]
+    kwargs = {'cls': CustomEncoder}
+    if '--pretty' in args:
+        args.remove('--pretty')
+        kwargs.update({'sort_keys': True,
+                       'indent': 4,
+                       'separators': (',', ': ')})
+
+    if len(args) == 0 or '--help' in args:
+        sys.stderr.write(usage + '\n')
+        sys.exit()
+
+    for path in args:
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+                decoded = decode_all(data)
+                sys.stdout.write(dumps(decoded, **kwargs) + '\n')
+
+        except IOError, e:
+            if e.errno != errno.EPIPE:
+                sys.stderr.write('ERROR: %s\n' % e)
+
+        except KeyboardInterrupt:
+            return
+
+
+if __name__ == '__main__':
+    main()
