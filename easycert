@@ -111,13 +111,16 @@ run_generate() {
         read yes
     fi
 
-    # Generate new private key
+    # Generate new private key.
     old_umask=`umask`
     umask 0077
     openssl genrsa -out "$dst.key" 4096 >&2
     umask $old_umask
 
-    # Generate new csr
+    # Generate new csr. No need to pass -sha256 here (during the move
+    # from sha1 in 2014). The CSR is signed with sha256 by default
+    # anyway (openssl 1.0.1f). And it usually doesn't have any effect on
+    # the CA's signing of the CRT.
     openssl req -new -key "$dst.key" -out "$dst.csr" -subj "$subject" \
                 -batch >&2
 
