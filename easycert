@@ -1,0 +1,176 @@
+#!/bin/sh
+# vim: set ts=8 sw=4 sts=4 et ai:
+#
+# easycert.sh -- Walter Doekes, 2012,2013 -- version:3
+# command line tool for generating KEY+CSR and/or testing SSL servers
+# can be run as cgi script
+
+country=NL
+city=Groningen
+organisation="OSSO B.V."
+email="info@osso.nl"
+
+run_help() {
+    echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
+    echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/O=OSSO B.V./CN=osso.nl/\""
+    echo "Usage: $0 -T www.osso.nl"
+}
+
+run_test() {
+    host="$1"
+    port="$2"
+    echo "The list below should be logically ordered,"
+    echo "and end with a self-signed root certificate:"
+    echo
+    output="`openssl s_client -connect "$host:$port" </dev/null 2>&0 |
+        sed -e '/^Certificate chain/,/^---/!d'`"
+    if [ -z "$output" ]; then
+        openssl s_client -connect "$host:$port" </dev/null
+        exit 1
+    fi
+    echo "$output"
+}
+
+run_generate() {
+    cn="$1"
+    subject="$2"
+    dst="`echo "$cn" | tr . _ | sed -e 's/\*/STAR/g'`-`date +%Y`"
+
+    if test -f "$dst.key" -o \
+            -f "$dst.csr" -o \
+            -f "$dst.crt"; then
+        echo "Files starting with $dst.* exist already:" >&2
+        ls "$dst."* | sed -e 's/^/  /' >&2
+        exit 1
+    fi
+
+    if [ -t 0 ]; then
+        echo "Subject: $subject"
+        echo -n 'Enter to proceed...'
+        read yes
+    fi
+
+    # Generate new private key
+    openssl genrsa -out "$dst.key" 4096 >&2
+    # Allowed by user and group (WARNING)
+    chmod 640 "$dst.key"
+    # Generate new csr
+    openssl req -new -key "$dst.key" -out "$dst.csr" -subj "$subject" -batch >&2
+    # Allowed by user and group
+    chmod 640 "$dst.csr"
+
+    echo "$dst.csr"
+}
+
+cgi_get() {
+    cat <<__EOF__
+    <form method="POST" action="$0">
+        <input name="cn" value="Domain without www..."/> Common Name (domain.tld or *.domain.tld for wildcard)<br/>
+        <input name="organisation" value="$organisation"/> Company<br/>
+        <input name="email" value="$email"/> E-mail<br/>
+        <input name="city" value="$city"/> City<br/>
+        <input name="country" value="$country"/> Country<br/>
+        <input type="submit"/>
+    </form>
+__EOF__
+}
+
+cgi_post() {
+    eval "`cat | python -c 'import urlparse
+for k,v in urlparse.parse_qs(raw_input()).items():
+    if k in ("cn","organisation","email","city","country"):
+        print "%s='\''%s'\''" % (k,v[0].replace("\\"","").replace("/","").replace(",",";").replace("'\''",""))'`"
+    # "`"`" # vim.. break out of syntax fun
+    if test -n "$cn" -o test -n "$organisation" -o test -n "$email" -o test -n "$city" -o test -n "$country"; then
+        echo "Invalid arguments...<br/>"
+        exit 0
+    fi
+    # DON'T CD TO /tmp! REBOOT AND THE KEYS ARE GONE!
+    home=/srv/easycert
+    echo "Generating in $home...<br/>"
+    if ! test -d $home; then
+        echo "Cannot chdir to /srv/easycert...<br/>"
+        exit 0
+    fi
+    cd "$home"
+    subject="/C=$country/L=$city/O=$organisation/CN=$cn/emailAddress=$email"
+    file="`run_generate "$cn" "$subject" </dev/null 2>&0`"
+    if [ $? != 0 ]; then
+        echo "Failure...<br/>"
+        exit 0
+    fi
+    echo "Generated: $file<br/><pre>"
+    cat "$file"
+    echo "</pre>"
+}
+
+# If we're called as CGI script, so CGI stuff
+if test -n "$GATEWAY_INTERFACE"; then
+    printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+    if test "$REQUEST_METHOD" = "POST"; then
+        cgi_post
+    else
+        cgi_get
+    fi
+    exit 0
+fi
+
+# Default CLI action is generate
+action=generate
+
+# Trick: we use getopt(1) to reposition the arguments, because the builtin
+# getopts plays POSIXLY_CORRECT and refuses to do so. Builtin getopts gives us
+# the feature to take quoted arguments 
+options=Thc:l:o:e:
+temp=`getopt -o $options -- "$@"`
+[ $? != 0 ] && exit 1
+eval set -- "$temp"
+while getopts $options opt; do
+    case $opt in
+    c)
+        country="$OPTARG"
+        ;;
+    l)
+        city="$OPTARG"
+        ;;
+    o)
+        organisation="$OPTARG"
+        ;;
+    e)
+        email="$OPTARG"
+        ;;
+    T)
+        action=test
+        ;;
+    h)
+        action=help
+        ;;
+    *)
+        exit 1
+    esac
+done
+shift $((OPTIND-1))
+
+case $action in
+help)
+    run_help
+    ;;
+test)
+    [ $# != 2 ] && echo "Action test requires host and port!" >&2 && exit 1
+    host="$1"
+    port="$2"
+    run_test "$host" "$port"
+    ;;
+generate)
+    [ $# -lt 1 ] && echo "Action generate requires common name!" >&2 && exit 1
+    [ $# -gt 2 ] && echo "Action generate takes at most two arguments!" >&2 && exit 1
+    cn="$1"
+    [ -n "$2" ] && subject="$2"
+    [ -z "$2" ] && subject="/C=$country/L=$city/O=$organisation/CN=$cn/emailAddress=$email"
+    if ! echo "$subject" | grep -q ^/; then
+        echo "Subject does not start with '/'." >&2
+        exit 1
+    fi
+    run_generate "$cn" "$subject"
+    ;;
+esac
