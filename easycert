@@ -1,14 +1,44 @@
 #!/bin/sh
-# vim: set ts=8 sw=4 sts=4 et ai:
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2014 // Public Domain
 #
-# easycert.sh -- Walter Doekes, 2012,2013 -- version:3
-# command line tool for generating KEY+CSR and/or testing SSL servers
-# can be run as cgi script
+# Wrapper around openssl to create basic KEY+CSR pairs for submittal to
+# a certificate authority.
+#
+# Also features a small test mode. And usable as CGI script.
+#
+# Usage:
+#
+#     # Create two files:
+#     # -rw-rw-r-- my_example_com-2014.csr
+#     # -rw------- my_example_com-2014.key
+#     easycert -c UK -l London -o MyCompany -e my@example.com \
+#         my.example.com
+#
+#     # Or, an alternate notation:
+#     # -rw-rw-r-- STAR_example_com-2014.csr
+#     # -rw------- STAR_example_com-2014.key
+#     easycert '*.example.com' \
+#         '/C=UK/L=London/O=MyCompany/CN=*.example.com/'
+#
+#     # Test if the certificate chain is in the right order:
+#     #  0 s:/OU=Domain .../OU=PositiveSSL Wildcard/CN=*.osso.nl
+#     #    i:/C=GB/ST=Greater .../L=Salford/O=COMODO/CN=PositiveSSL CA 2
+#     #  1 s:/C=GB/ST=Greater .../L=Salford/O=COMODO/CN=PositiveSSL CA 2
+#          i:/C=SE/O=AddTrust AB/OU=AddTrust .../CN=AddTrust External CA Root
+#     easycert -T www.osso.nl 443
+#
+# When run as CGI service, it displays input boxes for the options
+# and writes the output to CERTHOME.
+#
 
+# defaults
 country=NL
 city=Groningen
 organisation="OSSO B.V."
 email="info@osso.nl"
+
+# cgi config
+CERTHOME=/srv/easycert
 
 run_help() {
     echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
@@ -20,11 +50,13 @@ run_test() {
     host="$1"
     port="$2"
     echo "The list below should be logically ordered,"
-    echo "and end with a self-signed root certificate:"
+    echo "and end with a self-signed root certificate."
+    echo "(Although the last one is optional and only "
+    echo "overhead. Since the client has that certificate.)"
     echo
     output="`openssl s_client -connect "$host:$port" </dev/null 2>&0 |
         sed -e '/^Certificate chain/,/^---/!d'`"
-    if [ -z "$output" ]; then
+    if test -z "$output"; then
         openssl s_client -connect "$host:$port" </dev/null
         exit 1
     fi
@@ -44,20 +76,21 @@ run_generate() {
         exit 1
     fi
 
-    if [ -t 0 ]; then
+    if test -t 0; then
         echo "Subject: $subject"
-        echo -n 'Enter to proceed...'
+        echo -n 'Enter to proceed (or ^C to abort to change parameters)...'
         read yes
     fi
 
     # Generate new private key
+    old_umask=`umask`
+    umask 0077
     openssl genrsa -out "$dst.key" 4096 >&2
-    # Allowed by user and group (WARNING)
-    chmod 640 "$dst.key"
+    umask $old_umask
+
     # Generate new csr
-    openssl req -new -key "$dst.key" -out "$dst.csr" -subj "$subject" -batch >&2
-    # Allowed by user and group
-    chmod 640 "$dst.csr"
+    openssl req -new -key "$dst.key" -out "$dst.csr" -subj "$subject" \
+                -batch >&2
 
     echo "$dst.csr"
 }
@@ -65,7 +98,8 @@ run_generate() {
 cgi_get() {
     cat <<__EOF__
     <form method="POST" action="$0">
-        <input name="cn" value="Domain without www..."/> Common Name (domain.tld or *.domain.tld for wildcard)<br/>
+        <input name="cn" value="Domain without www..."/>
+          Common Name (domain.tld or *.domain.tld for wildcard)<br/>
         <input name="organisation" value="$organisation"/> Company<br/>
         <input name="email" value="$email"/> E-mail<br/>
         <input name="city" value="$city"/> City<br/>
@@ -79,23 +113,23 @@ cgi_post() {
     eval "`cat | python -c 'import urlparse
 for k,v in urlparse.parse_qs(raw_input()).items():
     if k in ("cn","organisation","email","city","country"):
-        print "%s='\''%s'\''" % (k,v[0].replace("\\"","").replace("/","").replace(",",";").replace("'\''",""))'`"
+        print "%s='\''%s'\''" % (k,v[0].replace("\\"","").replace("/","")
+                                   .replace(",",";").replace("'\''",""))'`"
     # "`"`" # vim.. break out of syntax fun
-    if test -n "$cn" -o test -n "$organisation" -o test -n "$email" -o test -n "$city" -o test -n "$country"; then
+    if test -n "$cn" -o -n "$organisation" -o -n "$email" -o \
+            -n "$city" -o -n "$country"; then
         echo "Invalid arguments...<br/>"
         exit 0
     fi
-    # DON'T CD TO /tmp! REBOOT AND THE KEYS ARE GONE!
-    home=/srv/easycert
-    echo "Generating in $home...<br/>"
-    if ! test -d $home; then
-        echo "Cannot chdir to /srv/easycert...<br/>"
+    echo "Generating in ${CERTHOME}...<br/>"
+    if ! test -d "$CERTHOME"; then
+        echo "Cannot chdir to ${CERTHOME}...<br/>"
         exit 0
     fi
-    cd "$home"
+    cd "$CERTHOME"
     subject="/C=$country/L=$city/O=$organisation/CN=$cn/emailAddress=$email"
     file="`run_generate "$cn" "$subject" </dev/null 2>&0`"
-    if [ $? != 0 ]; then
+    if test $? != 0; then
         echo "Failure...<br/>"
         exit 0
     fi
@@ -104,7 +138,7 @@ for k,v in urlparse.parse_qs(raw_input()).items():
     echo "</pre>"
 }
 
-# If we're called as CGI script, so CGI stuff
+# If we're called as CGI script, do CGI stuff.
 if test -n "$GATEWAY_INTERFACE"; then
     printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
     if test "$REQUEST_METHOD" = "POST"; then
@@ -115,15 +149,15 @@ if test -n "$GATEWAY_INTERFACE"; then
     exit 0
 fi
 
-# Default CLI action is generate
+# Default CLI action is generate.
 action=generate
 
-# Trick: we use getopt(1) to reposition the arguments, because the builtin
-# getopts plays POSIXLY_CORRECT and refuses to do so. Builtin getopts gives us
-# the feature to take quoted arguments 
+# Trick: we use getopt(1) to reposition the arguments, because the
+# builtin getopts plays POSIXLY_CORRECT and refuses to do so. We then
+# use builtin getopts (with 's') that handles quoted arguments.
 options=Thc:l:o:e:
 temp=`getopt -o $options -- "$@"`
-[ $? != 0 ] && exit 1
+test $? != 0 && exit 1
 eval set -- "$temp"
 while getopts $options opt; do
     case $opt in
@@ -156,17 +190,26 @@ help)
     run_help
     ;;
 test)
-    [ $# != 2 ] && echo "Action test requires host and port!" >&2 && exit 1
+    if test $# != 2; then
+        echo "Action test requires host and port!" >&2
+        exit 1
+    fi
     host="$1"
     port="$2"
     run_test "$host" "$port"
     ;;
 generate)
-    [ $# -lt 1 ] && echo "Action generate requires common name!" >&2 && exit 1
-    [ $# -gt 2 ] && echo "Action generate takes at most two arguments!" >&2 && exit 1
+    if test $# -lt 1; then
+        echo "Missing argument. See $0 -h for help." >&2
+        exit 1
+    elif test $# -gt 2; then
+        echo "Action generate takes at most two arguments!" >&2
+        exit 1
+    fi
     cn="$1"
-    [ -n "$2" ] && subject="$2"
-    [ -z "$2" ] && subject="/C=$country/L=$city/O=$organisation/CN=$cn/emailAddress=$email"
+    test -n "$2" && subject="$2"
+    test -z "$2" && subject="/C=$country/L=$city/O=$organisation/\
+CN=$cn/emailAddress=$email"
     if ! echo "$subject" | grep -q ^/; then
         echo "Subject does not start with '/'." >&2
         exit 1
@@ -174,3 +217,5 @@ generate)
     run_generate "$cn" "$subject"
     ;;
 esac
+
+# vim: set ts=8 sw=4 sts=4 et ai:
