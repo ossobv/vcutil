@@ -57,7 +57,7 @@ show_certchain() {
     echo "The list below should be logically ordered,"
     echo "and end with a self-signed root certificate."
     echo "(Although the last one is optional and only "
-    echo "overhead. Since the client has that certificate.)"
+    echo "overhead.)"
     echo
     output="`openssl s_client -connect "$host:$port" </dev/null 2>&0 |
         sed -e '/^Certificate chain/,/^---/!d'`"
