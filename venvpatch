@@ -1,5 +1,5 @@
 #!/bin/sh
-# venvpatch (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+# venvpatch (part of ossobv/vcutil) // wdoekes/2014-2015 // Public Domain
 #
 # Automatically applies one or more patches to the current python environment.
 #
