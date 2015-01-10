@@ -65,7 +65,7 @@ apply="$2"
 local_packages=`python -c 'import distutils;
                            print(distutils.sysconfig.get_python_lib())' \
                 2>/dev/null`
-other_packages=`python -c 'import sys; print " ".join(sys.path)'`
+other_packages=`python -c 'import sys; print(" ".join(sys.path))'`
 cwd=`pwd`/
 patchpath=`echo "$patchpath" | sed -e 's#^\([^/]\)#'$cwd'\1#'`
 
