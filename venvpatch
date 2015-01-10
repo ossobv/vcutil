@@ -88,6 +88,7 @@ while read patch; do
 
     # Does it begin with a/ ? Then we should check the second path
     # element.
+    # NOTE: $dir may turn out to be a plain file.
     if echo "$path1" | grep -q '^a/'; then
         dir=`echo "$path1" | sed -e 's#^a/\([^/]*\)/.*#\1#'`
         level=1
@@ -99,7 +100,7 @@ while read patch; do
     # Where do we patch? In VIRTUAL_ENV or in global?
     dest=
     for path in $local_packages $other_packages; do
-        if test -d "$path/$dir"; then
+        if test -d "$path/$dir" || test -r "$path/$dir"; then
             dest="$path"
             break
         fi
