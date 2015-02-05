@@ -87,6 +87,7 @@ fi
 
 
 # Collect possible patches, and loop over them:
+ret=0
 find "$patchpath" -maxdepth 1 -type f -name '*.patch' | sort |
 while read patch; do
     patch_basename=`basename "$patch"`
@@ -135,8 +136,14 @@ while read patch; do
         echo " [X] $patch_basename => $dest"
     else
         echo " [E] $patch_basename => $dest"
-        echo "     ($patch)"
+        echo "     Output: "
+        echo "$output" | sed -e 's/^/        /'
+        echo "     Permission issue? Try:"
+        echo "        sudo $0 $patch"
+        ret=1
     fi
+
+    test $ret = 0  # set status code
 done
 
 # vim: set ts=8 sw=4 sts=4 et ai tw=79:
