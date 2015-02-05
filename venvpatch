@@ -69,6 +69,14 @@ other_packages=`python -c 'import sys; print(" ".join(sys.path))'`
 cwd=`pwd`/
 patchpath=`echo "$patchpath" | sed -e 's#^\([^/]\)#'$cwd'\1#'`
 
+# Fetch patch arguments.
+patchver=`patch --version | sed -e '1!d;s/.* //'`
+if test `printf '%s\n2.7\n' $patchver | sort -V | head -n1` = 2.7; then
+    patchargs="--follow-symlinks --forward"
+else
+    patchargs="--forward"
+fi
+
 
 # Echo source path so manual intervention is eased.
 if test -f "$patchpath"; then
@@ -114,12 +122,12 @@ while read patch; do
     # Very well. Let's see what a dry-run does. And if --apply is
     # passed as arg2, let's rock.
     cd "$dest"
-    output=`patch -p$level -i$patch --follow-symlinks --dry-run \
+    output=`patch -p$level -i$patch --dry-run $patchargs \
             </dev/null 2>&1`
     if test $? -eq 0; then
         if test "$apply" = "--apply"; then
             echo " [N] $patch_basename => $dest"
-            patch -p$level -i$patch --follow-symlinks || exit 1
+            patch -p$level -i$patch $patchargs || exit 1
         else
             echo " [ ] $patch_basename => $dest"
         fi
