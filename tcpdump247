@@ -1,0 +1,136 @@
+#!/bin/bash
+# tcpdump247 (part of ossobv/vcutil) // wdoekes/2013 // Public Domain
+#
+# Script to start a rotating tcpdump. Restarts tcpdump if it dies.
+#
+# This is used on servers where you need to keep a batch of old traffic
+# to diagnose recent events. The restart functionality is there because
+# interfaces (e.g. ipsec) that go down, will kill a running tcpdump.
+#
+# Usage:
+#
+#     # configure this script (see ARGS below)
+#     # place it in /etc/init.d/ on a debian-style system
+#
+# Author: Walter Doekes, 2013.
+# Notes: using bash instead of sh to get 'exec -a'
+#
+### BEGIN INIT INFO
+# Provides:          tcpdump247
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: tcpdump247
+# Description:       Rotating SIP traffic dumps in /var/spool/tcpdump
+### END INIT INFO
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+NAME=tcpdump247
+DESC="rotating SIP traffic dumps"
+TCPDUMP=/usr/sbin/tcpdump
+IFACE=`/sbin/ip route get 1.2.3.4 | sed -e 's/.* dev //;s/ .*//;q'`
+ARGS="-i $IFACE -pnns0 -w /var/spool/tcpdump/5060.pcap. -W 100 -C 20 port 5060"
+PIDFILE=/var/run/tcpdump247.pid
+
+. /lib/lsb/init-functions
+
+sleep_between_restarts() {
+    # Sleep after tcpdump has exited before starting again.
+    sleep 15
+}
+
+start_script() {
+    # The combination of backticks and parentheses is is a double fork.
+    # Now it gets detached properly, and can kill it further down if
+    # needed, without messing up the console.
+    # The exec /bin/sh is used to rename argv[0] for clarity.
+    pid=`(exec -a TCPDUMP247 /bin/sh -c \
+            "while :; do \"$TCPDUMP\" $ARGS >/dev/null 2>&1
+sleep_between_restarts; done"
+	 ) >/dev/null 2>&1 & echo $!`
+
+    # Sleep a second and check that we're really up. This helps catching
+    # typos in the ARGS.
+    sleep 1
+    if ! pgrep -P $pid -f "$TCPDUMP" >/dev/null; then
+        # Kill parent. The sleep will die by itself.
+        # (We do not run stop_script here, because it will kill this
+        # invocation too.)
+        kill -s 15 $pid 2>/dev/null
+        # List possible reasons for failure:
+        cat >&2 << EOF
+
+
+Daemon tcpdump did not start, possibly due to:
+- binary not found ($TCPDUMP)
+- not enough permissions (are you root?)
+- bad args ($ARGS)
+- write permissions (does the -w directory exist?)
+- apparmor permissions (/**.[pP][cC][aA][pP].[0-9][0-9] rw,)
+
+EOF
+        return 1
+    fi
+
+    echo $pid >"$PIDFILE"
+    return 0
+}
+
+stop_script() {
+    pid=`cat "$PIDFILE" 2>/dev/null`
+    if test $? -eq 0; then
+        if test -n "$pid"; then
+            pgid=`get_pgid $pid`
+            kill -s 15 -$pgid
+            res=$?
+        fi
+        rm "$PIDFILE"
+        return $res
+    fi
+    return 1
+}
+
+get_pgid() {
+    ps -p "$1" -o pgid | sed -e '1d;s/[^0-9]//g'
+}
+
+is_running() {
+    pidofproc -p "$PIDFILE" /bin/sh >/dev/null # our while loop is from here
+}
+
+
+case "$1" in
+    start)
+        log_begin_msg "Starting $DESC:" "$NAME"
+        if ! is_running; then
+            start_script
+        fi
+        log_end_msg $?
+        ;;
+
+    stop)
+        log_begin_msg "Stopping $DESC:" "$NAME"
+        stop_script
+        log_end_msg $?
+        ;;
+
+    status)
+        status_of_proc -p "$PIDFILE" "$TCPDUMP" "$NAME"
+        ;;
+
+    force-restart|reload|restart)
+        log_begin_msg "Restarting $DESC:" "$NAME"
+        stop_script
+        sleep 1
+        start_script
+        log_end_msg $?
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|status|restart|force-reload|reload}" >&2
+        exit 1
+        ;;
+esac
+
+# vim: set ts=8 sw=4 sts=4 et ai tw=79:
