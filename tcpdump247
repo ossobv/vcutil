@@ -49,7 +49,9 @@ PIDFILE=/var/run/tcpdump247.pgid  # it's a pgid-file actually
 
 # load local settings
 test -r /etc/default/tcpdump247 && . /etc/default/tcpdump247
-test "$ENABLED" != "1" && exit 1
+# sanity checks
+test "$ENABLED" != "1" && exit 1    # enabled?
+test -x "$TCPDUMP" || exit 1        # tcpdump found?
 
 
 start_scripts() {
