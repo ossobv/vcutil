@@ -1,0 +1,18 @@
+# tcpdump247 settings
+
+# use ENABLED=0 or ENABLED=1
+ENABLED=1
+
+# helpers
+IFACE=`/sbin/ip route get 1.2.3.4 | sed -e 's/.* dev //;s/ .*//;q'`
+mkdir -p /var/spool/tcpdump
+
+# a bash(1) list of argument strings. these will be expanded, so make
+# sure you enclose single arguments with extra quotes. e.g.:
+# "-i eth0 '(udp and port 5060)'"
+ARGS_LIST=(
+    "-i $IFACE -pnns0 -w /var/spool/tcpdump/udp5060.pcap. -W 100 -C 20 '(udp and port 5060) or (ip[6:2] & 0x1fff != 0)'"
+    "-i $IFACE -pnns0 -w /var/spool/tcpdump/tcp5060.pcap. -W 100 -C 20 tcp and port 5060"
+)
+
+# vim: set syn=sh ts=8 sw=4 sts=4 et ai:

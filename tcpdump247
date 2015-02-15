@@ -1,5 +1,5 @@
 #!/bin/bash
-# tcpdump247 (part of ossobv/vcutil) // wdoekes/2013 // Public Domain
+# tcpdump247 (part of ossobv/vcutil) // wdoekes/2013-2015 // Public Domain
 #
 # Script to start a rotating tcpdump. Restarts tcpdump if it dies.
 #
@@ -9,11 +9,25 @@
 #
 # Usage:
 #
-#     # configure this script (see ARGS below)
-#     # place it in /etc/init.d/ on a debian-style system
+#     # Install:
+#     cp -a tcpdump247 /etc/init.d/tcpdump247
+#     cp tcpdump247.default /etc/default/tcpdump247
 #
-# Author: Walter Doekes, 2013.
-# Notes: using bash instead of sh to get 'exec -a'
+#     # Start:
+#     /etc/init.d/tcpdump247 start
+#
+#     # Configuration is done in /etc/default/tcpdump247 like this:
+#     ENABLED=1
+#     SPOOL=/var/spool/tcpdump; mkdir -p $SPOOL
+#     COMMON_ARGS="-i eth0 -pnns0 -W 100 -C20"
+#     ARGS_LIST=(
+#         "$COMMON_ARGS -w $SPOOL/1.2.3.4.pcap. 'host 1.2.3.4'"
+#         "$COMMON_ARGS -w $SPOOL/25or80.pcap. 'port 25 or port 80'"
+#     )
+#
+# Author: Walter Doekes, 2013,2015.
+# Notes: using bash instead of sh to get 'exec -a' functionality, and
+#        for array-of-strings syntax.
 #
 ### BEGIN INIT INFO
 # Provides:          tcpdump247
@@ -22,22 +36,29 @@
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
 # Short-Description: tcpdump247
-# Description:       Rotating SIP traffic dumps in /var/spool/tcpdump
+# Description:       Rotating traffic dumps wrapper using tcpdump
 ### END INIT INFO
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 NAME=tcpdump247
-DESC="rotating SIP traffic dumps"
+DESC="rotating traffic dumps wrapper"
 TCPDUMP=/usr/sbin/tcpdump
-IFACE=`/sbin/ip route get 1.2.3.4 | sed -e 's/.* dev //;s/ .*//;q'`
-ARGS="-i $IFACE -pnns0 -w /var/spool/tcpdump/5060.pcap. -W 100 -C 20 port 5060"
-PIDFILE=/var/run/tcpdump247.pid
+PIDFILE=/var/run/tcpdump247.pgid  # it's a pgid-file actually
 
 . /lib/lsb/init-functions
 
-sleep_between_restarts() {
-    # Sleep after tcpdump has exited before starting again.
-    sleep 15
+# load local settings
+test -r /etc/default/tcpdump247 && . /etc/default/tcpdump247
+test "$ENABLED" != "1" && exit 1
+
+
+start_scripts() {
+    for ARGS in "${ARGS_LIST[@]}"; do
+        if ! start_script; then
+            stop_scripts
+            return 1
+        fi
+    done
 }
 
 start_script() {
@@ -45,10 +66,12 @@ start_script() {
     # Now it gets detached properly, and can kill it further down if
     # needed, without messing up the console.
     # The exec /bin/sh is used to rename argv[0] for clarity.
-    pid=`(exec -a TCPDUMP247 /bin/sh -c \
+    # The sleep 15 limits the restart speed.
+    echo "    [x] $TCPDUMP $ARGS"
+    pid=`(exec -a TCPDUMP247 /bin/bash -c \
             "while :; do \"$TCPDUMP\" $ARGS >/dev/null 2>&1
-sleep_between_restarts; done"
-	 ) >/dev/null 2>&1 & echo $!`
+sleep 15; done"
+         ) >/dev/null 2>&1 & echo $!`
 
     # Sleep a second and check that we're really up. This helps catching
     # typos in the ARGS.
@@ -61,7 +84,6 @@ sleep_between_restarts; done"
         # List possible reasons for failure:
         cat >&2 << EOF
 
-
 Daemon tcpdump did not start, possibly due to:
 - binary not found ($TCPDUMP)
 - not enough permissions (are you root?)
@@ -73,57 +95,96 @@ EOF
         return 1
     fi
 
-    echo $pid >"$PIDFILE"
-    return 0
+    #PIDFILE="$RUNDIR/${pid}.pid"
+    pgid=`to_pgid $pid`
+    echo $pgid >"$PIDFILE"
 }
 
-stop_script() {
-    pid=`cat "$PIDFILE" 2>/dev/null`
-    if test $? -eq 0; then
-        if test -n "$pid"; then
-            pgid=`get_pgid $pid`
-            kill -s 15 -$pgid
-            res=$?
-        fi
-        rm "$PIDFILE"
+stop_scripts() {
+    pgid=`get_pgid`
+    if test $? = 0; then
+        kill -s 15 -$pgid
+        res=$?
+        rm -f "$PIDFILE"
         return $res
     fi
     return 1
 }
 
-get_pgid() {
+to_pgid() {
     ps -p "$1" -o pgid | sed -e '1d;s/[^0-9]//g'
 }
 
-is_running() {
-    pidofproc -p "$PIDFILE" /bin/sh >/dev/null # our while loop is from here
+get_pgid() {
+    # Check pid file.
+    pgid=`cat "$PIDFILE" 2>/dev/null`
+    if test -n "$pgid"; then
+        if pgrep -g "$pgid" -f TCPDUMP247 >/dev/null 2>&1; then
+            echo $pgid
+            return 0
+        fi
+        echo "    (removing stale pidfile)" >&2
+        rm "$PIDFILE"
+    fi
+
+    # Fall back to pidof/pgrep.
+    pids=`pidof TCPDUMP247 2>/dev/null | sed -e 's/ /,/g'`
+    if test -n "$pids"; then
+        pgids=`ps -p "$pids" -o pgid | sed -e1d | sort -u`
+        if test -n "$pgids"; then
+            pgid1=
+            for pgid in $pgids; do
+                if test -z "$pgid1"; then
+                    pgid1=$pgid
+                    echo "(attempting to create pidfile)" >&2
+                    echo $pgid1
+                    echo $pgid1 > "$PIDFILE"
+                else
+                    echo "(attempting to kill other TCPDUMP247 $pgid)" >&2
+                    kill -15 -$pgid
+                fi
+            done
+            return 0
+        fi
+    fi
+
+    # Not running.
+    return 3
 }
 
 
 case "$1" in
     start)
         log_begin_msg "Starting $DESC:" "$NAME"
-        if ! is_running; then
-            start_script
+        if ! get_pgid >/dev/null; then
+            start_scripts
         fi
         log_end_msg $?
         ;;
 
     stop)
         log_begin_msg "Stopping $DESC:" "$NAME"
-        stop_script
+        stop_scripts
         log_end_msg $?
         ;;
 
     status)
-        status_of_proc -p "$PIDFILE" "$TCPDUMP" "$NAME"
+        pgid=`get_pgid`
+        status="$?"
+        if test $status -eq 0; then
+            log_success_msg "$NAME is running"
+            exit 0
+        else
+            log_failure_msg "$NAME is not running";
+            exit $status
+        fi
         ;;
 
     force-restart|reload|restart)
         log_begin_msg "Restarting $DESC:" "$NAME"
-        stop_script
+        stop_scripts
         sleep 1
-        start_script
+        start_scripts
         log_end_msg $?
         ;;
 
