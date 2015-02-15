@@ -57,7 +57,18 @@ test -x "$TCPDUMP" || exit 1        # tcpdump found?
 start_scripts() {
     for ARGS in "${ARGS_LIST[@]}"; do
         if ! start_script; then
-            stop_scripts
+            # Drat. Must now kill everyone from pgid except ourself.
+            # Cannot call stop_scripts, because it would kill this
+            # invocation too.
+            pgid=`cat "$PIDFILE" 2>/dev/null`
+            if test -n "$pgid"; then
+                for pid in `pgrep -g $pgid`; do
+                    if test $pid -ne $$ && test $pid -ne $PPID; then
+                        kill -15 $pid
+                    fi
+                done
+                rm "$PIDFILE"
+            fi
             return 1
         fi
     done
