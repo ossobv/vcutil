@@ -202,10 +202,23 @@ def send_mails(decoded):
             # > Windows-1252 encoding.
             # This is probably the most common 8-bit encoding.
             changes = changes.decode('CP1252', 'replace')
+        # Trim changeset to 256KB, which would become about the double
+        # in colored html. That should be low enough to pass through
+        # most mail exchanges -- the common low limit being 2MB.
+        if len(changes) > (256 * 1024):
+            extra_prefix = ('NOTE: this changeset was truncated from '
+                            '%d KB to 256 KB for e-mail transport\n\n' %
+                            (len(changes) / 1024,))
+            extra_suffix = '\n... truncated ...\n'
+            changes = changes[0:(256 * 1024)]
+        else:
+            extra_prefix = extra_suffix = ''
         # Prefix the changes with a bit of extra body.
-        changes = ((unicode(BODY_PREFIX) % commitvars) +
-                   changes +
-                   (unicode(BODY_SUFFIX) % commitvars))
+        changes = ''.join([unicode(BODY_PREFIX) % commitvars,
+                           extra_prefix,
+                           changes,
+                           extra_suffix,
+                           unicode(BODY_SUFFIX) % commitvars])
         # Colorize it using vim.
         changes_html = diff_to_html(changes)
         # Compile a mail and send.
