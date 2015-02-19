@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+# gitbackhub (part of ossobv/vcutil) // wdoekes/2015 // Public Domain
+#
+# GitHub is cool. But since we aren't paying for it, we can't rely on
+# its availability. This script ensures that we get a daily backup of
+# all the repositories we host on github.
+#
+# Yes, I know that the distributed nature of git means that I always
+# have a working copy of my repository somewhere. But this script
+# ensures that they're all in a single safe location.
+#
+# Usage:
+#
+#     gitbackhub ORGANISATION PATH_TO_REPOS VERBOSITY
+#
+#     # where:
+#     # ORGANISATION is your organisation, like 'ossobv'
+#     # PATH_TO_REPOS is a path, like '/srv/backups/github/repos'
+#     # VERBOSITY is '-v0' or '-v3' where '-v0' is silent unless you
+#     #   need to take action
+#     #
+#     # put it in your daily crontab or something
+#
+# Notes:
+#
+#     As a default, the script denies destructive updates like
+#     force-updates and even branch deletes. This will probably have
+#     to be revised soon.
+#
+import os
+from re import compile
+from json import loads
+from subprocess import STDOUT, check_call, check_output
+from urllib.request import urlopen
+
+
+SAFE_REPO_NAME_RE = compile(
+    r'^[A-Za-z0-9_][A-Za-z0-9_-]*$')
+
+
+class DestructiveChanges(ValueError):
+    pass
+
+
+class ChangeSet(object):
+    def __init__(self):
+        self.clones = 0     # new repo
+        self.news = 0       # new branch/tag/...
+        self.updates = 0    # update branch
+
+        # Destructive:
+        self.deletes = 0    # deleted branch/tag/...
+        self.changes = 0    # forced update
+
+        self.log = []
+
+    def is_destructive(self):
+        return bool(self.deletes + self.changes)
+
+    def __str__(self):
+        if not self:
+            return 'no changes'
+        ret = []
+        if self.clones:
+            ret.append('%d new cloned repositories' % (self.clones,))
+        if self.news:
+            ret.append('%d new items' % (self.news,))
+        if self.updates:
+            ret.append('%d updated items' % (self.updates,))
+        if self.deletes:
+            ret.append('%d DELETED items' % (self.deletes,))
+        if self.changes:
+            ret.append('%d CHANGED items' % (self.changes,))
+        ret = ', '.join(ret)
+
+        lines = [ret] + self.log
+        return '\n'.join(lines)
+
+    def __bool__(self):  # __nonzero__ in python2
+        return bool(self.clones + self.news + self.updates + self.deletes +
+                    self.changes)
+
+
+class Repository(object):
+    def __init__(self, github, github_json):
+        self.github = github
+        self.name = github_json['name']  # or 'full_name'
+        self.clone_url = github_json['clone_url']
+
+        # Check that we're not about to allow the remote end to play nasty.
+        if not SAFE_REPO_NAME_RE.match(self.name):
+            raise ValueError('Suspicious repository name %s!' % (self.name,))
+
+    def clone_or_update(self, allow_damaging_fetch=False):
+        if self.exists():
+            if not allow_damaging_fetch:
+                damaging = self.has_damaging_updates()
+                if damaging:
+                    raise DestructiveChanges(damaging)
+            changeset = self.update()
+        else:
+            changeset = self.clone()
+        return changeset
+
+    def exists(self):
+        path = os.path.join(self.github.get_backup_destination(), self.name,
+                            '.git')
+        return os.path.isdir(path)
+
+    def clone(self):
+        os.chdir(self.github.get_backup_destination())
+        check_call(['git', 'clone', '--quiet', self.clone_url, self.name])
+        # Config against accidental or malicious overwrites. Does this
+        # do anything?
+        path = os.path.join(self.github.get_backup_destination(), self.name)
+        os.chdir(path)
+        check_call(['git', 'config', '--local', 'receive.denyDeletes', 'true'])
+        check_call(['git', 'config', '--local', 'receive.denyNonFastForwards',
+                    'true'])
+        # Return something sane.
+        changeset = ChangeSet()
+        changeset.clones = 1
+        return changeset
+
+    def has_damaging_updates(self):
+        path = os.path.join(self.github.get_backup_destination(), self.name)
+        os.chdir(path)
+        ret = check_output(['git', 'fetch', '--all', '--prune', '--dry-run'],
+                           stderr=STDOUT)
+        changeset = self.collect_changes_from_output(ret)
+
+        if changeset.is_destructive():
+            assert bool(changeset)
+            return changeset
+        return False
+
+    def update(self):
+        path = os.path.join(self.github.get_backup_destination(), self.name)
+        os.chdir(path)
+        ret = check_output(['git', 'fetch', '--all', '--prune'],
+                           stderr=STDOUT)
+        return self.collect_changes_from_output(ret)
+
+    def collect_changes_from_output(self, output):
+        changeset = ChangeSet()
+
+        output = str(output, 'utf-8').strip()
+        for lineno, line in enumerate(output.split('\n')):
+            # Fetching origin
+            # remote: Counting objects: 3, done.
+            # remote: Compressing objects: 100% (3/3), done.
+            # remote: Total 3 (delta 2), reused 1 (delta 0)
+            # Unpacking objects: 100% (3/3), done.
+            # From https://github.com/os...
+            if (line.startswith('Fetching origin') or
+                    line.startswith('remote: ') or
+                    line.startswith('Unpacking objects: ') or
+                    line.startswith('From ')):
+                pass
+            # New stuff:
+            #  * [new tag]         test -> test
+            elif line.startswith(' * '):
+                changeset.news += 1
+            # Updated stuff:
+            #    1d3a96e..82330e0  test-fetch -> test-fetch
+            elif line.startswith('   '):
+                changeset.updates += 1
+            # Deleted stuff:
+            #  x [deleted]         (none)     -> origin/test-fetch
+            elif line.startswith(' x '):
+                changeset.deletes += 1
+            # Changed stuff:
+            #  + af324cd...1d3a96e test-fetch -> test-fetch (forced update)
+            elif line.startswith(' + '):
+                changeset.changes += 1
+            # else: unexpected git output.
+            else:
+                raise ValueError('Unexpected git output on line %d in:\n%s' %
+                                 (lineno + 1, output))
+
+            if line.startswith(' '):
+                changeset.log.append(line)
+
+        return changeset
+
+    def __str__(self):
+        return '{0.github}/{0.name}'.format(self)
+
+    def __repr__(self):
+        return '<Repository({0.name}@{0.github}>'.format(self)
+
+
+class GitHub(object):
+    def __init__(self, org, dstpath):
+        self.organisation = org
+        self.backup_destination = os.path.abspath(dstpath)
+
+    def get_backup_destination(self):
+        return self.backup_destination
+
+    def get_repositories(self):
+        # With 'type=sources' we get only non-forked (i.e. our own)
+        # projects.
+        url = ('https://api.github.com/orgs/{0.organisation}/repos?'
+               'type=sources').format(self)
+        fp = urlopen(url)
+        # fp = open('gitbackhub.tmp', 'rb')
+        blob = fp.read()
+        uniblob = blob.decode('utf-8')
+        json = loads(uniblob)
+        return [Repository(self, i) for i in json]
+
+    def __str__(self):
+        return 'GitHub/orgs/{0.organisation}'.format(self)
+
+
+if __name__ == '__main__':
+    import sys
+    organisation = sys.argv[1] or 'ossobv'
+    backup_destination = sys.argv[2] or '/home/osso/GITHUB/repos'
+    quiet = (sys.argv[3] == '-v0')
+
+    errors = 0
+    g = GitHub(org=organisation, dstpath=backup_destination)
+
+    for repository in g.get_repositories():
+        try:
+            result = repository.clone_or_update()
+        except DestructiveChanges as e:
+            result = e.args[0]
+            print('Updating %s failed!\nDestructive changes ahead, '
+                  'please check and resolve manually!\n%s\n' %
+                  (repository, result))
+            print('    cd PATH; git fetch --all --prune --dry-run\n')
+            errors += 1
+        except:
+            print('Got error on repository:', repository)
+            raise
+        else:
+            if result:
+                if result.is_destructive():
+                    print('Updated %s with the following DESTRUCTIVE '
+                          'changes:\n%s\n' % (repository, result))
+                elif not quiet:
+                    print('Updated %s with the following '
+                          'changes:\n%s\n' % (repository, result))
+
+    if errors:
+        sys.exit(1)
+    sys.exit(0)
+
+
+# vim: set ts=8 sw=4 sts=4 et ai:
