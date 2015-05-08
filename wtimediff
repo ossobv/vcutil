@@ -16,7 +16,7 @@
 #
 # Output:
 #
-#   >     INITIAL    abc 12:12:12.12
+#   >       0.0      abc 12:12:12.12
 #   >  +21965.88     18:18:18 foo
 #   >  +20502.666666 0:00:00.666666 bar
 #
@@ -47,7 +47,7 @@ for line in sys.stdin:
         if not prevtime:
             curtime = datetime(1970, 1, 1,
                                hour, min_, sec, usec)
-            diff = 'INITIAL   '
+            diff = '0.0' + (' ' * 5)
         else:
             curtime = datetime(prevtime.year, prevtime.month, prevtime.day,
                                hour, min_, sec, usec)
