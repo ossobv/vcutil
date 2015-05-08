@@ -1,0 +1,21 @@
+#!/bin/sh
+# wtimestamp (part of ossobv/vcutil) // wdoekes/2015 // Public Domain
+#
+# Reads lines from stdin and prepends them with the current time.
+# Use this for applications that provide output but fail to add a timestamp.
+#
+# Usage:
+#
+#   $ application | wtimestamp
+#   (outputs stdout from application with a nicely formatted time)
+#
+# Example:
+#
+#   $ for x in `seq 3`; do sleep 1.5; echo "line $x"; done | wtimestamp
+#   2015-05-08 10:52:39+0200: line 1
+#   2015-05-08 10:52:41+0200: line 2
+#   2015-05-08 10:52:42+0200: line 3
+#
+while read -r line; do
+    echo "`date +'%Y-%m-%d %H:%M:%S%z'`: $line"
+done
