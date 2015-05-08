@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+# wtimediff (part of ossobv/vcutil) // wdoekes/2015 // Public Domain
+#
+# Reads log files from stdin and outputs the time difference between
+# consecutive lines.
+#
+# Usage:
+#
+#   $ wtimediff < logfile
+#   (outputs log lines preceded by the time offset since the previous line)
+#
+# Example:
+#
+#   $ printf 'abc 12:12:12.12\n18:18:18 foo\n0:00:00.666666 bar\n' |
+#       wtimediff
+#
+# Output:
+#
+#   >     INITIAL    abc 12:12:12.12
+#   >  +21965.88     18:18:18 foo
+#   >  +20502.666666 0:00:00.666666 bar
+#
+# Limitations:
+#
+#   * Matches time strings [H]H:MM:SS[.sss...] only and ignores date
+#     strings completely.
+#
+from datetime import datetime, timedelta
+import re
+import sys
+
+
+# Match the first occurrence of H:MM:SS.sss...
+time_re = re.compile(r'(?:^|.*?[^\d])(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?')
+prevtime = None
+
+for line in sys.stdin:
+    match = time_re.match(line)
+    try:
+        if not match:
+            raise ValueError('No time found')
+
+        hour, min_, sec, usec = match.groups()
+        hour, min_, sec = int(hour), int(min_), int(sec)
+        usec = int(('%s000000' % (usec or 0,))[0:6])
+
+        if not prevtime:
+            curtime = datetime(1970, 1, 1,
+                               hour, min_, sec, usec)
+            diff = 'INITIAL   '
+        else:
+            curtime = datetime(prevtime.year, prevtime.month, prevtime.day,
+                               hour, min_, sec, usec)
+            if curtime < prevtime:
+                curtime += timedelta(days=1)
+
+            td = (curtime - prevtime)
+            assert td.days == 0
+            diff = '%+6d.%-6s' % (  # 1+5+1+6=13
+                td.seconds,
+                ('%06d' % (td.microseconds,)).rstrip('0') or '0')
+        prevtime = curtime
+
+        sys.stdout.write(' %13s %s' % (diff, line))
+
+    except ValueError:  # from datetime()
+        sys.stderr.write('(skipped: %s)\n' % (line.strip(),))
+
+# vim: set ts=8 sw=4 sts=4 et ai:
