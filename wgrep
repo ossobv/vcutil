@@ -14,6 +14,6 @@ path="$1"; shift
 find "$path" \
     -regextype posix-extended \
     -iregex '.*\.(asp|c|conf|cpp|css|cxx|h|hpp|htm|html|java|js|php|po|py|rb|sh|sql|tpl|template|txt|xml)' \
-    '!' -name '*.min.js' '!' -name '*.min.*.js' \
+    '!' -name '*.min.*' \
     -print0 \
     | xargs -0 -- grep --color=auto "$@"
