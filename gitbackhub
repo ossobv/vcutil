@@ -31,7 +31,7 @@ import os
 from re import compile
 from json import loads
 from subprocess import STDOUT, check_call, check_output
-from urllib.request import urlopen
+from urllib.request import HTTPError, urlopen
 
 
 SAFE_REPO_NAME_RE = compile(
@@ -203,8 +203,13 @@ class GitHub(object):
         # projects.
         url = ('https://api.github.com/orgs/{0.organisation}/repos?'
                'type=sources').format(self)
-        fp = urlopen(url)
-        # fp = open('gitbackhub.tmp', 'rb')
+        try:
+            fp = urlopen(url)
+            # fp = open('gitbackhub.tmp', 'rb')
+        except HTTPError:
+            url = ('https://api.github.com/users/{0.organisation}/repos?'
+                   'type=sources').format(self)
+            fp = urlopen(url)
         blob = fp.read()
         uniblob = blob.decode('utf-8')
         json = loads(uniblob)
