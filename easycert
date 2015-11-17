@@ -78,24 +78,20 @@ get_expiry() {
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
         echo "WARNING: Uses old SHA-1 hash" >&2
     fi
-    echo "$certinfo" | sed -n 's/^\( *Not After : *\|.*Subject.* CN=\)//p' \
-            2>/dev/null | (
-        read date
-        read cn
-        if test "$host" = "$cn"; then
-            :
-        elif test "*.$host" = "$cn"; then
-            :
-        elif test "$host" = "www.$cn"; then
-            :
-        elif echo "$host" | grep -q `echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'`; then
-            :
-        else
-            echo "($host!=$cn)"
-            exit 0
-        fi
-        echo $(( (`date -d "$date" +%s` - `date +%s`) / 86400 ))  # days
-    )
+    cn=`echo "$certinfo" | sed -e '/Subject.*CN=/!d;s/.*CN=\([^/]*\).*/\1/'`
+    date=`echo "$certinfo" | sed -e '/^ *Not After :/!d;s/^[^:]*: *//'`
+    if test "$host" = "$cn"; then
+        :
+    elif test "*.$host" = "$cn"; then
+        :
+    elif test "$host" = "www.$cn"; then
+        :
+    elif echo "$host" | grep -q `echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'`; then
+        :
+    else
+        echo "($host!=$cn)"
+    fi
+    echo $(( (`date -d "$date" +%s` - `date +%s`) / 86400 ))  # days
 }
 
 run_generate() {
