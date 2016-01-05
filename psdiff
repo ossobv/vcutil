@@ -97,7 +97,8 @@ class ProcessFormatter(object):
 
 class FilteredProcessFormatter(ProcessFormatter):
     def include(self, process):
-        # Skip all children of these temporary commands:
+        # Children of these commands are generally not daemons, skip
+        # them:
         if process.has_parent(cmdline__startswith=(
                 'sshd:', 'CRON', 'SCREEN',
                 '/usr/bin/python /usr/bin/salt-minion',
@@ -124,11 +125,17 @@ class FilteredProcessFormatter(ProcessFormatter):
 def diff(a, b):
     a = a.rstrip().split('\n')  # drop trailing LF
     b = b.rstrip().split('\n')  # drop trailing LF
+    if len(a) == 1 and not a[0]:
+        a = []
+    if len(b) == 1 and not b[0]:
+        b = []
+
     changes = []
     remap = {' ': 0, '-': -1, '+': 1}
     for change in difflib.ndiff(a, b):
         if change[0] != '?':
             changes.append((remap[change[0]], change[1:]))
+
     return changes
 
 
@@ -146,9 +153,9 @@ def ps_faxu():
         else:
             Process.from_line(line, init)
 
-    # Update processes with proper links. This must be done last because the
-    # process output is unordered and we may not have the parent process info
-    # yet earlier.
+    # Update processes with proper links. This must be done last because
+    # the process output is unordered and we may not have the parent
+    # process info yet earlier.
     for process in init.process_map.values():
         process.fix_links()
 
@@ -161,14 +168,14 @@ def get_formatter_class():
         # see if anything is wrong with permissions and such.
         if os.path.exists(path):
             with open(path, 'r') as fh:
-                data = fh.read()
+                source = fh.read()
             # Ooohh.. eval/exec. Supply FilteredProcessFormatter and
             # ProcessFormatter so they can be used as superclass.
             io = {
                 'FilteredProcessFormatter': FilteredProcessFormatter,
                 'ProcessFormatter': ProcessFormatter,
             }
-            exec(data, io)
+            exec(source, io)
             return io['LocalFilteredProcessFormatter']
 
     # Nothing found? Return the plain version.
@@ -230,12 +237,13 @@ def main():
 
             With triggers like this:
 
-                {Template Role Daemons:psdiff.extra.strlen()}<>0 or
-                {Template Role Daemons:psdiff.extra.nodata(30m)}=1
+                {Template Role Daemons:psdiff.missing.strlen()}<>0 or
+                {Template Role Daemons:psdiff.missing.nodata(30m)}=1
             '''))
 
     parser.add_argument(
-        'command', help=('Which command to run'),
+        'action', nargs='?',
+        help="which action to perform; defaults to `show'",
         choices=('show', 'show-extra', 'show-missing', 'dump', 'write'))
     args = parser.parse_args()
 
@@ -253,13 +261,13 @@ def main():
 
     new_output = str(formatter)
 
-    process(args.command, old_output, new_output)
+    process(args.action or 'show', old_output, new_output)
 
 
-def process(command, old_output, new_output):
-    if command == 'dump':
+def process(action, old_output, new_output):
+    if action == 'dump':
         print(new_output[0:-1])  # without trailing LF
-    elif command == 'write':
+    elif action == 'write':
         if old_output != new_output:
             with open('/var/lib/psdiff.new', 'w') as fh:
                 fh.write(new_output)
@@ -275,10 +283,10 @@ def process(command, old_output, new_output):
         changes = diff(old_output, new_output)
         status = 0
         for which, line in changes:
-            if which < 0 and command in ('show', 'show-missing'):
+            if which < 0 and action in ('show', 'show-missing'):
                 print('-{}'.format(line))
                 status = 1
-            elif which > 0 and command in ('show', 'show-extra'):
+            elif which > 0 and action in ('show', 'show-extra'):
                 print('+{}'.format(line))
                 status = 1
         sys.exit(status)  # possibly non-zero exit
