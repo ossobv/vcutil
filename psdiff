@@ -99,7 +99,7 @@ class FilteredProcessFormatter(ProcessFormatter):
     def include(self, process):
         # Skip all children of these temporary commands:
         if process.has_parent(cmdline__startswith=(
-                'sshd:', 'CRON',
+                'sshd:', 'CRON', 'SCREEN',
                 '/usr/bin/python /usr/bin/salt-minion',
                 '/usr/sbin/zabbix_agentd:')):
             return False
