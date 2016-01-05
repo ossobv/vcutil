@@ -1,0 +1,276 @@
+#!/usr/bin/env python
+# psdiff (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Generic (coarse) monitoring of daemon processes. Use in conjunction
+# with a monitoring suite like Zabix.
+#
+import argparse
+import difflib
+import os
+import re
+import subprocess
+import textwrap
+
+
+class Process(object):
+    split = re.compile(r'\s+')
+
+    @classmethod
+    def from_line(cls, line, init):
+        args = cls.split.split(line, 4)
+
+        user = args[0]
+        pid = int(args[1])
+        ppid = int(args[2])
+        exe = args[3]
+        cmdline = args[4]
+
+        return cls(ppid, pid, user, exe, cmdline, init=init)
+
+    def __init__(self, parent, pid, user, exe, cmdline, init=None):
+        self.parent = parent
+        self.pid = pid
+        self.user = user
+        self.exe = exe
+        self.cmdline = cmdline
+        self.init = init or self
+
+        if not init:
+            self.process_map = {}
+
+        self.init.process_map[pid] = self
+        self.children = set()
+
+    def has_parent(self, cmdline__startswith):
+        obj = self
+
+        while obj:
+            if obj.cmdline.startswith(cmdline__startswith):
+                return True
+            obj = obj.parent
+
+        return False
+
+    def fix_links(self):
+        if self.parent:
+            # Convert ppid to parent.
+            self.parent = self.init.process_map[self.parent]
+            # Add us as child of the parent.
+            self.parent.children.add(self)
+
+    def get_process(self, pid):
+        if not pid:
+            return None
+        return self.init.process_map[pid]
+
+    def to_string(self, indent=0):
+        return '{}{}  {{user={}}}'.format(
+            indent * '  ', self.cmdline.rstrip(), self.user)
+
+    def __str__(self):
+        return self.to_string()
+
+
+class ProcessFormatter(object):
+    def __init__(self, init):
+        self.init = init
+
+    def include(self, process):
+        return True
+
+    def to_string(self, process, indent=0):
+        return self.process.to_string(indent)
+
+    def to_strings(self, process, indent=0):
+        ret = []
+        if self.include(process):
+            ret.append(self.to_string(process, indent))
+        for child in sorted(process.children, key=(
+                lambda x: (x.cmdline, x.user))):
+            ret.extend(self.to_strings(child, indent + 1))
+        return ret
+
+    def __str__(self):
+        return '\n'.join(self.to_strings(self.init)) + '\n'
+
+
+class FilteredProcessFormatter(ProcessFormatter):
+    def include(self, process):
+        # Skip all children of SSHD and CRON.
+        if (process.has_parent(cmdline__startswith='sshd:') or
+                process.has_parent(cmdline__startswith='CRON')):
+            return False
+
+        # Don't list children of postfix or dovecot; they come and go.
+        if process.parent and (
+                process.parent.cmdline.startswith((
+                    '/usr/lib/postfix/master',
+                    '/usr/sbin/dovecot '))):
+            return False
+
+        return super(FilteredProcessFormatter, self).include(process)
+
+    def to_string(self, process, indent):
+        if process.cmdline.startswith('/usr/sbin/amavisd-new '):
+            process.cmdline = process.cmdline.split(' ', 1)[0]
+
+        return process.to_string(indent)
+
+
+def diff(a, b):
+    a = a.rstrip().split('\n')  # drop trailing LF
+    b = b.rstrip().split('\n')  # drop trailing LF
+    changes = []
+    remap = {' ': 0, '-': -1, '+': 1}
+    for change in difflib.ndiff(a, b):
+        if change[0] != '?':
+            changes.append((remap[change[0]], change[1:]))
+    return changes
+
+
+def ps_faxu():
+    output = subprocess.check_output(
+        ['ps', '-ax', '-o', 'user,pid,ppid,comm,args'])
+    output = output.decode('ascii', 'replace')
+
+    init = None
+    for i, line in enumerate(output.split('\n')):
+        if i == 0 or not line:
+            pass
+        elif i == 1:
+            init = Process(None, 1, 'root', 'init', 'init')
+        else:
+            Process.from_line(line, init)
+
+    # Update processes with proper links. This must be done last because the
+    # process output is unordered and we may not have the parent process info
+    # yet earlier.
+    for process in init.process_map.values():
+        process.fix_links()
+
+    return init
+
+
+def get_formatter_class():
+    for path in ('/usr/local/etc/psdiff.conf', '/etc/psdiff.conf'):
+        # First check, and then open without exception handling. That way we
+        # see if anything is wrong with permissions and such.
+        if os.path.exists(path):
+            with open(path, 'r') as fh:
+                data = fh.read()
+            # Ooohh.. eval/exec. Supply FilteredProcessFormatter and
+            # ProcessFormatter so they can be used as superclass.
+            io = {
+                'FilteredProcessFormatter': FilteredProcessFormatter,
+                'ProcessFormatter': ProcessFormatter,
+            }
+            exec(data, io)
+            return io['LocalFilteredProcessFormatter']
+
+    # Nothing found? Return the plain version.
+    return FilteredProcessFormatter
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='psdiff',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.dedent('''\
+            Monitor differences between the list of expected running processes
+            and the actual running processes.
+            '''),
+        epilog=textwrap.dedent('''\
+            Expected usage
+            --------------
+
+            - set up server with various processes;
+            - run `psdiff write' to store a dump in /var/spool/psdiff.db;
+            - have zabbix (or your favorite monitoring tool) call
+              `psdiff --show=missing' and `psdiff --show=extra';
+            - have the monitoring tool show errors if there is output for any
+              of the commands.
+
+            This is just a STARTING POINT, it is NOT a replacement for DETAILED
+            process monitoring. You will still want to add daemon-specific
+            monitoring through other means.
+
+            Adjustments
+            -----------
+
+            On startup, an attempt is made to import /usr/local/etc/psdiff.conf
+            or /etc/psdiff.conf (a python file) where it looks for a class
+            called `LocalFilteredProcessFormatter', which will be used as
+            formatter class instead of the builtin FilteredProcessFormatter.
+
+            For example:
+
+                class LocalFilteredProcessFormatter(
+                        FilteredProcessFormatter):
+                    def include(self, process):
+                        # I don't care about atop(1) and it's fluctuating
+                        # arguments.
+                        if process.cmdline.startswith(
+                                '/usr/bin/atop '):
+                            return False
+
+                        return (
+                            super(LocalFilteredProcessFormatter, self)
+                            .include(process))
+                # vim: set syn=python:
+
+            Zabbix UserParameters example
+            -----------------------------
+
+                UserParameter=psdiff.missing,psdiff show-missing
+                UserParameter=psdiff.extra,psdiff show-extra
+            '''))
+
+    parser.add_argument(
+        'command', help=('Which command to run'),
+        choices=('show', 'show-extra', 'show-missing', 'dump', 'write'))
+    args = parser.parse_args()
+
+    init = ps_faxu()
+    formatter_class = get_formatter_class()
+    formatter = formatter_class(init)
+
+    try:
+        with open('/var/lib/psdiff.db', 'r') as fh:
+            old_output = fh.read()
+    except IOError as e:
+        if e.errno != 2:  # no such file
+            raise
+        old_output = ''
+
+    new_output = str(formatter)
+
+    process(args.command, old_output, new_output)
+
+
+def process(command, old_output, new_output):
+    if command == 'dump':
+        print(new_output[0:-1])  # without trailing LF
+    elif command == 'write':
+        if old_output != new_output:
+            with open('/var/lib/psdiff.new', 'w') as fh:
+                fh.write(new_output)
+            if old_output:
+                os.rename('/var/lib/psdiff.db', '/var/lib/psdiff.old')
+            os.rename('/var/lib/psdiff.new', '/var/lib/psdiff.db')
+            print('Wrote to /var/lib/psdiff.db')
+        else:
+            print('No changes to /var/lib/psdiff.db')
+    elif old_output == new_output:
+        pass
+    else:
+        changes = diff(old_output, new_output)
+        for which, line in changes:
+            if which < 0 and command in ('show', 'show-missing'):
+                print('-{}'.format(line))
+            elif which > 0 and command in ('show', 'show-extra'):
+                print('+{}'.format(line))
+
+
+if __name__ == '__main__':
+    main()
+# vim: set ts=8 sw=4 sts=4 et ai:
