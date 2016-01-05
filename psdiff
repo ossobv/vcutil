@@ -9,6 +9,7 @@ import difflib
 import os
 import re
 import subprocess
+import sys
 import textwrap
 
 
@@ -96,15 +97,18 @@ class ProcessFormatter(object):
 
 class FilteredProcessFormatter(ProcessFormatter):
     def include(self, process):
-        # Skip all children of SSHD and CRON.
-        if (process.has_parent(cmdline__startswith='sshd:') or
-                process.has_parent(cmdline__startswith='CRON')):
+        # Skip all children of these temporary commands:
+        if process.has_parent(cmdline__startswith=(
+                'sshd:', 'CRON',
+                '/usr/bin/python /usr/bin/salt-minion',
+                '/usr/sbin/zabbix_agentd:')):
             return False
 
-        # Don't list children of postfix or dovecot; they come and go.
+        # Don't list these children, they come and go:
         if process.parent and (
                 process.parent.cmdline.startswith((
                     '/usr/lib/postfix/master',
+                    '/usr/lib/postgresql/',
                     '/usr/sbin/dovecot '))):
             return False
 
@@ -186,7 +190,7 @@ def main():
             - set up server with various processes;
             - run `psdiff write' to store a dump in /var/spool/psdiff.db;
             - have zabbix (or your favorite monitoring tool) call
-              `psdiff --show=missing' and `psdiff --show=extra';
+              `psdiff show-missing' and `psdiff show-extra';
             - have the monitoring tool show errors if there is output for any
               of the commands.
 
@@ -207,7 +211,7 @@ def main():
                 class LocalFilteredProcessFormatter(
                         FilteredProcessFormatter):
                     def include(self, process):
-                        # I don't care about atop(1) and it's fluctuating
+                        # I don't care about atop(1) and its fluctuating
                         # arguments.
                         if process.cmdline.startswith(
                                 '/usr/bin/atop '):
@@ -218,11 +222,16 @@ def main():
                             .include(process))
                 # vim: set syn=python:
 
-            Zabbix UserParameters example
-            -----------------------------
+            Zabbix example
+            --------------
 
-                UserParameter=psdiff.missing,psdiff show-missing
-                UserParameter=psdiff.extra,psdiff show-extra
+                UserParameter=psdiff.missing,psdiff show-missing 2>&1
+                UserParameter=psdiff.extra,psdiff show-extra 2>&1
+
+            With triggers like this:
+
+                {Template Role Daemons:psdiff.extra.strlen()}<>0 or
+                {Template Role Daemons:psdiff.extra.nodata(30m)}=1
             '''))
 
     parser.add_argument(
@@ -264,11 +273,15 @@ def process(command, old_output, new_output):
         pass
     else:
         changes = diff(old_output, new_output)
+        status = 0
         for which, line in changes:
             if which < 0 and command in ('show', 'show-missing'):
                 print('-{}'.format(line))
+                status = 1
             elif which > 0 and command in ('show', 'show-extra'):
                 print('+{}'.format(line))
+                status = 1
+        sys.exit(status)  # possibly non-zero exit
 
 
 if __name__ == '__main__':
