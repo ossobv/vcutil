@@ -96,6 +96,10 @@ class ProcessFormatter(object):
 
 
 class FilteredProcessFormatter(ProcessFormatter):
+    def __init__(self, *args, **kwargs):
+        super(FilteredProcessFormatter, self).__init__(*args, **kwargs)
+        self._include_once = set()
+
     def include(self, process):
         # Children of these commands are generally not daemons, skip
         # them:
@@ -112,6 +116,16 @@ class FilteredProcessFormatter(ProcessFormatter):
                     '/usr/lib/postgresql/',
                     '/usr/sbin/dovecot '))):
             return False
+
+        # These children may come and go, but we expect at least one:
+        # - multiprocess apache creates at least N processes but may add/remove
+        #   based on demand
+        if process.cmdline.startswith('/usr/sbin/apache2 '):
+            key = (process.parent.pid, process.user, process.cmdline)
+            if key in self._include_once:
+                return False
+            else:
+                self._include_once.add(key)
 
         return super(FilteredProcessFormatter, self).include(process)
 
