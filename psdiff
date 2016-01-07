@@ -2,7 +2,7 @@
 # psdiff (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
-# with a monitoring suite like Zabix.
+# with a monitoring suite like Zabbix.
 #
 import argparse
 import difflib
