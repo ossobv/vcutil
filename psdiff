@@ -137,7 +137,9 @@ class FilteredProcessFormatter(ProcessFormatter):
         return super(FilteredProcessFormatter, self).include(process)
 
     def to_string(self, process, indent):
-        if process.cmdline.startswith('/usr/sbin/amavisd-new '):
+        if process.cmdline.startswith((
+                'astcanary',  # astcanary /var/run/asterisk/... <pid>
+                '/usr/sbin/amavisd-new ')):
             process.cmdline = process.cmdline.split(' ', 1)[0]
 
         return process.to_string(indent)
