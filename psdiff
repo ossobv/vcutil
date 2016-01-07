@@ -42,11 +42,14 @@ class Process(object):
         self.root.process_map[pid] = self
         self.children = set()
 
-    def has_parent(self, cmdline__startswith):
+    def has_parent(self, cmdline__startswith=None, pid=None):
         obj = self
 
         while obj:
-            if obj.cmdline.startswith(cmdline__startswith):
+            if (cmdline__startswith is not None and
+                    obj.cmdline.startswith(cmdline__startswith)):
+                return True
+            if pid is not None and obj.pid == pid:
                 return True
             obj = obj.parent
 
@@ -101,6 +104,10 @@ class FilteredProcessFormatter(ProcessFormatter):
         self._include_once = set()
 
     def include(self, process):
+        # Ignore kernel threads.
+        if process.has_parent(pid=2):
+            return False
+
         # Children of these commands are generally not daemons, skip
         # them:
         if process.has_parent(cmdline__startswith=(
