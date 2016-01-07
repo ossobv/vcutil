@@ -17,7 +17,7 @@ class Process(object):
     split = re.compile(r'\s+')
 
     @classmethod
-    def from_line(cls, line, init):
+    def from_line(cls, line, root):
         args = cls.split.split(line, 4)
 
         user = args[0]
@@ -26,20 +26,20 @@ class Process(object):
         exe = args[3]
         cmdline = args[4]
 
-        return cls(ppid, pid, user, exe, cmdline, init=init)
+        return cls(ppid, pid, user, exe, cmdline, root=root)
 
-    def __init__(self, parent, pid, user, exe, cmdline, init=None):
+    def __init__(self, parent, pid, user, exe, cmdline, root=None):
         self.parent = parent
         self.pid = pid
         self.user = user
         self.exe = exe
         self.cmdline = cmdline
-        self.init = init or self
+        self.root = root or self
 
-        if not init:
+        if not root:
             self.process_map = {}
 
-        self.init.process_map[pid] = self
+        self.root.process_map[pid] = self
         self.children = set()
 
     def has_parent(self, cmdline__startswith):
@@ -53,16 +53,16 @@ class Process(object):
         return False
 
     def fix_links(self):
-        if self.parent:
+        if self.parent is not None:
             # Convert ppid to parent.
-            self.parent = self.init.process_map[self.parent]
+            self.parent = self.root.process_map[self.parent]
             # Add us as child of the parent.
             self.parent.children.add(self)
 
     def get_process(self, pid):
         if not pid:
             return None
-        return self.init.process_map[pid]
+        return self.root.process_map[pid]
 
     def to_string(self, indent=0):
         return '{}{}  {{user={}}}'.format(
@@ -73,8 +73,8 @@ class Process(object):
 
 
 class ProcessFormatter(object):
-    def __init__(self, init):
-        self.init = init
+    def __init__(self, root):
+        self.root = root
 
     def include(self, process):
         return True
@@ -92,7 +92,7 @@ class ProcessFormatter(object):
         return ret
 
     def __str__(self):
-        return '\n'.join(self.to_strings(self.init)) + '\n'
+        return '\n'.join(self.to_strings(self.root)) + '\n'
 
 
 class FilteredProcessFormatter(ProcessFormatter):
@@ -158,22 +158,20 @@ def ps_faxu():
         ['ps', '-ax', '-o', 'user,pid,ppid,comm,args'])
     output = output.decode('ascii', 'replace')
 
-    init = None
+    root = Process(None, 0, 'root', 'root', 'root')
     for i, line in enumerate(output.split('\n')):
         if i == 0 or not line:
             pass
-        elif i == 1:
-            init = Process(None, 1, 'root', 'init', 'init')
         else:
-            Process.from_line(line, init)
+            Process.from_line(line, root)
 
     # Update processes with proper links. This must be done last because
     # the process output is unordered and we may not have the parent
     # process info yet earlier.
-    for process in init.process_map.values():
+    for process in root.process_map.values():
         process.fix_links()
 
-    return init
+    return root
 
 
 def get_formatter_class():
@@ -261,9 +259,9 @@ def main():
         choices=('show', 'show-extra', 'show-missing', 'dump', 'write'))
     args = parser.parse_args()
 
-    init = ps_faxu()
+    root = ps_faxu()
     formatter_class = get_formatter_class()
-    formatter = formatter_class(init)
+    formatter = formatter_class(root)
 
     try:
         with open('/var/lib/psdiff.db', 'r') as fh:
