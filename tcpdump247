@@ -93,7 +93,7 @@ sleep 15; done"
         # Kill parent. The sleep will die by itself.
         # (We do not run stop_script here, because it will kill this
         # invocation too.)
-        kill -s 15 $pid 2>/dev/null
+        kill -15 $pid 2>/dev/null
         # List possible reasons for failure:
         cat >&2 << EOF
 
@@ -116,7 +116,7 @@ EOF
 stop_scripts() {
     pgid=`get_pgid`
     if test $? = 0; then
-        kill -s 15 -$pgid
+        kill -15 -$pgid
         res=$?
         rm -f "$PIDFILE"
         return $res
