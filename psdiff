@@ -42,8 +42,11 @@ class Process(object):
         self.root.process_map[pid] = self
         self.children = set()
 
-    def has_parent(self, cmdline__startswith=None, pid=None):
+    def has_parent(self, include_self=False,
+                   cmdline__startswith=None, pid=None):
         obj = self
+        if not include_self:
+            obj = obj.parent
 
         while obj:
             if (cmdline__startswith is not None and
@@ -105,24 +108,25 @@ class FilteredProcessFormatter(ProcessFormatter):
 
     def include(self, process):
         # Ignore kernel threads.
-        if process.has_parent(pid=2):
+        if process.has_parent(include_self=True, pid=2):
             return False
 
         # Children of these commands are generally not daemons, skip
         # them:
-        if process.has_parent(cmdline__startswith=(
+        if process.has_parent(include_self=True, cmdline__startswith=(
                 'sshd:', 'CRON', 'SCREEN',
                 '/USR/SBIN/CRON',  # older cron
-                '/usr/bin/python /usr/bin/salt-minion',
-                '/usr/sbin/zabbix_agentd:')):
+                # Is a daemon, but spawns children of init for extra work.
+                '/usr/bin/python /usr/bin/salt-minion')):
             return False
 
-        # Don't list these children, they come and go:
-        if process.parent and (
-                process.parent.cmdline.startswith((
-                    '/usr/lib/postfix/master',
-                    '/usr/lib/postgresql/',
-                    '/usr/sbin/dovecot '))):
+        # We want to monitor these daemons, but not their
+        # (grand)children, as they come and go:
+        if process.has_parent(include_self=False, cmdline__startswith=(
+                '/usr/lib/postfix/master',
+                '/usr/lib/postgresql/',
+                '/usr/sbin/dovecot ',
+                '/usr/sbin/zabbix_agentd')):
             return False
 
         # These children may come and go, but we expect at least one:
