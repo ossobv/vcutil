@@ -112,6 +112,7 @@ class FilteredProcessFormatter(ProcessFormatter):
         # them:
         if process.has_parent(cmdline__startswith=(
                 'sshd:', 'CRON', 'SCREEN',
+                '/USR/SBIN/CRON',  # older cron
                 '/usr/bin/python /usr/bin/salt-minion',
                 '/usr/sbin/zabbix_agentd:')):
             return False
