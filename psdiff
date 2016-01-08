@@ -68,7 +68,7 @@ class Process(object):
         return self.root.process_map[pid]
 
     def to_string(self, indent=0):
-        return '{}{}  {{user={}}}'.format(
+        return '{0}{1}  {{user={2}}}'.format(
             indent * '  ', self.cmdline.rstrip(), self.user)
 
     def __str__(self):
@@ -163,8 +163,16 @@ def diff(a, b):
 
 
 def ps_faxu():
-    output = subprocess.check_output(
-        ['ps', '-ax', '-o', 'user,pid,ppid,comm,args'])
+    cmd = ['ps', 'ax', '-o', 'user,pid,ppid,comm,args']
+    try:
+        output = subprocess.check_output
+    except AttributeError:
+        # Blegh. Python 2.6. (You did already `pip install argparse`, yes?)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        output = proc.communicate()[0]
+        proc.wait()
+    else:
+        output = subprocess.check_output(cmd)
     output = output.decode('ascii', 'replace')
 
     root = Process(None, 0, 'root', 'root', 'root')
@@ -305,10 +313,10 @@ def process(action, old_output, new_output):
         status = 0
         for which, line in changes:
             if which < 0 and action in ('show', 'show-missing'):
-                print('-{}'.format(line))
+                print('-{0}'.format(line))
                 status = 1
             elif which > 0 and action in ('show', 'show-extra'):
-                print('+{}'.format(line))
+                print('+{0}'.format(line))
                 status = 1
         sys.exit(status)  # possibly non-zero exit
 
