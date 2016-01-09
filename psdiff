@@ -117,7 +117,9 @@ class FilteredProcessFormatter(ProcessFormatter):
                 'sshd:', 'CRON', 'SCREEN',
                 '/USR/SBIN/CRON',  # older cron
                 # Is a daemon, but spawns children of init for extra work.
-                '/usr/bin/python /usr/bin/salt-minion')):
+                '/usr/bin/python /usr/bin/salt-minion',
+                # User systemd comes and goes as it pleases with (sd-pam).
+                '/lib/systemd/systemd --user')):
             return False
 
         # We want to monitor these daemons, but not their
