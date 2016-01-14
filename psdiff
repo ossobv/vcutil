@@ -231,7 +231,7 @@ def main():
             --------------
 
             - set up server with various processes;
-            - run `psdiff write' to store a dump in /var/spool/psdiff.db;
+            - run `psdiff write' to store a dump in /var/lib/psdiff.db;
             - have zabbix (or your favorite monitoring tool) call
               `psdiff show-missing' and `psdiff show-extra';
             - have the monitoring tool show errors if there is output for any
