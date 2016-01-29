@@ -175,11 +175,11 @@ def ps_faxu():
         output = subprocess.check_output
     except AttributeError:
         # Blegh. Python 2.6. (You did already `pip install argparse`, yes?)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, bufsize=-1, stdout=subprocess.PIPE)
         output = proc.communicate()[0]
         proc.wait()
     else:
-        output = subprocess.check_output(cmd)
+        output = subprocess.check_output(cmd, bufsize=-1)
     output = output.decode('ascii', 'replace')
 
     root = Process(None, 0, 'root', 'root', 'root')
