@@ -1,0 +1,123 @@
+#!/usr/bin/env python
+# asterisk-gitlog-find (part of ossobv/vcutil) // wdoekes/2016
+#   // Public Domain
+#
+# Throwaway utility to find commits in the Asterisk project in which
+# you had a hand.
+#
+# Usage:
+#
+#     cd asterisk.git
+#     git log > git-log.txt
+#     python asterisk-gitlog-find git-log.txt wdoekes 'Walter Doekes'
+#
+from datetime import datetime
+import re
+
+
+def commitlog_to_commits(reader):
+    buffer_ = []
+    for line in reader:
+        if line.startswith('commit '):
+            if buffer_:
+                yield ''.join(buffer_)
+            buffer_ = []
+
+        buffer_.append(line)
+
+    if buffer_:
+        yield ''.join(buffer_)
+
+
+def logfile_to_commits(filename, matcher):
+    with open(filename) as commitlog:
+        for commit in commitlog_to_commits(commitlog):
+            if matcher.search(commit):
+                yield commit
+
+
+class Commit(object):
+    def __init__(self, msg, handle, modes):
+        lines = msg.split('\n')
+        self.commit = lines[0][7:]
+        self.author = lines[1][8:]
+        self.orig_date = lines[2][8:]
+        self.date = datetime.strptime(
+            self.orig_date[:-6], '%a %b %d %H:%M:%S %Y')  # ignored time zone!
+
+        self.handle = handle
+        self.modes = tuple(modes)
+        assert not lines[3]
+
+        msg = [i.strip() for i in lines[4:]]
+        if msg[0].startswith(('Blocked revisions', 'Merged revisions')):
+            while msg and (
+                    msg[0].startswith(('Merged', 'Blocked')) or
+                    msg[0].startswith(('https://origsvn', 'file://')) or
+                    msg[0].startswith('........') or
+                    msg[0] == '' or
+                    (msg[0][0:1] == 'r' and msg[0][1:2].isdigit())):
+                msg.pop(0)
+        for i, line in enumerate(msg):
+            if line.startswith('........'):
+                msg = msg[0:i]
+                break
+
+        header = []
+        while msg:
+            line = msg.pop(0)
+            if line:
+                header.append(line)
+            else:
+                break
+
+        self.header = ' '.join(header)
+        self.msg = '\n'.join(msg)
+
+    def __str__(self):
+        return '{commit} {date} {handle}: {header} [{modes}]'.format(
+            commit=self.commit[0:7], date=self.date.strftime('%Y-%m-%d'),
+            handle=self.handle, header=self.header[0:72],
+            modes=', '.join(self.modes))
+
+
+def main(git_log, handle, fullname):
+    kwargs = {'handle': re.escape(handle),
+              'fullname': re.escape(fullname)}
+
+    plain_re = re.compile(r'\b{handle}\b|\b{fullname}\b'.format(**kwargs))
+    author_re = re.compile(
+        r'(Author: ({handle}|{fullname})'
+        r'|uploaded by[^\n]*\b({handle}|{fullname})\b'
+        r'|\b({handle}|{fullname}) \(License '
+        r'|Patch[ -]by:[^\n]*\b({handle}|{fullname})\b)'.format(**kwargs))
+    reporter_re = re.compile(
+        r'Reported[ -]by:[^\n]*\b({handle}|{fullname})\b'.format(**kwargs))
+    tester_re = re.compile(
+        r'Tested[ -]by:[^\n]*\b({handle}|{fullname})\b'.format(**kwargs))
+
+    for commit in logfile_to_commits(git_log, plain_re):
+        modes = []
+        if author_re.search(commit):
+            modes.append('author')
+        if reporter_re.search(commit):
+            modes.append('reporter')
+        if tester_re.search(commit):
+            modes.append('tester')
+        if not modes:
+            modes.append('other')
+
+        commit = Commit(commit, handle, modes)
+        print commit
+
+
+if __name__ == '__main__':
+    import sys
+    try:
+        git_log, handle, fullname = sys.argv[1:]
+    except ValueError:
+        sys.stderr.write(
+            'Usage: asterisk-gitlog-find GIT_LOG_FILE HANDLE FULL_NAME\n')
+        sys.exit(1)
+    else:
+        main(git_log, handle, fullname)
