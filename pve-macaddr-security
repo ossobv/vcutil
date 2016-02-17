@@ -19,9 +19,9 @@
 # What kind of unwanted traffic?
 #
 # Two kinds:
-# - the KVM guest spoofing/altering its MAC address
+# - the VM guest spoofing/altering its MAC address
 # - misconfigured/promiscuous traffic on the network side of the bridge
-#   which should not get forwarded to the KVM guest
+#   which should not get forwarded to the VM guest
 #
 # How can we block that?
 #
