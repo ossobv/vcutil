@@ -184,7 +184,8 @@ def reload():
 if __name__ == '__main__':
     cmd = ''.join(sys.argv[1:2])
     if len(sys.argv) != 2 or cmd not in ('auto', 'reload', 'stop'):
-        print('Usage: pve-mac-filter.py {auto|reload|stop}', file=sys.stderr)
+        print('Usage: pve-macaddr-security {auto|reload|stop}',
+              file=sys.stderr)
         sys.exit(1)
 
     try:
