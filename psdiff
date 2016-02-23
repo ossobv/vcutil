@@ -18,13 +18,14 @@ class Process(object):
 
     @classmethod
     def from_line(cls, line, root):
-        args = cls.split.split(line, 4)
+        args = cls.split.split(line, 3)
 
         user = args[0]
         pid = int(args[1])
         ppid = int(args[2])
-        exe = args[3]
-        cmdline = args[4]
+        exe = args[3][0:8].rstrip()
+        assert args[3][8] == ' '
+        cmdline = args[3][9:]
 
         return cls(ppid, pid, user, exe, cmdline, root=root)
 
@@ -170,7 +171,7 @@ def diff(a, b):
 
 
 def ps_faxu():
-    cmd = ['ps', 'ax', '-o', 'user,pid,ppid,comm,args']
+    cmd = ['ps', 'ax', '-o', 'user,pid,ppid,fname,args']
     try:
         output = subprocess.check_output
     except AttributeError:
