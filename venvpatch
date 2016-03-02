@@ -139,7 +139,7 @@ while read patch; do
         echo "     Output: "
         echo "$output" | sed -e 's/^/        /'
         echo "     Permission issue? Try:"
-        echo "        sudo $0 $patch"
+        echo "        sudo env PATH=\$PATH $0 $patch"
         ret=1
     fi
 
