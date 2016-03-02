@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 
 
 class Process(object):
@@ -219,6 +220,12 @@ def get_formatter_class():
     return FilteredProcessFormatter
 
 
+def get_new_output(formatter_class):
+    root = ps_faxu()
+    formatter = formatter_class(root)
+    return str(formatter)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='psdiff',
@@ -269,8 +276,8 @@ def main():
             Zabbix example
             --------------
 
-                UserParameter=psdiff.missing,psdiff show-missing 2>&1
-                UserParameter=psdiff.extra,psdiff show-extra 2>&1
+                UserParameter=psdiff.missing,psdiff show-missing --retry 2>&1
+                UserParameter=psdiff.extra,psdiff show-extra --retry 2>&1
 
             With triggers like this:
 
@@ -279,15 +286,23 @@ def main():
             '''))
 
     parser.add_argument(
-        'action', nargs='?',
+        'action', nargs='?', default='show',
         help="which action to perform; defaults to `show'",
         choices=('show', 'show-extra', 'show-missing', 'dump', 'write'))
+    parser.add_argument(
+        '--retry', action='store_true',
+        help=("retry `show' and friends up to 2 seconds; avoids false "
+              "positives caused by restarts and short lived children"))
     args = parser.parse_args()
 
-    root = ps_faxu()
-    formatter_class = get_formatter_class()
-    formatter = formatter_class(root)
+    if (args.retry and
+            args.action not in ('show', 'show-extra', 'show-missing')):
+        parser.error("--retry works with the `show' and related actions only")
 
+    # First load up config.
+    formatter_class = get_formatter_class()
+
+    # Then load up old db.
     try:
         with open('/var/lib/psdiff.db', 'r') as fh:
             old_output = fh.read()
@@ -296,15 +311,16 @@ def main():
             raise
         old_output = ''
 
-    new_output = str(formatter)
-
-    process(args.action or 'show', old_output, new_output)
+    process(args, old_output, formatter_class)
 
 
-def process(action, old_output, new_output):
-    if action == 'dump':
+def process(args, old_output, formatter_class):
+    if args.action == 'dump':
+        new_output = get_new_output(formatter_class)
         print(new_output[0:-1])  # without trailing LF
-    elif action == 'write':
+
+    elif args.action == 'write':
+        new_output = get_new_output(formatter_class)
         if old_output != new_output:
             with open('/var/lib/psdiff.new', 'w') as fh:
                 fh.write(new_output)
@@ -314,18 +330,48 @@ def process(action, old_output, new_output):
             print('Wrote to /var/lib/psdiff.db')
         else:
             print('No changes to /var/lib/psdiff.db')
-    elif old_output == new_output:
-        pass
+
     else:
-        changes = diff(old_output, new_output)
+        assert args.action.startswith('show'), args
+
+        # If args.retry, then try fetching a changeset for 5 times
+        # before concluding that something really has changed.
+        for sleeptime in (0.1, 0.3, 0.6, 1.0, 0):
+            new_output = get_new_output(formatter_class)
+
+            # Quick optimization.
+            if old_output == new_output:
+                changes = ()
+                break
+
+            changes = diff(old_output, new_output)
+
+            # There are changes. If we're not retrying, start showing
+            # the results.
+            if not args.retry or not sleeptime:
+                break
+
+            # Do the changes apply to us?
+            if args.action == 'show-missing' and not any(
+                    which < 0 for which, line in changes):
+                break
+            if args.action == 'show-extra' and not any(
+                    which > 0 for which, line in changes):
+                break
+
+            # Sleep a while.
+            time.sleep(sleeptime)
+
+        # Show changes, if any.
         status = 0
         for which, line in changes:
-            if which < 0 and action in ('show', 'show-missing'):
+            if which < 0 and args.action in ('show', 'show-missing'):
                 print('-{0}'.format(line))
                 status = 1
-            elif which > 0 and action in ('show', 'show-extra'):
+            elif which > 0 and args.action in ('show', 'show-extra'):
                 print('+{0}'.format(line))
                 status = 1
+
         sys.exit(status)  # possibly non-zero exit
 
 
