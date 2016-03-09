@@ -132,6 +132,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
                 '/usr/sbin/dovecot ',
+                '/usr/sbin/vsftpd',
                 '/usr/sbin/zabbix_agentd')):
             return False
 
