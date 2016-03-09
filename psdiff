@@ -127,8 +127,9 @@ class FilteredProcessFormatter(ProcessFormatter):
         # We want to monitor these daemons, but not their
         # (grand)children, as they come and go:
         if process.has_parent(include_self=False, cmdline__startswith=(
-                '/usr/lib/postfix/master',
-                '/usr/lib/postfix/sbin/master',
+                '/usr/lib/postfix/master',          # debian/ubuntu
+                '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
+                '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
                 '/usr/sbin/dovecot ',
                 '/usr/sbin/zabbix_agentd')):
@@ -137,7 +138,9 @@ class FilteredProcessFormatter(ProcessFormatter):
         # These children may come and go, but we expect at least one:
         # - multiprocess apache creates at least N processes but may add/remove
         #   based on demand
-        if process.cmdline.startswith('/usr/sbin/apache2 '):
+        if process.cmdline.startswith((
+                '/usr/sbin/apache2 ',       # debian/ubuntu
+                '/usr/sbin/httpd ')):       # redhat
             key = (process.parent.pid, process.user, process.cmdline)
             if key in self._include_once:
                 return False
