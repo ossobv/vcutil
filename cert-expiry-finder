@@ -91,7 +91,8 @@ expiry.
 
 Zabbix example:
 
-    # Returns the days left for the certificate that expirest the soonest.
+    # The shortest amount of days before expiry of all certificates found on
+    # this machine.
     UserParameter=cert.server.minexpiry,cert-expiry-finder --min || echo 5555
 
 __EOF__
