@@ -1,0 +1,15 @@
+Source: vcutil
+Maintainer: Walter Doekes <wjdoekes+vcutil@osso.nl>
+Section: admin
+Priority: optional
+Standards-Version: 3.9.6
+Build-Depends: debhelper (>= 9)
+Build-Depends-Indep: python:any, python3:any, dh-python
+
+Package: vcutil
+Architecture: all
+Depends: ${misc:Depends}
+Suggests: python, python3
+Description: OSSO version control and sysadmin utilities
+ The vcutil utilities contain various small utilities making our lives
+ easier.

@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_perl:
+	true
+
+override_dh_auto_install:
+	dh_python2
+	dh_python3
+	dh_auto_install -- BINDIR=/usr/bin
