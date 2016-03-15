@@ -1,0 +1,75 @@
+#!/bin/sh
+# linux-kernel-autoremove (part of ossobv/vcutil) // wdoekes/2016
+#   // Public Domain
+#
+# Automatically remove old unused kernels on Debian and Ubuntu platforms.
+#
+# On hosts with auto updating on, a large collection of old kernels can
+# pile up and collect dust.  This utility greps for all linux-image-* and
+# linux-header-* older than the currently running kernel and apt-get removes
+# them.  It does the same for the kernels between the running and the latest
+# version.
+#
+# Usage:
+#
+#     linux-kernel-autoremove       # lists what it would remove
+#     linux-kernel-autoremove -f    # apt-get removes those packages
+#
+set -e
+
+list_older_packages_than_current_kernel() {
+    # Take <prefix> (linux-image) and add current uname version, but
+    # remove trailing stuff like "-generic".
+    prefix="$1"  # e.g. "linux-image", "linux-headers"
+    current="$prefix-`uname --kernel-release | sed -e 's/\(.*[0-9]\).*/\1/'`"
+
+    all=`dpkg -l "$prefix-[0-9]*" | awk '/^ii/{print $2}' | sort -V`
+    lineno=`echo "$all" | grep -Fn "$current" | cut -f1 -d: | head -n1`
+
+    if test -z "$lineno"; then
+        if test "$prefix" != "linux-headers" ||
+                test `dpkg -l "$prefix-*" | grep -c ^ii` -eq 0; then
+            # No headers installed at all.
+            return
+        else
+            echo "ERROR: $current not installed. Please fix manually." >&2
+            exit 1
+        fi
+    fi
+
+    lineno=$((lineno-1))  # don't include the match itself
+    if test $lineno -gt 0; then
+        older=`echo "$all" | sed -e "1,${lineno}!d"`
+        if echo "$older" | grep -q "$current"; then
+            echo "ERROR: Assertion failed. $current could be removed?" >&2
+            exit 1
+        fi
+        echo "$older"
+    fi
+
+    latest=`echo "$all" | tail -n1 | sed -e 's/\(.*[0-9]\).*/\1/'`
+    lineno1=`echo "$all" | grep -Fn "$current" | cut -f1 -d: | tail -n1`
+    lineno2=`echo "$all" | grep -Fn "$latest" | cut -f1 -d: | head -n1`
+    lineno1=$((lineno1+1))
+    lineno2=$((lineno2-1))
+    if test $lineno1 -le $lineno2; then
+        echo "$all" | sed -e "$lineno1,$lineno2!d"
+    fi
+}
+
+packages=`
+    list_older_packages_than_current_kernel linux-headers
+    list_older_packages_than_current_kernel linux-image
+`
+if test "$1" = "-f"; then
+    test -n "$packages" && apt-get -y remove --purge $packages
+    true
+elif test -n "$packages"; then
+    echo "Supply -f to remove these packages:"
+    echo "$packages" | sed -e 's/^/  /'
+else
+    echo "Nothing to remove." >&2
+    false
+fi
+
+# vim: set ts=8 sw=4 sts=4 et ai:
