@@ -22,6 +22,7 @@ enum_all_certs() {
         enum_dovecot_certs
         enum_nginx_certs
         enum_postfix_certs
+        enum_ser_certs
     ) | sort -u
 }
 
@@ -53,6 +54,13 @@ enum_nginx_certs() {
 enum_postfix_certs() {
     postconf 'smtpd_tls_cert_file' 2>/dev/null |
     sed -e 's/.* = //'
+}
+
+enum_ser_certs() {
+    find /etc/kamailio /etc/opensips /etc/ser \
+        '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
+    xargs -0 sed -ne '
+        s/^[[:blank:]]*tls_certificate[[:blank:]]*=[[:blank:]]*"\([^[:blank:]]*\)".*/\1/p'
 }
 
 list_cert_expiry_days() {
@@ -98,4 +106,4 @@ Zabbix example:
 __EOF__
 fi
 
-# vim: set ts=8 sw=4 sts=4 et ai tw=79:
+# vim: set ts=8 sw=4 sts=4 et ai:
