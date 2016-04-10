@@ -1,0 +1,309 @@
+#!/usr/bin/env python
+# vim: set ts=8 sw=4 sts=4 et ai:
+import sys
+
+try:
+    from configparser import RawConfigParser
+except ImportError:  # python2-
+    from ConfigParser import RawConfigParser
+
+
+class Comparison(object):
+    # 1st is "missing", 2nd is "exists", rest is "different"
+    LETTERS = ('X-abcdefghijklmnopqrstuvwxyz')
+
+    def __init__(self, sets):
+        # Sets is a list of [(data, indexes)].
+        self.sets = sets
+
+    def has_differences(self):
+        return len(self.sets) != 1
+
+    @property
+    def name(self):
+        if not hasattr(self, '_name'):
+            self._name = self.sets[0][0][0]
+        return self._name
+
+    @property
+    def letters(self):
+        if not hasattr(self, '_letters'):
+            # Find out which indexes are used.
+            index_to_set = {}
+            for i, (data, indexes) in enumerate(self.sets):
+                for idx in indexes:
+                    if data:
+                        index_to_set[idx] = i
+                    else:
+                        index_to_set[idx] = None
+
+            # Assign letters from left to right.
+            assigned = {None: self.LETTERS[0]}
+            next_letter = 1
+            used = []
+            for i in sorted(index_to_set.keys()):
+                set_idx = index_to_set[i]
+                if set_idx not in assigned:
+                    assigned[set_idx] = self.LETTERS[next_letter]
+                    next_letter += 1
+                used.append(assigned[set_idx])
+
+            self._letters = ''.join(used)
+        return self._letters
+
+    def __str__(self):
+        return '{}  {}'.format(self.letters, self.name)
+
+
+class DatasetCompare(object):
+    def __init__(self, datasets):
+        # We assume that the datasets are sorted, otherwise everything fails.
+        self.datasets = tuple(datasets)
+        self.count = len(self.datasets)
+        assert self.count > 1
+
+    def summary(self):
+        for row in self:
+            if row.has_differences():
+                print(row)
+            else:
+                # print(row)
+                pass
+
+    def __iter__(self):
+        pos = [0] * self.count
+        eof = [not (pos[idx] < len(self.datasets[idx]))
+               for idx in range(self.count)]
+
+        while not all(eof):
+            rows = []
+            not_in = []
+            for idx in range(self.count):
+                if eof[idx]:
+                    not_in.append(idx)
+                else:
+                    rows.append((self.datasets[idx].data[pos[idx]], idx))
+            rows.sort()
+
+            # Same by identifier (first column).
+            first_id = rows[0][0][0]
+            while rows[-1][0][0] != first_id:
+                not_in.append(rows[-1][1])
+                rows.pop()
+
+            # Yield the values in a convenient form.
+            yield self._sortedrows_as_comparison(rows, not_in)
+
+            # For all rows with the same id, we increase those.
+            for data, idx in rows:
+                pos[idx] += 1
+                if pos[idx] >= len(self.datasets[idx]):
+                    eof[idx] = True
+
+    def _sortedrows_as_comparison(self, rows, not_in):
+        sets = []
+
+        while rows:
+            row0 = rows[0][0]
+            sets.append((row0, [rows[0][1]]))
+            for i in range(1, len(rows)):
+                if rows[i][0] == row0:
+                    sets[-1][1].append(rows[i][1])
+                else:
+                    rows = rows[i:]
+                    break
+            else:
+                break
+
+        if not_in:
+            sets.append((None, tuple(not_in)))
+
+        return Comparison(sets)
+
+
+class DataSet(object):
+    def __init__(self, fields, data):
+        self.fields = tuple(fields)
+        self.data = tuple(sorted(data))
+        self.datalen = len(self.data)
+
+    def __len__(self):
+        return self.datalen
+
+    def __str__(self):
+        fmt = '  '.join(['%-20.20s'] * len(self.fields))
+        ret = [fmt % self.fields]
+        ret.append(fmt % (['-' * 20] * len(self.fields)))
+        for i, row in enumerate(self.data):
+            ret.append(fmt % row)
+            if i == 3:
+                ret.append('...')
+                break
+        return '\n'.join(ret)
+
+
+class AbstractDatabase(object):
+    def __init__(self, connector):
+        try:
+            # During development, reading a pickled version of the data
+            # is quicker.
+            with open(str(connector).replace('/', '_') + '.dat', 'rb') as fp:
+                import pickle
+                self.cache = pickle.load(fp)
+        except IOError:
+            self.connector = connector
+            self.conn = self.connector.connect()
+            self.cache = {}
+
+    def _save_cache(self):
+        # During development, you can choose to write the cached data.
+        with open(str(self.connector).replace('/', '_') + '.dat', 'wb') as fp:
+            import pickle
+            pickle.dump(self.cache, fp)
+
+    def fetch(self):
+        self.routines()
+        self.tables()
+        self.views()
+
+    def query(self, req):
+        if req not in self.cache:
+            cursor = self.conn.cursor()
+            cursor.execute(req)
+            fields = [i[0] for i in cursor.description]
+            values = cursor.fetchall()
+            cursor.close()
+
+            self.cache[req] = self.data_to_dataset(fields, values)
+        return self.cache[req]
+
+    def data_to_dataset(self, fields, data):
+        return DataSet(fields, data)
+
+
+class MysqlDatabase(AbstractDatabase):
+    def routines(self):
+        return self.query('''\
+            SELECT CONCAT(ROUTINE_SCHEMA, '.', ROUTINE_NAME) AS name,
+                ROUTINE_TYPE AS type, LEFT(ROUTINE_DEFINITION, 3) AS body,
+                CHARACTER_SET_CLIENT AS charset,
+                DATABASE_COLLATION AS collation,
+                CONCAT('lang=', ROUTINE_BODY, ';determ=', IS_DETERMINISTIC,
+                    ';access=', SQL_DATA_ACCESS, ';security=', SECURITY_TYPE,
+                    ';mode=', SQL_MODE, ';definer=', DEFINER) AS properties
+            FROM INFORMATION_SCHEMA.ROUTINES
+        ''')
+
+    def tables(self):
+        # TODO: for fuzzy matching...
+        # TABLE_ROWS AS row_estimate,
+        # AUTO_INCREMENT AS id_estimate,
+        return self.query('''\
+            SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS name,
+                ENGINE AS `engine`, ROW_FORMAT AS format,
+                TABLE_COLLATION AS collation
+            FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'
+        ''')
+
+    def views(self):
+        return self.query('''\
+            SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS name,
+                VIEW_DEFINITION AS body, CHARACTER_SET_CLIENT AS charset,
+                COLLATION_CONNECTION AS collaction,
+                CONCAT('updatatable=', IS_UPDATABLE, ';security=',
+                    SECURITY_TYPE, ';definer=', DEFINER) AS properties
+            FROM INFORMATION_SCHEMA.VIEWS
+        ''')
+
+
+class DatabaseConnector(object):
+    SLOTS = ('hostname', 'port', 'username', 'password')
+    hostname = None
+    port = '3306'
+    username = None
+    password = None
+
+    def create(self):
+        return MysqlDatabase(connector=self)
+
+    def connect(self):
+        import MySQLdb
+        return MySQLdb.connect(
+            host=self.hostname, port=int(self.port),
+            user=self.username, passwd=self.password)
+
+    def update(self, **kwargs):
+        for key in kwargs:
+            assert key in self.SLOTS
+        new = DatabaseConnector()
+        for key in self.SLOTS:
+            setattr(new, key, getattr(self, key))
+        for key, value in kwargs.items():
+            setattr(new, key, value)
+        return new
+
+    def __str__(self):
+        return 'mysql://{0}@{1}:{2}'.format(
+            self.username, self.hostname, self.port)
+
+
+def main(inifile):
+    # Open ini file.
+    config = RawConfigParser()
+    with open(inifile, 'r') as fp:
+        config.readfp(fp)
+
+    # Create DB connector with defaults from [DEFAULT].
+    defaults = config.defaults()
+    default_connector = DatabaseConnector()
+    for slot in default_connector.SLOTS:
+        if slot in defaults:
+            setattr(default_connector, slot, defaults[slot])
+
+    # Fill connectors.
+    connectors = []
+    for section in config.sections():
+        connectors.append(
+            default_connector.update(**dict(config.items(section))))
+
+    # Connect and fetch values.
+    dbs = [connector.create() for connector in connectors]
+    for db in dbs:
+        db.fetch()
+        # During development, you could cache the read values.
+        if False:
+            db._save_cache()
+
+    # Compare values.
+    dbcomp = DatasetCompare(db.tables() for db in dbs)
+    dbcomp.summary()
+    dbcomp = DatasetCompare(db.views() for db in dbs)
+    dbcomp.summary()
+    dbcomp = DatasetCompare(db.routines() for db in dbs)
+    dbcomp.summary()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
+        print('''\
+Usage: dbschemadiff INIFILE
+
+The INIFILE could look like this:
+
+    [DEFAULT]
+    username = johndoe
+    password = the_password
+
+    [main-cluster-primary]
+    hostname = db1.main.example.com
+
+    [main-cluster-secondary]
+    hostname = db2.main.example.com
+
+    [backup-server]
+    hostname = backupdb.example.com
+    username = other_user
+    password = other_password
+''')
