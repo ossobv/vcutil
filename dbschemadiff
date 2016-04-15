@@ -1,6 +1,25 @@
 #!/usr/bin/env python
-# vim: set ts=8 sw=4 sts=4 et ai:
+# dbschemadiff (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Compares MySQL database schemas. On MySQL ndbcluster databases, you
+# need to manually keep the API servers in sync with respect to VIEWs
+# and ROUTINEs. Also, if you're careless, you can shadow ndbcluster
+# tables with local-only InnoDB tables.
+#
+# This script will help you check for schema differences between two or
+# more database servers.
+#
+# It works by connecting to all specified database servers and reading
+# the schema info from INFORMATION_SCHEMA.TABLES, INFORMATION_SCHEMA.VIEWS
+# and INFORMATION_SCHEMA.ROUTINES.
+#
+# It displays which items differ in a clean concise form, or it can
+# display the exact values of the differing fields if requested.
+#
+import argparse
+import re
 import sys
+from collections import OrderedDict
 
 try:
     from configparser import RawConfigParser
@@ -8,77 +27,201 @@ except ImportError:  # python2-
     from ConfigParser import RawConfigParser
 
 
-class Comparison(object):
-    # 1st is "missing", 2nd is "exists", rest is "different"
-    LETTERS = ('X-abcdefghijklmnopqrstuvwxyz')
+class DataDiffer(object):
+    # The last letter means "missing", the others enumerate the
+    # different versions.
+    LETTERS = ('-abcdefghijklmnopqrstuvwxyzX')
 
-    def __init__(self, sets):
+    @classmethod
+    def from_sets(cls, sets, metadata, sources):
         # Sets is a list of [(data, indexes)].
-        self.sets = sets
+        if len(sets) == 1:
+            ordered_sets = [sets[0][0]]
+            # Must be equal to [sets[*][1]]
+            indexes = [sources.keys()]
+        else:
+            # Order sets by index.
+            ordered_sets = list(sets)
+            ordered_sets.sort(key=(
+                lambda x: sorted(x[1])[0]))
 
+            # Place None-set last.
+            if ordered_sets[0][0] is None:
+                move = ordered_sets.pop(0)
+                ordered_sets.append(move)
+
+            # Split sets from indexes.
+            indexes = [i[1] for i in ordered_sets]
+            ordered_sets = [i[0] for i in ordered_sets]
+
+        return cls(
+            ordered_sets=ordered_sets,
+            indexes=indexes,
+            metadata=metadata,
+            sources=sources)
+
+    def __init__(self, ordered_sets, indexes, metadata, sources):
+        self.ordered_sets = ordered_sets
+        self.indexes = indexes
+        self.metadata = metadata
+        self.sources = sources
+
+    @property
     def has_differences(self):
-        return len(self.sets) != 1
+        return len(self.ordered_sets) != 1
 
     @property
     def name(self):
         if not hasattr(self, '_name'):
-            self._name = self.sets[0][0][0]
+            self._name = self.ordered_sets[0][0]
         return self._name
 
     @property
     def letters(self):
         if not hasattr(self, '_letters'):
-            # Find out which indexes are used.
-            index_to_set = {}
-            for i, (data, indexes) in enumerate(self.sets):
-                for idx in indexes:
-                    if data:
-                        index_to_set[idx] = i
-                    else:
-                        index_to_set[idx] = None
+            # Shortcut.
+            if not self.has_differences:
+                self._letters = self.LETTERS[0] * len(self.sources)
 
-            # Assign letters from left to right.
-            assigned = {None: self.LETTERS[0]}
-            next_letter = 1
-            used = []
-            for i in sorted(index_to_set.keys()):
-                set_idx = index_to_set[i]
-                if set_idx not in assigned:
-                    assigned[set_idx] = self.LETTERS[next_letter]
-                    next_letter += 1
-                used.append(assigned[set_idx])
+            else:
+                # Assign letters to the sets.
+                set_letters = list(self.LETTERS[0:len(self.ordered_sets)])
+                if self.ordered_sets[-1] is None:
+                    set_letters[-1] = self.LETTERS[-1]
 
-            self._letters = ''.join(used)
+                # Map the sources to the letters.
+                source_letters = {}
+                for i, indexes in enumerate(self.indexes):
+                    source_letters.update(
+                        dict((index, set_letters[i]) for index in indexes))
+
+                # Return 'em by index order.
+                letters = [source_letters[i] for i in self.sources]
+                self._letters = ''.join(letters)
         return self._letters
 
+    @property
+    def differing_fields(self):
+        if not hasattr(self, '_differing_fields'):
+            diff_fields = []
+            if self.ordered_sets[-1] is None:
+                diff_fields.append('__all__')
+
+            if self.has_differences:
+                # Local ref.
+                in_fields = self.metadata.fields
+                # Only compare the sets with actual contents.
+                non_null_sets = self.ordered_sets
+                if self.ordered_sets[-1] is None:
+                    non_null_sets = non_null_sets[0:-1]
+                # Check every field for differences.
+                for i, field in enumerate(in_fields):
+                    cmpcols = [columns[i] for columns in non_null_sets]
+                    if any(cmpcols[0] != column for column in cmpcols[1:]):
+                        diff_fields.append(field)
+
+            self._differing_fields = diff_fields
+        return self._differing_fields
+
     def __str__(self):
-        return '{}  {}'.format(self.letters, self.name)
+        if self.has_differences:
+            differing_fields = '  {{{}}}'.format(
+                ', '.join(self.differing_fields))
+            return '{}  {:42}{}'.format(
+                self.letters, self.name, differing_fields)
+        else:
+            return '{}  {}'.format(
+                self.letters, self.name)
+
+    def verbose(self, very=False):
+        # Local ref.
+        in_fields = self.metadata.fields
+        if self.ordered_sets[-1] is None:
+            diff_fields = in_fields
+        else:
+            diff_fields = self.differing_fields
+
+        # Loop over the sets and show differences.
+        ret = []
+        for set_idx, columns in enumerate(self.ordered_sets):
+            info = OrderedDict()
+            info['databases'] = ', '.join(sorted(
+                self.sources[i].name for i in self.indexes[set_idx]))
+            if columns:
+                for i, field in enumerate(in_fields):
+                    if very or field in diff_fields:
+                        info[field] = columns[i]
+            else:
+                for field in in_fields:
+                    info[field] = '----'
+            ret.append('-' * 72)
+            ret.append(self.yamlish(info, 1))
+
+        ret.append('-' * 72)
+        ret.append('')
+        return '\n'.join(ret)
+
+    def yamlish(self, data, indent=0):
+        ret = []
+        indent_str = '  ' * indent
+        if isinstance(data, (list, tuple)):
+            for item in data:
+                ret.append('- ' + self.yamlish(item, indent + 1).lstrip())
+        elif isinstance(data, dict):
+            for key, value in data.items():
+                indented = self.yamlish(value, indent + 1)
+                if '\n' in indented:
+                    ret.append(key + ':\n' + indented)
+                else:
+                    ret.append(key + ': ' + indented.lstrip())
+            pass
+        else:
+            ret = str(data).split('\n')
+
+        return indent_str + ('\n' + indent_str).join(ret)
 
 
-class DatasetCompare(object):
+class DataSetDiffer(object):
     def __init__(self, datasets):
         # We assume that the datasets are sorted, otherwise everything fails.
         self.datasets = tuple(datasets)
-        self.count = len(self.datasets)
-        assert self.count > 1
+        assert len(self.datasets) > 1, 'we need more than one set to compare'
 
-    def summary(self):
+        # We're asked to compare the same tables, so we can fetch a
+        # metadata instance from any one of them.
+        self.metadata = self.datasets[0].metadata
+
+        # Name the sources.
+        self.sources = dict(
+            (i, dataset.source) for i, dataset in enumerate(self.datasets))
+
+    def diffcount(self):
+        differences = 0
         for row in self:
-            if row.has_differences():
+            if row.has_differences:
+                differences += 1
+        return differences
+
+    def summary(self, verbose):
+        for row in self:
+            if row.has_differences:
                 print(row)
+                if verbose:
+                    print(row.verbose(verbose > 1))
             else:
-                # print(row)
-                pass
+                if verbose:
+                    print(row)
 
     def __iter__(self):
-        pos = [0] * self.count
+        datasets_count = len(self.datasets)
+        pos = [0] * datasets_count
         eof = [not (pos[idx] < len(self.datasets[idx]))
-               for idx in range(self.count)]
+               for idx in range(datasets_count)]
 
         while not all(eof):
             rows = []
             not_in = []
-            for idx in range(self.count):
+            for idx in range(datasets_count):
                 if eof[idx]:
                     not_in.append(idx)
                 else:
@@ -118,12 +261,66 @@ class DatasetCompare(object):
         if not_in:
             sets.append((None, tuple(not_in)))
 
-        return Comparison(sets)
+        return DataDiffer.from_sets(
+            sets=sets, metadata=self.metadata, sources=self.sources)
+
+
+class DataSetFilter(object):
+    def __init__(self, includes, excludes):
+        # Include filters.
+        if includes:
+            self.includes = tuple(
+                re.compile(self.glob_to_re(i), re.I) for i in includes)
+        else:
+            self.includes = None
+
+        # Exclude filters.
+        if excludes:
+            self.excludes = tuple(
+                re.compile(self.glob_to_re(i), re.I) for i in excludes)
+        else:
+            self.excludes = ()
+
+    def glob_to_re(self, glob_expression):
+        # Replace "*" with "[^.]*" and "." with "\.",
+        # and escape the rest.
+        separated = glob_expression.split('.')
+        separated = [
+            '[^.]*'.join(re.escape(j) for j in i.split('*'))
+            for i in separated]
+        return ('^' + '\\.'.join(separated) + '$')
+
+    def __call__(self, dataset):
+        if self.includes:
+            self.filter_dataset(
+                dataset,
+                (lambda identifier:
+                 any(include.match(identifier)
+                     for include in self.includes)))
+        if self.excludes:
+            self.filter_dataset(
+                dataset,
+                (lambda identifier:
+                 not any(exclude.match(identifier)
+                         for exclude in self.excludes)))
+
+    def filter_dataset(self, dataset, include_if):
+        # The dataset.data is a tuple of tuples where the first element is
+        # the identifier.
+        dataset.data = tuple(i for i in dataset.data if include_if(i[0]))
+        dataset.datalen = len(dataset.data)
+
+
+class DataSetMeta(object):
+    def __init__(self, fields):
+        # A tuple of column names.
+        self.fields = tuple(fields)
 
 
 class DataSet(object):
-    def __init__(self, fields, data):
-        self.fields = tuple(fields)
+    def __init__(self, source, fields, data):
+        self.source = source
+        self.metadata = DataSetMeta(fields)
         self.data = tuple(sorted(data))
         self.datalen = len(self.data)
 
@@ -131,9 +328,9 @@ class DataSet(object):
         return self.datalen
 
     def __str__(self):
-        fmt = '  '.join(['%-20.20s'] * len(self.fields))
-        ret = [fmt % self.fields]
-        ret.append(fmt % (['-' * 20] * len(self.fields)))
+        fmt = '  '.join(['%-20.20s'] * len(self.metadata.fields))
+        ret = [fmt % self.metadata.fields]
+        ret.append(fmt % (['-' * 20] * len(self.metadata.fields)))
         for i, row in enumerate(self.data):
             ret.append(fmt % row)
             if i == 3:
@@ -143,21 +340,28 @@ class DataSet(object):
 
 
 class AbstractDatabase(object):
-    def __init__(self, connector):
-        try:
-            # During development, reading a pickled version of the data
-            # is quicker.
-            with open(str(connector).replace('/', '_') + '.dat', 'rb') as fp:
-                import pickle
-                self.cache = pickle.load(fp)
-        except IOError:
-            self.connector = connector
+    def __init__(self, connector, prefer_cache=False):
+        self.connector = connector
+
+        # Caching can be useful, especially during development.
+        self.cache = None
+        if prefer_cache:
+            try:
+                with open(self.connector.as_data_filename(), 'rb') as fp:
+                    import pickle
+                    self.cache = pickle.load(fp)
+            except IOError:
+                pass
+
+        # No disk cache was requested or none was found. Connect to the db and
+        # create an empty in-memory cache.
+        if self.cache is None:
             self.conn = self.connector.connect()
             self.cache = {}
 
-    def _save_cache(self):
-        # During development, you can choose to write the cached data.
-        with open(str(self.connector).replace('/', '_') + '.dat', 'wb') as fp:
+    def save_cache(self):
+        # Cache values to speed up multiple calls to the binary.
+        with open(self.connector.as_data_filename(), 'wb') as fp:
             import pickle
             pickle.dump(self.cache, fp)
 
@@ -166,7 +370,7 @@ class AbstractDatabase(object):
         self.tables()
         self.views()
 
-    def query(self, req):
+    def query(self, req, dataset_class=DataSet):
         if req not in self.cache:
             cursor = self.conn.cursor()
             cursor.execute(req)
@@ -174,18 +378,15 @@ class AbstractDatabase(object):
             values = cursor.fetchall()
             cursor.close()
 
-            self.cache[req] = self.data_to_dataset(fields, values)
-        return self.cache[req]
-
-    def data_to_dataset(self, fields, data):
-        return DataSet(fields, data)
+            self.cache[req] = (fields, values)
+        return dataset_class(self.connector, *self.cache[req])
 
 
 class MysqlDatabase(AbstractDatabase):
     def routines(self):
         return self.query('''\
             SELECT CONCAT(ROUTINE_SCHEMA, '.', ROUTINE_NAME) AS name,
-                ROUTINE_TYPE AS type, LEFT(ROUTINE_DEFINITION, 3) AS body,
+                ROUTINE_TYPE AS type, ROUTINE_DEFINITION AS body,
                 CHARACTER_SET_CLIENT AS charset,
                 DATABASE_COLLATION AS collation,
                 CONCAT('lang=', ROUTINE_BODY, ';determ=', IS_DETERMINISTIC,
@@ -209,7 +410,7 @@ class MysqlDatabase(AbstractDatabase):
         return self.query('''\
             SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS name,
                 VIEW_DEFINITION AS body, CHARACTER_SET_CLIENT AS charset,
-                COLLATION_CONNECTION AS collaction,
+                COLLATION_CONNECTION AS collation,
                 CONCAT('updatatable=', IS_UPDATABLE, ';security=',
                     SECURITY_TYPE, ';definer=', DEFINER) AS properties
             FROM INFORMATION_SCHEMA.VIEWS
@@ -217,14 +418,15 @@ class MysqlDatabase(AbstractDatabase):
 
 
 class DatabaseConnector(object):
-    SLOTS = ('hostname', 'port', 'username', 'password')
+    SLOTS = ('name', 'hostname', 'port', 'username', 'password')
+    name = 'DEFAULT'
     hostname = None
     port = '3306'
     username = None
     password = None
 
-    def create(self):
-        return MysqlDatabase(connector=self)
+    def create(self, prefer_cache=False):
+        return MysqlDatabase(connector=self, prefer_cache=prefer_cache)
 
     def connect(self):
         import MySQLdb
@@ -242,12 +444,11 @@ class DatabaseConnector(object):
             setattr(new, key, value)
         return new
 
-    def __str__(self):
-        return 'mysql://{0}@{1}:{2}'.format(
-            self.username, self.hostname, self.port)
+    def as_data_filename(self):
+        return self.name.replace('/', '_').replace('.', '_') + '.dat'
 
 
-def main(inifile):
+def inifile_to_databases(inifile, use_cache=False):
     # Open ini file.
     config = RawConfigParser()
     with open(inifile, 'r') as fp:
@@ -264,46 +465,133 @@ def main(inifile):
     connectors = []
     for section in config.sections():
         connectors.append(
-            default_connector.update(**dict(config.items(section))))
+            default_connector.update(
+                name=section,
+                **dict(config.items(section))))
 
-    # Connect and fetch values.
-    dbs = [connector.create() for connector in connectors]
-    for db in dbs:
-        db.fetch()
-        # During development, you could cache the read values.
-        if False:
-            db._save_cache()
+    # Create and return database instances.
+    databases = [connector.create(use_cache) for connector in connectors]
+
+    # If we use caching, fetch all the data first.
+    if use_cache:
+        for db in databases:
+            # Only fetch/write if we didn't load the cache.
+            if not db.cache:
+                db.fetch()
+                db.save_cache()
+
+    return databases
+
+
+def compare(args):
+    databases = inifile_to_databases(args.inifile, use_cache=args.cache)
+
+    # Do we need to exclude stuff?
+    filter_ = DataSetFilter(includes=args.include, excludes=args.exclude)
 
     # Compare values.
-    dbcomp = DatasetCompare(db.tables() for db in dbs)
-    dbcomp.summary()
-    dbcomp = DatasetCompare(db.views() for db in dbs)
-    dbcomp.summary()
-    dbcomp = DatasetCompare(db.routines() for db in dbs)
-    dbcomp.summary()
+    differences = 0
+    for getter in ('tables', 'views', 'routines'):
+        datasets = tuple(getattr(db, getter)() for db in databases)
+        for dataset in datasets:
+            filter_(dataset)
+
+        dbcomp = DataSetDiffer(datasets)
+        if args.count:
+            differences += dbcomp.diffcount()
+        else:
+            dbcomp.summary(args.verbose)
+
+    # If we're counting, show difference count and exit.
+    if args.count:
+        print(differences)
+        if differences:
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='dbschemadiff',
+        usage='%(prog)s inifile [individual] [options]',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='''\
+Compare two or more MySQL database schemas.
+
+It requires an inifile as first argument from which it parses which
+databases to compare.
+
+Optionally, you may pass a single identifier to list detailed differences
+between only that table/view/routine.''',
+        epilog='''\
+inifile example:
+
+  [DEFAULT]
+  username = johndoe
+  password = the_password
+
+  [main-cluster-primary]
+  hostname = db1.main.example.com
+
+  [main-cluster-secondary]
+  hostname = db2.main.example.com
+
+  [backup-server]
+  hostname = backupdb.example.com
+  username = other_user
+  password = other_password
+
+output example (for the above inifile):
+
+  ---  dbX.table_a      # means: no differences
+  --X  dbX.table_b      # means: dbX.table_b is missing on backup-server
+  -a-  dbX.func_c       # means: on main-cluster-secondary, func_c is different
+                        #        from the versions on the other databases
+  -ab  dbX.view_d       # means: all three versions are different
+
+usage example:
+
+  # List all differences, except mysql.* and anything with test in the
+  # schema name.
+  %(prog)s my.ini --exclude '*test*.*' 'mysql.*'
+
+  # Same as above, but show a count of differences, usable to monitor
+  # cluster syncness.
+  %(prog)s my.ini --exclude '*test*.*' 'mysql.*' --count
+
+  # Show differences for a particular table/view/routine. Add an extra
+  # -v to show all fields, not only the differing ones.
+  %(prog)s my.ini -i dbX.func_b -v
+
+''')
+    parser.add_argument(
+        '--cache', action='store_true',
+        help=('cache the values if possible in *.dat files; be sure to remove '
+              'them after you make schema changes to any of the databases'))
+    parser.add_argument(
+        '--count', action='store_true',
+        help=('instead of listing differences, only print the count of '
+              'differences; also returns non-zero exit code if the are '
+              'differences'))
+    parser.add_argument(
+        '--include', '-i', nargs='*',
+        help=('include names through globbing; with --verbose you can '
+              'differences of an individual table/view/routine'))
+    parser.add_argument(
+        '--exclude', nargs='*',
+        help=('exclude names through globbing (*.* excludes all, beware '
+              'of shell globbing)'))
+    parser.add_argument(
+        '--verbose', '-v', action='count',
+        help='show verbose output (use twice for extra verbose)')
+    parser.add_argument(
+        'inifile',
+        help='the ini filename; see example below')
+    args = parser.parse_args()
+
+    # Do the work.
+    compare(args)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 2:
-        main(sys.argv[1])
-    else:
-        print('''\
-Usage: dbschemadiff INIFILE
-
-The INIFILE could look like this:
-
-    [DEFAULT]
-    username = johndoe
-    password = the_password
-
-    [main-cluster-primary]
-    hostname = db1.main.example.com
-
-    [main-cluster-secondary]
-    hostname = db2.main.example.com
-
-    [backup-server]
-    hostname = backupdb.example.com
-    username = other_user
-    password = other_password
-''')
+    main()
+# vim: set ts=8 sw=4 sts=4 et ai:
