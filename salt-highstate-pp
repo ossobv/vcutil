@@ -66,10 +66,14 @@ class JsonProcessor(StdioStderrProcessor):
         self.failure = {}
 
     def add_stdout(self, data):
-        for line in data.split('\n'):
+        for line_idx, line in enumerate(data.split('\n')):
+            if line_idx:
+                self.jsonbuf.append('\n')
+
             self.jsonbuf.append(line)
+
             if line == '}':
-                jsonbuf = '\n'.join(self.jsonbuf)
+                jsonbuf = ''.join(self.jsonbuf)
                 try:
                     dict_ = json.loads(jsonbuf)
                 except ValueError:
@@ -82,7 +86,17 @@ class JsonProcessor(StdioStderrProcessor):
         keys = tuple(dict_.keys())
         assert len(keys) == 1, dict_
         hostname = keys[0]
-        if any(i['result'] for i in dict_[hostname].values()):
+        try:
+            list_of_results = dict_[hostname].values()
+        except AttributeError:
+            success = False
+        else:
+            if all(i['result'] for i in list_of_results):
+                success = True
+            else:
+                success = False
+
+        if success:
             self.add_success(hostname, dict_)
         else:
             self.add_failure(hostname, dict_)
@@ -118,11 +132,11 @@ class JsonProcessor(StdioStderrProcessor):
             print('\x1b[1m{} success\x1b[0m'.format(len(self.success)))
             print('\x1b[1m{} failed\x1b[0m'.format(len(self.failure)))
 
-        if any(i for i in self.jsonbuf):
+        if any(i.strip() for i in self.jsonbuf):
             print()
             print('---- trailing output ----')
             print()
-            print('\n'.join(self.jsonbuf))
+            print(''.join(self.jsonbuf))
             retcode = 2
 
         return retcode
@@ -131,13 +145,10 @@ class JsonProcessor(StdioStderrProcessor):
 def salt_highstate(target, *arguments):
     function = 'state.highstate'
     with open('/dev/null', 'r') as NULLI:
-        with (
-                subprocess.Popen(
-                    ['salt', '--out=json', target, function] + list(arguments),
-                    stdin=NULLI, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env={'PYTHONUNBUFFERED': '1'})
-             ) as proc:
+        with subprocess.Popen(
+                ['salt', '--out=json', target, function] + list(arguments),
+                stdin=NULLI, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env={'PYTHONUNBUFFERED': '1'}) as proc:
             processor = JsonProcessor(stdout=proc.stdout, stderr=proc.stderr)
             processor.process()
             retcode = proc.wait()
