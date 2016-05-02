@@ -39,8 +39,8 @@
 #
 
 # Settings:
-MAIL_FROM="git@example.com"
-MAIL_TO="commits@example.com" # space separated list of recipients
+MAIL_FROM="noreply@`hostname -d`"
+MAIL_TO="commits@localhost" # space separated list of recipients
 SUBJECT='[$PROJECT] r$REV: $SUMMARY' # these get expanded later
 
 # Fetch data:
