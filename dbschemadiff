@@ -125,12 +125,12 @@ class DataDiffer(object):
 
     def __str__(self):
         if self.has_differences:
-            differing_fields = '  {{{}}}'.format(
+            differing_fields = '  {{{0}}}'.format(
                 ', '.join(self.differing_fields))
-            return '{}  {:42}{}'.format(
+            return '{0}  {1:42}{2}'.format(
                 self.letters, self.name, differing_fields)
         else:
-            return '{}  {}'.format(
+            return '{0}  {1}'.format(
                 self.letters, self.name)
 
     def verbose(self, very=False):
@@ -328,11 +328,12 @@ class DataSet(object):
         return self.datalen
 
     def __str__(self):
-        fmt = '  '.join(['%-20.20s'] * len(self.metadata.fields))
-        ret = [fmt % self.metadata.fields]
-        ret.append(fmt % (['-' * 20] * len(self.metadata.fields)))
+        fmt = '  '.join('{{{0}:20.20}}'.format(i)
+                        for i in range(len(self.metadata.fields)))
+        ret = [fmt.format(*self.metadata.fields)]
+        ret.append(fmt.format(*(['-' * 20] * len(self.metadata.fields))))
         for i, row in enumerate(self.data):
-            ret.append(fmt % row)
+            ret.append(fmt.format(*[repr(i) for i in row]))
             if i == 3:
                 ret.append('...')
                 break
