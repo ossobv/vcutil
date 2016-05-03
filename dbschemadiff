@@ -22,6 +22,12 @@
 #     GRANT SELECT, SHOW DATABASES, EXECUTE, SHOW VIEW ON *.* TO ...
 #     -- execute is needed to read function/proc bodies
 #
+# TODO:
+# - Improve docs?
+# - Use Differ() from difflib for multiline columns (proc/function bodies)
+# - Don't show rows that are equal without an extra command line param.
+#   (A single -verbose should not be enough.)
+#
 import argparse
 import re
 import sys
