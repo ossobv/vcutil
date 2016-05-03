@@ -103,11 +103,11 @@ class JsonProcessor(StdioStderrProcessor):
 
     def add_success(self, hostname, dict_):
         self.success[hostname] = dict_
-        print('{}: \x1b[1;32mOK\x1b[0m'.format(hostname))
+        print('[\x1b[1;32m OK \x1b[0m] {}'.format(hostname))
 
     def add_failure(self, hostname, dict_):
         self.failure[hostname] = dict_
-        print('{}: \x1b[1;31mFAIL\x1b[0m'.format(hostname))
+        print('[\x1b[1;31mFAIL\x1b[0m] {}'.format(hostname))
 
     def finalize(self, retcode):
         assert retcode == 0, retcode
