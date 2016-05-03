@@ -16,6 +16,12 @@
 # It displays which items differ in a clean concise form, or it can
 # display the exact values of the differing fields if requested.
 #
+#
+# To run this on MySQL, you'll need the following permissions:
+#
+#     GRANT SELECT, SHOW DATABASES, EXECUTE, SHOW VIEW ON *.* TO ...
+#     -- execute is needed to read function/proc bodies
+#
 import argparse
 import re
 import sys
