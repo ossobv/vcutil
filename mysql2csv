@@ -34,6 +34,7 @@
 # - 2016-05-23: Append to CSV instead clobbering it. Safer for data.
 # - 2016-05-23: Allow sleep-time to be set.
 # - 2016-05-23: Prune during dump, using the same date filters.
+# - 2016-05-23: Fix problem with TIMESTAMP column and DST changes.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -86,11 +87,28 @@ def dump2csv_and_prune(db_connection, kwargs):
                 dest_file.close()
                 dest_file = None
 
+        # For certain columns, string/time comparisons can fail during
+        # DST changes, for example:
+        #   TABLE auth (ts timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)
+        #   mysql> SELECT MIN(ts) FROM auth\G
+        #   min(ts): 2014-10-26 02:00:02
+        #   mysql> SELECT COUNT(*) FROM auth WHERE '2014-10-26 02:00:00' <= ts
+        #            AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+        #   COUNT(*): 0
+        #   mysql> SELECT COUNT(*) FROM auth WHERE '2014-10-26 01:59:59' <= ts
+        #            AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+        #   COUNT(*): 256
+        # For DATETIME columns, the problem does not occur.
+        # As a workaround we'll have to do an extra check to see if we've just
+        # crossed a DST line and add more time to the query.
+        extra_seconds = has_crossed_dst(db_connection, begin_date)
+        begin_date_hack = (begin_date - timedelta(seconds=extra_seconds))
+
         # Query a bit of data and write to file.
         cursor.execute(
             "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' ORDER BY %s" % (
                 table_name,
-                begin_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
+                begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
                 date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
                 date_column))
 
@@ -112,7 +130,7 @@ def dump2csv_and_prune(db_connection, kwargs):
             cursor.execute(
                 "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s'" % (
                     table_name,
-                    begin_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
+                    begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
                     date_column, end_date.strftime('%Y-%m-%d %H:%M:%S')))
             db_connection.commit()
             if not quiet:
@@ -159,6 +177,18 @@ def max_column_value(db_connection, table_name, column, max_date):
             column, table_name, column, max_date.strftime('%Y-%m-%d')))
     ret = cursor.fetchall()
     return ret[0][0]
+
+
+def has_crossed_dst(db_connection, begin_date):
+    cursor = db_connection.cursor()
+    cursor.execute(
+        "SELECT (UNIX_TIMESTAMP('%s') - UNIX_TIMESTAMP('%s')) AS v;" % (
+            begin_date.strftime('%Y-%m-%d %H:%M:%S'),
+            (begin_date - timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')))
+    ret = cursor.fetchall()
+    if ret[0][0] == 1:
+        return 0
+    return 1  # ret[0][0] == 3601?
 
 
 def to_string(data):
@@ -233,10 +263,10 @@ Supply --prune as argument to immediately prune the data after dumping it.
 ''' % {'filename': example_filename, 'until': example_until}))
 
     parser.add_argument(
-        '-H', '--host', default='localhost',
+        '-H', '--host',
         help='which database host to connect to')
     parser.add_argument(
-        '-p', '--port', default=3306, type=int,
+        '-p', '--port', type=int,
         help='the database port if not 3306')
     parser.add_argument(
         '-u', '--user',
@@ -251,21 +281,21 @@ Supply --prune as argument to immediately prune the data after dumping it.
         '-t', '--template',
         help="the filename template to use instead of '%s'" % (
             example_filename.replace('%', '%%'),))
-    parser.add_argument(
-        '--until', default=DEFAULT_UNTIL_DATE, type=parse_date,
+    parser.add_argument(  # not through defaults-file
+        '--until', type=parse_date, default=DEFAULT_UNTIL_DATE,
         help='stop when arriving at this date')
     parser.add_argument(
         '-q', '--quiet', action='store_true',
         help='be quiet, apart from showing errors')
-    parser.add_argument(
-        '--prune', action='store_true', default=False,  # not defaults-file!
+    parser.add_argument(  # not through defaults-file
+        '--prune', action='store_true', default=False,
         help='prunes the data after writing the csv (DESTRUCTIVE!)')
     parser.add_argument(
-        '--sleep', type=float, metavar='SECONDS', default=DEFAULT_SLEEP_TIME,
+        '--sleep', type=float, metavar='SECONDS',
         help=('sleep this long between every data fetch/prune; accepts '
               'fractional seconds'))
     parser.add_argument(
-        '--defaults-file',
+        '-f', '--defaults-file',
         help=("a defaults-file in mysql-client fashion to set the username, "
               "password or any of the other long options; checks the "
               "[mysql2csv] section or [client] if the former doesn't exist"))
@@ -286,6 +316,10 @@ Supply --prune as argument to immediately prune the data after dumping it.
     kwargs = {'password': None}
     if args.defaults_file:
         kwargs.update(parse_defaults_file(args.defaults_file))
+        if 'port' in kwargs:
+            kwargs['port'] = int(kwargs['port'])
+        if 'sleep' in kwargs:
+            kwargs['sleep'] = float(kwargs['sleep'])
     # Copy command line args.
     for arg in ('host', 'port', 'user', 'socket', 'template',
                 'database', 'table', 'date_column', 'until',
@@ -299,6 +333,8 @@ Supply --prune as argument to immediately prune the data after dumping it.
         kwargs['template'] = DEFAULT_FILENAME % {
             'database': kwargs['database'],
             'table': kwargs['table']}
+    if kwargs['sleep'] is None:
+        kwargs['sleep'] = DEFAULT_SLEEP_TIME
 
     # Get password?
     if args.P:
@@ -307,8 +343,9 @@ Supply --prune as argument to immediately prune the data after dumping it.
     # Extract mysql connect args.
     my_kwargs = {}
     for from_, to in (
-            ('host', 'host'), ('user', 'user'), ('password', 'passwd'),
-            ('database', 'db'), ('socket', 'unix_socket')):
+            ('host', 'host'), ('port', 'port'), ('user', 'user'),
+            ('password', 'passwd'), ('database', 'db'),
+            ('socket', 'unix_socket')):
         if kwargs[from_] is not None:
             my_kwargs[to] = kwargs[from_]
 
