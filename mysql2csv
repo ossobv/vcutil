@@ -32,6 +32,7 @@
 # - 2016-05-23: Use argparse for the options. Read ini file as well.
 # - 2016-05-23: Add --quiet option to silence the output.
 # - 2016-05-23: Append to CSV instead clobbering it. Safer for data.
+# - 2016-05-23: Allow sleep-time to be set.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -54,8 +55,13 @@ DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
 
 
-def dump2csv(db_connection, table_name, date_column, until_date,
-             dest_file_tpl, quiet):
+def dump2csv(db_connection, kwargs):
+    # Get relevant args.
+    table_name, date_column, until_date, dest_file_tpl, quiet, sleep = tuple(
+        kwargs[i] for i in (
+            'table', 'date_column', 'until', 'template', 'quiet',
+            'sleep'))
+
     rows = describe_table(db_connection, table_name)
     begin_date = min_column_value(db_connection, table_name, date_column)
     if not begin_date or begin_date > until_date:
@@ -106,7 +112,8 @@ def dump2csv(db_connection, table_name, date_column, until_date,
             sys.stdout.write('%s\b' % (r'\|/-'[rotate],))
             sys.stdout.flush()
             rotate = (rotate + 1) % 4
-        time.sleep(DEFAULT_SLEEP_TIME)
+        if sleep:
+            time.sleep(sleep)
 
     if dest_file:
         dest_file.close()
@@ -267,6 +274,10 @@ Supply --prune as argument to immediately prune the data after dumping it.
         '--prune', action='store_true', default=False,  # not defaults-file!
         help='prunes the data after writing the csv (DESTRUCTIVE!)')
     parser.add_argument(
+        '--sleep', type=float, metavar='SECONDS', default=DEFAULT_SLEEP_TIME,
+        help=('sleep this long between every data fetch/prune; accepts '
+              'fractional seconds'))
+    parser.add_argument(
         '--defaults-file',
         help=("a defaults-file in mysql-client fashion to set the username, "
               "password or any of the other long options; checks the "
@@ -290,7 +301,8 @@ Supply --prune as argument to immediately prune the data after dumping it.
         kwargs.update(parse_defaults_file(args.defaults_file))
     # Copy command line args.
     for arg in ('host', 'port', 'user', 'socket', 'template',
-                'database', 'table', 'date_column', 'until', 'quiet'):
+                'database', 'table', 'date_column', 'until',
+                'quiet', 'sleep'):
         value = getattr(args, arg)
         if value is not None or arg not in kwargs:
             kwargs[arg] = value
@@ -328,8 +340,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
 
     # Connect and do work.
     conn = connect(**my_kwargs)
-    dump2csv(conn, kwargs['table'], kwargs['date_column'],
-             kwargs['until'], kwargs['template'], kwargs['quiet'])
+    dump2csv(conn, kwargs)
     if kwargs['prune']:
         prune(conn, kwargs['table'], kwargs['date_column'],
               kwargs['until'])
