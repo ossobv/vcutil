@@ -28,6 +28,7 @@
 # - 2011-01-21: Initial from http://wjd.nu/files/2011/01/mysql2csv.py
 # - 2016-05-23: PEP cleanup, add into vcutil repository.
 #
+from __future__ import print_function
 import sys
 import time
 from MySQLdb import connect
@@ -135,9 +136,8 @@ def to_string(data):
         return str(data)
     if data is None:
         return 'NULL'
-    print type(data)
-    print data
-    assert False
+    raise TypeError('Unexpected type %s for data %r: %s' % (
+        type(data), data, data))
 
 
 if __name__ == '__main__':
@@ -145,9 +145,9 @@ if __name__ == '__main__':
     default_filename = '%s.%s.%%Y%%m.csv'
 
     if len(sys.argv) == 1:
-        print '''\
-Usage: mysql2csv.py [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL]
-                    [FILENAME]'
+        print('''\
+Usage: mysql2csv [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL]
+                 [FILENAME]
 Dumps all data from the MySQL table to a CSV-formatted file on stdout IN A NON-
 LOCKING FASHION. In most cases you can safely use this on a production database
 to dump old records that you will be pruning later on.
@@ -157,7 +157,7 @@ on stdin. The data from TABLE will be exported ordered by the date from
 DATE_COLUMN in ascending order.
 
 The CSV file is rotated by the DATE_COLUMN date if strftime variables are used,
-the default filename being: %s' % (default_filename % ('DATABASE', 'TABLE'))
+the default filename being: '%s'
 
 The default UNTIL time is 2030-01-01 which should be far enough in the future
 to get "all" records. (It is used as "exclusive" date, meaning that no records
@@ -165,7 +165,7 @@ from that date and onwards will be output.)
 
 WARNING: if you supply --prune as first argument, it will continue to prune the
 dumped records from the database. Make sure this is really what you want.
-'''
+''' % (default_filename % ('DATABASE', 'TABLE'),))
         sys.exit(0)
 
     if sys.argv[1] == '--prune':
@@ -184,13 +184,13 @@ dumped records from the database. Make sure this is really what you want.
     if len(sys.argv) > 7:
         filename = sys.argv[7]
 
-    print 'MySQL server settings: %s@%s/%s' % (user, host, database)
-    print 'Table to dump: %s (ordered by %s, from begin to %s)' % (
-        table, date_column, until_date.strftime('%Y-%m-%d'))
-    print 'Filename template: "%s"' % (
-        filename, default_filename % (database, table))[filename is None]
-    print 'Enter your MySQL password to begin dumping%s' % (
-        '.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA]
+    print('MySQL server settings: %s@%s/%s' % (user, host, database))
+    print('Table to dump: %s (ordered by %s, from begin to %s)' % (
+        table, date_column, until_date.strftime('%Y-%m-%d')))
+    print('Filename template: "%s"' % (
+        filename or (default_filename % (database, table))))
+    print('Enter your MySQL password to begin dumping%s' % (
+        '.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA])
     import getpass
     password = getpass.getpass()
 
@@ -199,14 +199,14 @@ dumped records from the database. Make sure this is really what you want.
 
     for item in to_backup_and_prune:
         database, table, date_column = item
-        print 'Processing %s.%s (ordered by %s)' % (
-            database, table, date_column)
+        print('Processing %s.%s (ordered by %s)' % (
+            database, table, date_column))
         conn = connect(host=host, user=user, passwd=password, db=database)
         filetpl = filename or (default_filename % (database, table))
         dump2csv(conn, table, date_column, until_date, filetpl)
         if PRUNE_DUMPED_DATA:
             prune(conn, table, date_column, until_date)
         conn.close()
-        print
+        print()
 
 # vim: set ts=8 sw=4 sts=4 et ai:
