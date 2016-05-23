@@ -27,57 +27,89 @@
 # Created by Walter Doekes, OSSO B.V.
 # - 2011-01-21: Initial from http://wjd.nu/files/2011/01/mysql2csv.py
 # - 2016-05-23: PEP cleanup, add into vcutil repository.
+# - 2016-05-23: Only write CSVs if there is data for that period. End
+#               before until_date if the max date is lower.
+# - 2016-05-23: Use argparse for the options. Read ini file as well.
+# - 2016-05-23: Add --quiet option to silence the output.
 #
 from __future__ import print_function
+import argparse  # pip install argparse on old pre-2.7 python
+import getpass
 import sys
 import time
+
 from MySQLdb import connect
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+try:
+    from configparser import RawConfigParser
+except ImportError:  # python2-
+    from ConfigParser import RawConfigParser
+
 
 DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
 DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
-SLEEP_TIME = 0.001  # sleep N seconds every iteration to ease server load
+DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
 
 
 def dump2csv(db_connection, table_name, date_column, until_date,
-             dest_file_tpl):
+             dest_file_tpl, quiet):
     rows = describe_table(db_connection, table_name)
-    first_date = min_column_value(db_connection, table_name, date_column)
-    first_date = first_date.replace(minute=0, second=0)
+    begin_date = min_column_value(db_connection, table_name, date_column)
+    if not begin_date or begin_date > until_date:
+        return
+    begin_date = begin_date.replace(minute=0, second=0)
+    last_date = max_column_value(db_connection, table_name, date_column,
+                                 until_date)
+    last_date = (last_date.replace(minute=0, second=0) + timedelta(hours=1))
 
+    # Create cursor. Increment in 1 hour steps.
     cursor = db_connection.cursor()
     period = timedelta(seconds=3600)
-    last_date = first_date + period
+    end_date = begin_date + period
     dest_file = None
     dest_file_name = ''
 
-    while first_date < until_date:
-        # Check if we need to open a new file
-        if first_date.strftime(dest_file_tpl) != dest_file_name:
+    rotate = 0
+    while begin_date < last_date:
+        # Check if we need to open a new file.
+        if dest_file and begin_date.strftime(dest_file_tpl) != dest_file_name:
             if dest_file:
                 dest_file.close()
-            dest_file_name = first_date.strftime(dest_file_tpl)
-            dest_file = open(dest_file_name, 'w')
-            dest_file.write('%s\n' % (','.join(rows),))
-            sys.stdout.write('+')
-            sys.stdout.flush()
+                dest_file = None
 
-        # Query a bit of data and write to file
+        # Query a bit of data and write to file.
         cursor.execute(
             "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' ORDER BY %s" % (
                 table_name,
-                first_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-                date_column, last_date.strftime('%Y-%m-%d %H:%M:%S'),
+                begin_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
+                date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
                 date_column))
-        for row in cursor.fetchall():
+
+        for row in cursor:
+            if dest_file is None:
+                dest_file_name = begin_date.strftime(dest_file_tpl)
+                dest_file = open(dest_file_name, 'w')
+                dest_file.write('%s\n' % (','.join(rows),))
+
+                if not quiet:
+                    sys.stdout.write('+')
+                    sys.stdout.flush()
+
             dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
 
-        # Increase dates
-        first_date, last_date = last_date, last_date + period
-        # sys.stdout.write('.'); sys.stdout.flush()
-        time.sleep(SLEEP_TIME)
+        # Increase dates.
+        begin_date, end_date = end_date, end_date + period
+        if not quiet:
+            sys.stdout.write('%s\b' % (r'\|/-'[rotate],))
+            sys.stdout.flush()
+            rotate = (rotate + 1) % 4
+        time.sleep(DEFAULT_SLEEP_TIME)
+
+    if dest_file:
+        dest_file.close()
+        dest_file = None
 
 
 def prune(db_connection, table_name, date_column, until_date):
@@ -95,6 +127,7 @@ def prune(db_connection, table_name, date_column, until_date):
                 table_name,
                 date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'),
                 limit))
+        db_connection.commit()
         # cursor.execute(
         #     "DELETE FROM %s WHERE %s < '%s' ORDER BY %s LIMIT %d" % (
         #         table_name,
@@ -102,7 +135,7 @@ def prune(db_connection, table_name, date_column, until_date):
         #         date_column, limit))
         if cursor.rowcount < limit:
             break
-        time.sleep(SLEEP_TIME)
+        time.sleep(DEFAULT_SLEEP_TIME)
 
 
 def describe_table(db_connection, table_name):
@@ -116,9 +149,19 @@ def describe_table(db_connection, table_name):
 
 def min_column_value(db_connection, table_name, column):
     cursor = db_connection.cursor()
+    # We use 2 jan because 1 jan fails if the timezone is positive.
     cursor.execute(
-        "SELECT MIN(%s) FROM %s WHERE %s >= '1971-01-01';" % (
+        "SELECT MIN(%s) FROM %s WHERE %s >= '1970-01-02';" % (
             column, table_name, column))
+    ret = cursor.fetchall()
+    return ret[0][0]
+
+
+def max_column_value(db_connection, table_name, column, max_date):
+    cursor = db_connection.cursor()
+    cursor.execute(
+        "SELECT MAX(%s) FROM %s WHERE %s < '%s';" % (
+            column, table_name, column, max_date.strftime('%Y-%m-%d')))
     ret = cursor.fetchall()
     return ret[0][0]
 
@@ -142,77 +185,156 @@ def to_string(data):
         type(data), data, data))
 
 
-def show_help(fp):
-    fp.write('''\
-Usage: mysql2csv [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL]
-                 [FILENAME]
+def parse_defaults_file(filename):
+    config = RawConfigParser()
+    with open(filename, 'r') as fp:
+        config.readfp(fp)
+
+    sections = config.sections()
+    for possible_section in ('mysql2csv', 'client'):
+        if possible_section in sections:
+            break
+    else:
+        return {}
+
+    return dict(config.items(possible_section))
+
+
+def parse_date(date_):
+    return datetime.fromtimestamp(
+        time.mktime(time.strptime(date_, '%Y-%m-%d')))
+
+
+if __name__ == '__main__':
+    example_filename = DEFAULT_FILENAME % {
+        'database': '<DATABASE>', 'table': '<TABLE>'}
+    example_until = DEFAULT_UNTIL_DATE.strftime('%Y-%m-%d')
+
+    parser = argparse.ArgumentParser(
+        prog='mysql2csv',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=('''\
 Dumps all data from the MySQL table to a CSV-formatted file on stdout IN A NON-
 LOCKING FASHION. In most cases you can safely use this on a production database
 to dump old records that you will be pruning later on.
 
 Supply the necessary HOST/USER/DATABASE to connect to, the password is prompted
-on stdin. The data from TABLE will be exported ordered by the date from
-DATE_COLUMN in ascending order.
+on stdin if required. The data from TABLE will be exported ordered by the date
+from DATE_COLUMN in ascending order.
 
-The CSV file is rotated by the DATE_COLUMN date if strftime variables are used,
-the default filename being: '%(filename)s'
+If strftime variables are used are used in the CSV filename template, they are
+replaced with the values from the fetched period. The default filename TEMPLATE
+is: '%(filename)s'
 
 The default UNTIL time is %(until)s which should be far enough in the future
 to get "all" records. (It is used as "exclusive" date, meaning that no records
-from that date and onwards will be output.)
+from that date and onwards will be output/pruned.)
 
-WARNING: if you supply --prune as first argument, it will continue to prune the
-dumped records from the database. Make sure this is really what you want.
+You can use the date(1) shell utility to specify a relative date for --until;
+for example one year ago would be: date +%%Y-%%m-%%d -d '-1 year'
 
-''' % {
-        'filename': DEFAULT_FILENAME % {
-            'database': '<DATABASE>', 'table': '<TABLE>'},
-        'until': DEFAULT_UNTIL_DATE.strftime('%Y-%m-%d')})
+Supply --prune as argument to immediately prune the data after dumping it.
 
+''' % {'filename': example_filename, 'until': example_until}))
 
-if __name__ == '__main__':
-    if any(i in ('-h', '--help') for i in sys.argv[1:]):
-        show_help(sys.stdout)
-        sys.exit(0)
+    parser.add_argument(
+        '-H', '--host', default='localhost',
+        help='which database host to connect to')
+    parser.add_argument(
+        '-p', '--port', default=3306, type=int,
+        help='the database port if not 3306')
+    parser.add_argument(
+        '-u', '--user',
+        help='the username if not the current user')
+    parser.add_argument(
+        '-P', action='store_true',
+        help='ask for password')
+    parser.add_argument(
+        '-s', '--socket',
+        help='unix socket to connect to instead of tcp host')
+    parser.add_argument(
+        '-t', '--template',
+        help="the filename template to use instead of '%s'" % (
+            example_filename.replace('%', '%%'),))
+    parser.add_argument(
+        '--until', default=DEFAULT_UNTIL_DATE, type=parse_date,
+        help='stop when arriving at this date')
+    parser.add_argument(
+        '-q', '--quiet', action='store_true',
+        help='be quiet, apart from showing errors')
+    parser.add_argument(
+        '--prune', action='store_true', default=False,  # not defaults-file!
+        help='prunes the data after writing the csv (DESTRUCTIVE!)')
+    parser.add_argument(
+        '--defaults-file',
+        help=("a defaults-file in mysql-client fashion to set the username, "
+              "password or any of the other long options; checks the "
+              "[mysql2csv] section or [client] if the former doesn't exist"))
+    parser.add_argument(
+        'database',
+        help='the database to connect to')
+    parser.add_argument(
+        'table',
+        help='the table to dump and/or prune')
+    parser.add_argument(
+        'date_column',
+        help='the column that holds the indexed date')
 
-    if len(sys.argv) >= 2 and sys.argv[1] == '--prune':
-        PRUNE_DUMPED_DATA = True
-        del sys.argv[1]
-    else:
-        PRUNE_DUMPED_DATA = False
+    # Extract args and merge with defaults. If a defaults-file is set,
+    # use that and have the command line overrule it.
+    args = parser.parse_args()
+    # Copy defaults-file contents.
+    kwargs = {'password': None}
+    if args.defaults_file:
+        kwargs.update(parse_defaults_file(args.defaults_file))
+    # Copy command line args.
+    for arg in ('host', 'port', 'user', 'socket', 'template',
+                'database', 'table', 'date_column', 'until', 'quiet'):
+        value = getattr(args, arg)
+        if value is not None or arg not in kwargs:
+            kwargs[arg] = value
+    kwargs['prune'] = args.prune
+    # Set defaults.
+    if kwargs['template'] is None:
+        kwargs['template'] = DEFAULT_FILENAME % {
+            'database': kwargs['database'],
+            'table': kwargs['table']}
 
-    if len(sys.argv) not in (6, 7, 8):
-        show_help(sys.stderr)
-        sys.exit(1)
+    # Get password?
+    if args.P:
+        kwargs['password'] = getpass.getpass('Enter password: ')
 
-    host = sys.argv[1]
-    user = sys.argv[2]
-    database, table, date_column = sys.argv[3], sys.argv[4], sys.argv[5]
-    until_date = DEFAULT_UNTIL_DATE
-    if len(sys.argv) > 6:
-        until_date = datetime.fromtimestamp(
-            time.mktime(time.strptime(sys.argv[6], '%Y-%m-%d')))
-    filetpl = DEFAULT_FILENAME % {'database': database, 'table': table}
-    if len(sys.argv) > 7:
-        filetpl = sys.argv[7]
+    # Extract mysql connect args.
+    my_kwargs = {}
+    for from_, to in (
+            ('host', 'host'), ('user', 'user'), ('password', 'passwd'),
+            ('database', 'db'), ('socket', 'unix_socket')):
+        if kwargs[from_] is not None:
+            my_kwargs[to] = kwargs[from_]
 
-    print('MySQL server settings: %s@%s/%s' % (user, host, database))
-    print('Table to dump: %s (ordered by %s, from begin to %s)' % (
-        table, date_column, until_date.strftime('%Y-%m-%d')))
-    print('Filename template: "%s"' % (filetpl,))
-    print('Enter your MySQL password to begin dumping%s' % (
-        '.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA])
-    import getpass
-    password = getpass.getpass()
+    # Print a bit of info.
+    if not kwargs['quiet']:
+        print('MySQL server settings: %s@%s/%s' % (
+            kwargs['user'] or '<nobody>',
+            kwargs['socket'] or kwargs['host'] or '<local>',
+            kwargs['database']))
+        print('Table to dump: %s (ordered by %s, from begin to %s)' % (
+            kwargs['table'], kwargs['date_column'],
+            kwargs['until'].strftime('%Y-%m-%d')))
+        print('Filename template: "%s"' % (kwargs['template'],))
+        print('Processing %s.%s (ordered by %s)' % (
+            my_kwargs['db'], kwargs['table'], kwargs['date_column']))
 
-    # Start work.
-    print('Processing %s.%s (ordered by %s)' % (
-        database, table, date_column))
-    conn = connect(host=host, user=user, passwd=password, db=database)
-    dump2csv(conn, table, date_column, until_date, filetpl)
-    if PRUNE_DUMPED_DATA:
-        prune(conn, table, date_column, until_date)
+    # Connect and do work.
+    conn = connect(**my_kwargs)
+    dump2csv(conn, kwargs['table'], kwargs['date_column'],
+             kwargs['until'], kwargs['template'], kwargs['quiet'])
+    if kwargs['prune']:
+        prune(conn, kwargs['table'], kwargs['date_column'],
+              kwargs['until'])
     conn.close()
-    print()
+
+    if not kwargs['quiet']:
+        print()
 
 # vim: set ts=8 sw=4 sts=4 et ai:
