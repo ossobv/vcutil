@@ -36,6 +36,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 
+DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
+DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
 SLEEP_TIME = 0.001  # sleep N seconds every iteration to ease server load
 
 
@@ -140,12 +142,8 @@ def to_string(data):
         type(data), data, data))
 
 
-if __name__ == '__main__':
-    default_until_date = datetime(2030, 1, 1)
-    default_filename = '%s.%s.%%Y%%m.csv'
-
-    if len(sys.argv) == 1:
-        print('''\
+def show_help(fp):
+    fp.write('''\
 Usage: mysql2csv [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL]
                  [FILENAME]
 Dumps all data from the MySQL table to a CSV-formatted file on stdout IN A NON-
@@ -157,56 +155,64 @@ on stdin. The data from TABLE will be exported ordered by the date from
 DATE_COLUMN in ascending order.
 
 The CSV file is rotated by the DATE_COLUMN date if strftime variables are used,
-the default filename being: '%s'
+the default filename being: '%(filename)s'
 
-The default UNTIL time is 2030-01-01 which should be far enough in the future
+The default UNTIL time is %(until)s which should be far enough in the future
 to get "all" records. (It is used as "exclusive" date, meaning that no records
 from that date and onwards will be output.)
 
 WARNING: if you supply --prune as first argument, it will continue to prune the
 dumped records from the database. Make sure this is really what you want.
-''' % (default_filename % ('DATABASE', 'TABLE'),))
+
+''' % {
+        'filename': DEFAULT_FILENAME % {
+            'database': '<DATABASE>', 'table': '<TABLE>'},
+        'until': DEFAULT_UNTIL_DATE.strftime('%Y-%m-%d')})
+
+
+if __name__ == '__main__':
+    if any(i in ('-h', '--help') for i in sys.argv[1:]):
+        show_help(sys.stdout)
         sys.exit(0)
 
-    if sys.argv[1] == '--prune':
+    if len(sys.argv) >= 2 and sys.argv[1] == '--prune':
         PRUNE_DUMPED_DATA = True
         del sys.argv[1]
     else:
         PRUNE_DUMPED_DATA = False
+
+    if len(sys.argv) not in (6, 7, 8):
+        show_help(sys.stderr)
+        sys.exit(1)
+
     host = sys.argv[1]
     user = sys.argv[2]
     database, table, date_column = sys.argv[3], sys.argv[4], sys.argv[5]
-    until_date = default_until_date
+    until_date = DEFAULT_UNTIL_DATE
     if len(sys.argv) > 6:
         until_date = datetime.fromtimestamp(
             time.mktime(time.strptime(sys.argv[6], '%Y-%m-%d')))
-    filename = None  # use default, see below
+    filetpl = DEFAULT_FILENAME % {'database': database, 'table': table}
     if len(sys.argv) > 7:
-        filename = sys.argv[7]
+        filetpl = sys.argv[7]
 
     print('MySQL server settings: %s@%s/%s' % (user, host, database))
     print('Table to dump: %s (ordered by %s, from begin to %s)' % (
         table, date_column, until_date.strftime('%Y-%m-%d')))
-    print('Filename template: "%s"' % (
-        filename or (default_filename % (database, table))))
+    print('Filename template: "%s"' % (filetpl,))
     print('Enter your MySQL password to begin dumping%s' % (
         '.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA])
     import getpass
     password = getpass.getpass()
 
-    to_backup_and_prune = []
-    to_backup_and_prune.append((database, table, date_column))
-
-    for item in to_backup_and_prune:
-        database, table, date_column = item
-        print('Processing %s.%s (ordered by %s)' % (
-            database, table, date_column))
-        conn = connect(host=host, user=user, passwd=password, db=database)
-        filetpl = filename or (default_filename % (database, table))
-        dump2csv(conn, table, date_column, until_date, filetpl)
-        if PRUNE_DUMPED_DATA:
-            prune(conn, table, date_column, until_date)
-        conn.close()
-        print()
+    # Start work.
+    print('Processing %s.%s (ordered by %s)' % (
+        database, table, date_column))
+    conn = connect(host=host, user=user, passwd=password, db=database)
+    dump2csv(conn, table, date_column, until_date, filetpl)
+    if PRUNE_DUMPED_DATA:
+        prune(conn, table, date_column, until_date)
+    conn.close()
+    print()
 
 # vim: set ts=8 sw=4 sts=4 et ai:
