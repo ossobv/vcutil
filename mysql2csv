@@ -1,16 +1,45 @@
 #!/usr/bin/env python
-# vim: set ts=8 sw=4 sts=4 et ai:
-# Walter Doekes 2011-01-21, OSSO B.V.
-import sys, time
+# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2016 // Public Domain
+#
+# This mysql2csv dump script is a convenient way to dump and/or prune
+# large tables. Instead of selecting all data at once, it takes chunks
+# of data based on a datetime column supplied by the caller.
+#
+# For example, if you run this:
+#
+#     mysql2csv ... mydatabase large_table created
+#
+# Then the dump script will check the MIN(created) on large_table, and
+# from that point, start BETWEEN queries between that time and the next
+# hour.
+#
+#     SELECT * FROM mydatabase.large_table
+#     WHERE created >= '2011-01-21 03:00:00' AND
+#           created  < '2011-01-21 04:00:00'
+#     ORDER BY created
+#
+# If you have proper indexes on the created column, these
+# "hour-selecting" queries should be light enough to handle without
+# locking up your production database.
+#
+# See mysql2csv -h for more info.
+#
+# Created by Walter Doekes, OSSO B.V.
+# - 2011-01-21: Initial from http://wjd.nu/files/2011/01/mysql2csv.py
+# - 2016-05-23: PEP cleanup, add into vcutil repository.
+#
+import sys
+import time
 from MySQLdb import connect
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 
-SLEEP_TIME = 0.001 # sleep this many seconds every iteration to ease server load
+SLEEP_TIME = 0.001  # sleep N seconds every iteration to ease server load
 
 
-def dump2csv(db_connection, table_name, date_column, until_date, dest_file_tpl):
+def dump2csv(db_connection, table_name, date_column, until_date,
+             dest_file_tpl):
     rows = describe_table(db_connection, table_name)
     first_date = min_column_value(db_connection, table_name, date_column)
     first_date = first_date.replace(minute=0, second=0)
@@ -29,39 +58,49 @@ def dump2csv(db_connection, table_name, date_column, until_date, dest_file_tpl):
             dest_file_name = first_date.strftime(dest_file_tpl)
             dest_file = open(dest_file_name, 'w')
             dest_file.write('%s\n' % (','.join(rows),))
-            sys.stdout.write('+') ; sys.stdout.flush()
+            sys.stdout.write('+')
+            sys.stdout.flush()
 
         # Query a bit of data and write to file
-        cursor.execute("SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' ORDER BY %s" % (
-            table_name, first_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-            date_column, last_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-        ))
+        cursor.execute(
+            "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' ORDER BY %s" % (
+                table_name,
+                first_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
+                date_column, last_date.strftime('%Y-%m-%d %H:%M:%S'),
+                date_column))
         for row in cursor.fetchall():
             dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
 
         # Increase dates
         first_date, last_date = last_date, last_date + period
-        #sys.stdout.write('.') ; sys.stdout.flush()
+        # sys.stdout.write('.'); sys.stdout.flush()
         time.sleep(SLEEP_TIME)
+
 
 def prune(db_connection, table_name, date_column, until_date):
     # Simply use MySQL LIMIT here.. that should work just fine.
     limit = 1000
     cursor = db_connection.cursor()
-    sys.stdout.write(' ...pruning') ; sys.stdout.flush()
+    sys.stdout.write(' ...pruning')
+    sys.stdout.flush()
     while True:
         # DELETE without ORDER BY is much faster than with, but it might not
         # work if you're using replication in certain scenarios. See:
         # http://dev.mysql.com/doc/refman/5.1/en/replication-features-limit.html
-        cursor.execute("DELETE FROM %s WHERE %s < '%s' LIMIT %d" % (
-            table_name, date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'), limit,
-        ))
-        #cursor.execute("DELETE FROM %s WHERE %s < '%s' ORDER BY %s LIMIT %d" % (
-        #    table_name, date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'), date_column, limit,
-        #))
+        cursor.execute(
+            "DELETE FROM %s WHERE %s < '%s' LIMIT %d" % (
+                table_name,
+                date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'),
+                limit))
+        # cursor.execute(
+        #     "DELETE FROM %s WHERE %s < '%s' ORDER BY %s LIMIT %d" % (
+        #         table_name,
+        #         date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'),
+        #         date_column, limit))
         if cursor.rowcount < limit:
             break
         time.sleep(SLEEP_TIME)
+
 
 def describe_table(db_connection, table_name):
     cursor = db_connection.cursor()
@@ -71,11 +110,15 @@ def describe_table(db_connection, table_name):
         ret.append(row[0])
     return ret
 
+
 def min_column_value(db_connection, table_name, column):
     cursor = db_connection.cursor()
-    cursor.execute("SELECT MIN(%s) FROM %s WHERE %s >= '1971-01-01';" % (column, table_name, column))
+    cursor.execute(
+        "SELECT MIN(%s) FROM %s WHERE %s >= '1971-01-01';" % (
+            column, table_name, column))
     ret = cursor.fetchall()
     return ret[0][0]
+
 
 def to_string(data):
     if isinstance(data, str):
@@ -86,7 +129,7 @@ def to_string(data):
         return str(data)
     if isinstance(data, datetime):
         return '"%s"' % (data.strftime('%Y-%m-%d %H:%M:%S'),)
-    if isinstance(data, date): # must come after datetime
+    if isinstance(data, date):  # must come after datetime
         return '"%s"' % (data.strftime('%Y-%m-%d'),)
     if isinstance(data, Decimal):
         return str(data)
@@ -102,26 +145,27 @@ if __name__ == '__main__':
     default_filename = '%s.%s.%%Y%%m.csv'
 
     if len(sys.argv) == 1:
-        print 'Usage: mysql2csv.py [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL] \\'
-        print '                    [FILENAME]'
-        print 'Dumps all data from the MySQL table to a CSV-formatted file on stdout IN A NON-'
-        print 'LOCKING FASHION. In most cases you can safely use this on a production database'
-        print 'to dump old records that you will be pruning later on.'
-        print ''
-        print 'Supply the necessary HOST/USER/DATABASE to connect to, the password is prompted'
-        print 'on stdin. The data from TABLE will be exported ordered by the date from'
-        print 'DATE_COLUMN in ascending order.'
-        print ''
-        print 'The CSV file is rotated by the DATE_COLUMN date if strftime variables are used,'
-        print 'the default filename being: %s' % (default_filename % ('DATABASE', 'TABLE'))
-        print ''
-        print 'The default UNTIL time is 2030-01-01 which should be far enough in the future'
-        print 'to get "all" records. (It is used as "exclusive" date, meaning that no records'
-        print 'from that date and onwards will be output.)'
-        print ''
-        print 'WARNING: if you supply --prune as first argument, it will continue to prune the'
-        print 'dumped records from the database. Make sure this is really what you want.'
-        print ''
+        print '''\
+Usage: mysql2csv.py [--prune] HOST USER DATABASE TABLE DATE_COLUMN [UNTIL]
+                    [FILENAME]'
+Dumps all data from the MySQL table to a CSV-formatted file on stdout IN A NON-
+LOCKING FASHION. In most cases you can safely use this on a production database
+to dump old records that you will be pruning later on.
+
+Supply the necessary HOST/USER/DATABASE to connect to, the password is prompted
+on stdin. The data from TABLE will be exported ordered by the date from
+DATE_COLUMN in ascending order.
+
+The CSV file is rotated by the DATE_COLUMN date if strftime variables are used,
+the default filename being: %s' % (default_filename % ('DATABASE', 'TABLE'))
+
+The default UNTIL time is 2030-01-01 which should be far enough in the future
+to get "all" records. (It is used as "exclusive" date, meaning that no records
+from that date and onwards will be output.)
+
+WARNING: if you supply --prune as first argument, it will continue to prune the
+dumped records from the database. Make sure this is really what you want.
+'''
         sys.exit(0)
 
     if sys.argv[1] == '--prune':
@@ -134,15 +178,19 @@ if __name__ == '__main__':
     database, table, date_column = sys.argv[3], sys.argv[4], sys.argv[5]
     until_date = default_until_date
     if len(sys.argv) > 6:
-        until_date = datetime.fromtimestamp(time.mktime(time.strptime(sys.argv[6], '%Y-%m-%d')))
-    filename = None # use default, see below
+        until_date = datetime.fromtimestamp(
+            time.mktime(time.strptime(sys.argv[6], '%Y-%m-%d')))
+    filename = None  # use default, see below
     if len(sys.argv) > 7:
         filename = sys.argv[7]
 
     print 'MySQL server settings: %s@%s/%s' % (user, host, database)
-    print 'Table to dump: %s (ordered by %s, from begin to %s)' % (table, date_column, until_date.strftime('%Y-%m-%d'))
-    print 'Filename template: "%s"' % (filename, default_filename % (database, table))[filename is None]
-    print 'Enter your MySQL password to begin dumping%s' % ('.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA]
+    print 'Table to dump: %s (ordered by %s, from begin to %s)' % (
+        table, date_column, until_date.strftime('%Y-%m-%d'))
+    print 'Filename template: "%s"' % (
+        filename, default_filename % (database, table))[filename is None]
+    print 'Enter your MySQL password to begin dumping%s' % (
+        '.', ' AND PRUNING!!!')[PRUNE_DUMPED_DATA]
     import getpass
     password = getpass.getpass()
 
@@ -151,11 +199,14 @@ if __name__ == '__main__':
 
     for item in to_backup_and_prune:
         database, table, date_column = item
-        print 'Processing %s.%s (ordered by %s)' % (database, table, date_column)
+        print 'Processing %s.%s (ordered by %s)' % (
+            database, table, date_column)
         conn = connect(host=host, user=user, passwd=password, db=database)
-        filetpl = (filename, default_filename % (database, table))[filename is None]
+        filetpl = filename or (default_filename % (database, table))
         dump2csv(conn, table, date_column, until_date, filetpl)
         if PRUNE_DUMPED_DATA:
             prune(conn, table, date_column, until_date)
         conn.close()
         print
+
+# vim: set ts=8 sw=4 sts=4 et ai:
