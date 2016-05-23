@@ -31,6 +31,7 @@
 #               before until_date if the max date is lower.
 # - 2016-05-23: Use argparse for the options. Read ini file as well.
 # - 2016-05-23: Add --quiet option to silence the output.
+# - 2016-05-23: Append to CSV instead clobbering it. Safer for data.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -90,7 +91,7 @@ def dump2csv(db_connection, table_name, date_column, until_date,
         for row in cursor:
             if dest_file is None:
                 dest_file_name = begin_date.strftime(dest_file_tpl)
-                dest_file = open(dest_file_name, 'w')
+                dest_file = open(dest_file_name, 'a')
                 dest_file.write('%s\n' % (','.join(rows),))
 
                 if not quiet:
