@@ -33,6 +33,7 @@
 # - 2016-05-23: Add --quiet option to silence the output.
 # - 2016-05-23: Append to CSV instead clobbering it. Safer for data.
 # - 2016-05-23: Allow sleep-time to be set.
+# - 2016-05-23: Prune during dump, using the same date filters.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -55,20 +56,19 @@ DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
 
 
-def dump2csv(db_connection, kwargs):
+def dump2csv_and_prune(db_connection, kwargs):
     # Get relevant args.
-    table_name, date_column, until_date, dest_file_tpl, quiet, sleep = tuple(
+    table_name, date_column, until, template, quiet, sleep, prune = tuple(
         kwargs[i] for i in (
             'table', 'date_column', 'until', 'template', 'quiet',
-            'sleep'))
+            'sleep', 'prune'))
 
     rows = describe_table(db_connection, table_name)
     begin_date = min_column_value(db_connection, table_name, date_column)
-    if not begin_date or begin_date > until_date:
+    if not begin_date or begin_date > until:
         return
     begin_date = begin_date.replace(minute=0, second=0)
-    last_date = max_column_value(db_connection, table_name, date_column,
-                                 until_date)
+    last_date = max_column_value(db_connection, table_name, date_column, until)
     last_date = (last_date.replace(minute=0, second=0) + timedelta(hours=1))
 
     # Create cursor. Increment in 1 hour steps.
@@ -81,7 +81,7 @@ def dump2csv(db_connection, kwargs):
     rotate = 0
     while begin_date < last_date:
         # Check if we need to open a new file.
-        if dest_file and begin_date.strftime(dest_file_tpl) != dest_file_name:
+        if dest_file and begin_date.strftime(template) != dest_file_name:
             if dest_file:
                 dest_file.close()
                 dest_file = None
@@ -94,9 +94,10 @@ def dump2csv(db_connection, kwargs):
                 date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
                 date_column))
 
+        row = None
         for row in cursor:
             if dest_file is None:
-                dest_file_name = begin_date.strftime(dest_file_tpl)
+                dest_file_name = begin_date.strftime(template)
                 dest_file = open(dest_file_name, 'a')
                 dest_file.write('%s\n' % (','.join(rows),))
 
@@ -105,6 +106,18 @@ def dump2csv(db_connection, kwargs):
                     sys.stdout.flush()
 
             dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
+
+        # Prune immediately in equal sized chunks.
+        if prune and row is not None:
+            cursor.execute(
+                "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s'" % (
+                    table_name,
+                    begin_date.strftime('%Y-%m-%d %H:%M:%S'), date_column,
+                    date_column, end_date.strftime('%Y-%m-%d %H:%M:%S')))
+            db_connection.commit()
+            if not quiet:
+                sys.stdout.write('!')
+                sys.stdout.flush()
 
         # Increase dates.
         begin_date, end_date = end_date, end_date + period
@@ -118,32 +131,6 @@ def dump2csv(db_connection, kwargs):
     if dest_file:
         dest_file.close()
         dest_file = None
-
-
-def prune(db_connection, table_name, date_column, until_date):
-    # Simply use MySQL LIMIT here.. that should work just fine.
-    limit = 1000
-    cursor = db_connection.cursor()
-    sys.stdout.write(' ...pruning')
-    sys.stdout.flush()
-    while True:
-        # DELETE without ORDER BY is much faster than with, but it might not
-        # work if you're using replication in certain scenarios. See:
-        # http://dev.mysql.com/doc/refman/5.1/en/replication-features-limit.html
-        cursor.execute(
-            "DELETE FROM %s WHERE %s < '%s' LIMIT %d" % (
-                table_name,
-                date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'),
-                limit))
-        db_connection.commit()
-        # cursor.execute(
-        #     "DELETE FROM %s WHERE %s < '%s' ORDER BY %s LIMIT %d" % (
-        #         table_name,
-        #         date_column, until_date.strftime('%Y-%m-%d %H:%M:%S'),
-        #         date_column, limit))
-        if cursor.rowcount < limit:
-            break
-        time.sleep(DEFAULT_SLEEP_TIME)
 
 
 def describe_table(db_connection, table_name):
@@ -340,10 +327,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
 
     # Connect and do work.
     conn = connect(**my_kwargs)
-    dump2csv(conn, kwargs)
-    if kwargs['prune']:
-        prune(conn, kwargs['table'], kwargs['date_column'],
-              kwargs['until'])
+    dump2csv_and_prune(conn, kwargs)
     conn.close()
 
     if not kwargs['quiet']:
