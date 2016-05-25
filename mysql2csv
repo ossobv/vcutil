@@ -35,6 +35,7 @@
 # - 2016-05-23: Allow sleep-time to be set.
 # - 2016-05-23: Prune during dump, using the same date filters.
 # - 2016-05-23: Fix problem with TIMESTAMP column and DST changes.
+# - 2016-05-25: Add --extra-where parameter to limit the query results.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -64,12 +65,18 @@ def dump2csv_and_prune(db_connection, kwargs):
             'table', 'date_column', 'until', 'template', 'quiet',
             'sleep', 'prune'))
 
+    extra_where = (kwargs.get('extra_where') or '').strip()
+    if extra_where:
+        extra_where = 'AND (%s)' % (extra_where.replace('%', '%%'),)
+
     rows = describe_table(db_connection, table_name)
-    begin_date = min_column_value(db_connection, table_name, date_column)
+    begin_date = min_column_value(
+        db_connection, table_name, date_column, extra_where)
     if not begin_date or begin_date > until:
         return
     begin_date = begin_date.replace(minute=0, second=0)
-    last_date = max_column_value(db_connection, table_name, date_column, until)
+    last_date = max_column_value(
+        db_connection, table_name, date_column, until, extra_where)
     last_date = (last_date.replace(minute=0, second=0) + timedelta(hours=1))
 
     # Create cursor. Increment in 1 hour steps.
@@ -106,11 +113,12 @@ def dump2csv_and_prune(db_connection, kwargs):
 
         # Query a bit of data and write to file.
         cursor.execute(
-            "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' ORDER BY %s" % (
+            "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' %s "
+            "ORDER BY %s" % (
                 table_name,
                 begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
                 date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
-                date_column))
+                extra_where, date_column))
 
         row = None
         for row in cursor:
@@ -128,10 +136,11 @@ def dump2csv_and_prune(db_connection, kwargs):
         # Prune immediately in equal sized chunks.
         if prune and row is not None:
             cursor.execute(
-                "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s'" % (
+                "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
                     table_name,
                     begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-                    date_column, end_date.strftime('%Y-%m-%d %H:%M:%S')))
+                    date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    extra_where))
             db_connection.commit()
             if not quiet:
                 sys.stdout.write('!')
@@ -160,21 +169,23 @@ def describe_table(db_connection, table_name):
     return ret
 
 
-def min_column_value(db_connection, table_name, column):
+def min_column_value(db_connection, table_name, column, extra_where):
     cursor = db_connection.cursor()
     # We use 2 jan because 1 jan fails if the timezone is positive.
     cursor.execute(
-        "SELECT MIN(%s) FROM %s WHERE %s >= '1970-01-02';" % (
-            column, table_name, column))
+        "SELECT MIN(%s) FROM %s WHERE %s >= '1970-01-02' %s" % (
+            column, table_name, column, extra_where))
     ret = cursor.fetchall()
     return ret[0][0]
 
 
-def max_column_value(db_connection, table_name, column, max_date):
+def max_column_value(db_connection, table_name, column, max_date,
+                     extra_where):
     cursor = db_connection.cursor()
     cursor.execute(
-        "SELECT MAX(%s) FROM %s WHERE %s < '%s';" % (
-            column, table_name, column, max_date.strftime('%Y-%m-%d')))
+        "SELECT MAX(%s) FROM %s WHERE %s < '%s' %s" % (
+            column, table_name, column, max_date.strftime('%Y-%m-%d'),
+            extra_where))
     ret = cursor.fetchall()
     return ret[0][0]
 
@@ -182,7 +193,7 @@ def max_column_value(db_connection, table_name, column, max_date):
 def has_crossed_dst(db_connection, begin_date):
     cursor = db_connection.cursor()
     cursor.execute(
-        "SELECT (UNIX_TIMESTAMP('%s') - UNIX_TIMESTAMP('%s')) AS v;" % (
+        "SELECT (UNIX_TIMESTAMP('%s') - UNIX_TIMESTAMP('%s')) AS v" % (
             begin_date.strftime('%Y-%m-%d %H:%M:%S'),
             (begin_date - timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')))
     ret = cursor.fetchall()
@@ -295,6 +306,10 @@ Supply --prune as argument to immediately prune the data after dumping it.
         help=('sleep this long between every data fetch/prune; accepts '
               'fractional seconds'))
     parser.add_argument(
+        '--extra-where',
+        help=('additional filter to add to the SELECT and DELETE queries; '
+              'for example: is_active = 0'))
+    parser.add_argument(
         '-f', '--defaults-file',
         help=("a defaults-file in mysql-client fashion to set the username, "
               "password or any of the other long options; checks the "
@@ -323,7 +338,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
     # Copy command line args.
     for arg in ('host', 'port', 'user', 'socket', 'template',
                 'database', 'table', 'date_column', 'until',
-                'quiet', 'sleep'):
+                'quiet', 'sleep', 'extra_where'):
         value = getattr(args, arg)
         if value is not None or arg not in kwargs:
             kwargs[arg] = value
