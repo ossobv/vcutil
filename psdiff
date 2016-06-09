@@ -76,6 +76,32 @@ class Process(object):
         return '{0}{1}  {{user={2}}}'.format(
             indent * '  ', self.cmdline.rstrip(), self.user)
 
+    def sort(self):
+        # Sort the children and convert the set into a list.
+        for child in self.children:
+            child.sort()
+        self.children = list(sorted(self.children))
+
+    def __eq__(self, other):
+        # Only identity comparison yields same.
+        return (id(self) == id(other))
+
+    def __lt__(self, other):
+        # Quick, check identity:
+        if id(self) == id(other):
+            return False
+
+        # Lazy comparison.
+        if self.cmdline != other.cmdline:
+            return (self.cmdline < other.cmdline)
+        if self.user != other.user:
+            return (self.user < other.user)
+        if len(self.children) != len(other.children):
+            return (len(self.children) < len(other.children))
+        assert isinstance(self.children, list), self.children
+        assert isinstance(other.children, list), other.children
+        return (self.children < other.children)
+
     def __str__(self):
         return self.to_string()
 
@@ -94,10 +120,7 @@ class ProcessFormatter(object):
         ret = []
         if self.include(process):
             ret.append(self.to_string(process, indent))
-        # TODO: We may need to take children of children into account as
-        # well. Lazy keys anyone?
-        for child in sorted(process.children, key=(
-                lambda x: (x.cmdline, x.user, len(x.children)))):
+        for child in process.children:  # has been sorted already
             ret.extend(self.to_strings(child, indent + 1))
         return ret
 
@@ -204,6 +227,10 @@ def ps_faxu():
     # process info yet earlier.
     for process in root.process_map.values():
         process.fix_links()
+
+    # Sort children and fix them as sorted lists.
+    for process in root.process_map.values():
+        process.sort()
 
     return root
 
