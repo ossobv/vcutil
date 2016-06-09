@@ -94,8 +94,10 @@ class ProcessFormatter(object):
         ret = []
         if self.include(process):
             ret.append(self.to_string(process, indent))
+        # TODO: We may need to take children of children into account as
+        # well. Lazy keys anyone?
         for child in sorted(process.children, key=(
-                lambda x: (x.cmdline, x.user))):
+                lambda x: (x.cmdline, x.user, len(x.children)))):
             ret.extend(self.to_strings(child, indent + 1))
         return ret
 
