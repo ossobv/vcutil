@@ -32,7 +32,7 @@
 #     ebtables -A FORWARD -i <TAP> -s <MAC> -j ACCEPT
 #     # Send traffic to VM only if destined for his macaddr or everyone.
 #     ebtables -A FORWARD -o <TAP> -d <MAC> -j ACCEPT
-#     ebtables -A FORWARD -o <TAP> -s FF:FF -j ACCEPT
+#     ebtables -A FORWARD -o <TAP> -s Multicast -j ACCEPT
 #     # .. and drop the rest
 #
 # But, having to figure out MAC addresses and TAP devices is no fun.
@@ -172,11 +172,15 @@ def reload():
             ebtables('-A', 'FORWARD', '-i', iface.dev,
                      '-s', iface.mac, '-j', 'ACCEPT')
             ebtables('-A', 'FORWARD', '-i', iface.dev, '-j', 'DROP')
-            # Allow traffic to the broadcast and that one MAC.
+            # Allow traffic to the multicast/broadcast address and that
+            # one MAC.
             ebtables('-A', 'FORWARD', '-o', iface.dev,
                      '-d', iface.mac, '-j', 'ACCEPT')
+            # 'Broadcast': MAC == FF:FF:FF:FF:FF:FF
+            # 'Multicast': MAC[0] & 0x1 == 0x1
+            # Ergo, the Multicast match is a superset of Broadcast.
             ebtables('-A', 'FORWARD', '-o', iface.dev,
-                     '-d', 'FF:FF:FF:FF:FF:FF', '-j', 'ACCEPT')
+                     '-d', 'Multicast', '-j', 'ACCEPT')
             ebtables('-A', 'FORWARD', '-o', iface.dev, '-j', 'DROP')
         #print()
 
