@@ -1,0 +1,28 @@
+#!/bin/sh
+# filespeed (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Script to quickly check "download speed" of a file. It monitors the
+# sizes of the passed files every second and shows the average size
+# increase in kB/s.
+#
+# Example usage:
+#
+#     find /path/to/rsync-downloads -name '.*' -print0 | xargs -0 filespeed
+#     10154 kB/s
+#
+
+getsize() {
+    stat -c%s -- "$@" 2>/dev/null | awk 'BEGIN{s=0}{s+=$1}END{print s}'
+}
+gettime() {
+    date +%s
+}
+
+s0=$(getsize "$@")
+t0=$(gettime)
+while :; do
+    sleep 1
+    sd=$(($(getsize "$@") - s0))
+    td=$(($(gettime) - t0))
+    printf '\r\033[K%s kB/s' $((sd / td / 1024))
+done
