@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-# gitlab-hook-postcommit-coloremail (part of ossobv/vcutil) // wdoekes/2013
-#   // Public Domain
+# gitlab-hook-postcommit-coloremail (part of ossobv/vcutil)
+#   // wdoekes/2013-2016 // Public Domain
 #
 # Sends out a nice colored e-mail with the committed changeset for
 # each committed revision. It uses the awesome vim(1) syntax
@@ -60,6 +60,7 @@ from subprocess import check_output  # python2.7+
 if 'PATH' not in os.environ:  # lighttpd unsets it: we lose /usr/local/bin
     os.environ['PATH'] = '/usr/local/bin:/usr/bin:/bin'
 REPOSITORIES_ROOT = '/home/git/repositories/'
+MAIL_SERVER = '127.0.0.1'
 MAIL_FROM = 'gitlab@example.com'
 MAIL_TO = ['commits@example.com']  # list of recipients
 SUBJECT = '[%(project)s] %(shortid)s %(author)s: %(summary)s'
@@ -230,7 +231,7 @@ def send_mails(decoded):
         msg['Date'] = formatdate(localtime=True)
         msg.attach(MIMEText(changes, 'plain', _charset='UTF-8'))
         msg.attach(MIMEText(changes_html, 'html', _charset='UTF-8'))
-        s = smtplib.SMTP('localhost')
+        s = smtplib.SMTP(MAIL_SERVER)
         s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
         s.quit()
 
@@ -271,7 +272,7 @@ elif is_daemon_child():
         msg['From'] = MAIL_FROM
         msg['To'] = ', '.join(MAIL_TO)
         msg['Date'] = formatdate(localtime=True)
-        s = smtplib.SMTP('localhost')
+        s = smtplib.SMTP(MAIL_SERVER)
         s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
         s.quit()
 
