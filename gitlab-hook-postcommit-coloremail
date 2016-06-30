@@ -29,11 +29,15 @@
 #     server.breakagelog          = "/var/log/lighttpd/breakage.log"
 #     server.document-root        = "/srv/lighttpd-cgi"
 #     server.modules = (
-#         "mod_cgi"
+#         "mod_cgi",
+#         "mod_setenv"
 #     )
 #     cgi.execute-x-only = "enable"
 #     # (Add .py suffix to this script.)
 #     cgi.assign = (".py" => "/usr/bin/python")
+#     setenv.add-environment = (
+#         "GITLAB_HOOK_RC" => "/srv/lighttpd-cgi/gitlab-hook-rc.py"
+#     )
 #
 # Example usage:
 #
@@ -68,8 +72,25 @@ BODY_PREFIX = 'URL: %(url)s\n\n'
 BODY_SUFFIX = (u'diff ENDS HERE\n' + (72 * u'=') + u'\n'
                u'D\u20acBUG: %(gitlab_json)s\n')
 
-# Sanity checks:
-os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
+
+def update_globals_from_file(filename):
+    """
+    Read a python file with updated globals.
+
+        # Example gitlab-hook-rc.py
+        MAIL_FROM = 'git@mycompany.com
+        MAIL_SERVER = 'smtp.mycompany.com'
+    """
+    globals_ = {}
+    locals_ = {}
+    try:
+        execfile(filename, globals_, locals_)
+    except IOError:
+        return
+    uppercase_values = dict(
+        (key, value) for (key, value) in locals_.items()
+        if key[0].isupper())
+    globals().update(uppercase_values)
 
 
 def is_daemon_child():
@@ -248,6 +269,14 @@ def get_stdin():
         pass
     return '\n'.join(data)
 
+
+# Optionally update settings
+GITLAB_HOOK_RC = os.environ.get(
+    'GITLAB_HOOK_RC', '/etc/gitlab-hook-rc.py')
+update_globals_from_file(GITLAB_HOOK_RC)
+
+# Sanity checks:
+os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
 
 # Get/parse input
 stdin = get_stdin()
