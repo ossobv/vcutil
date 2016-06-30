@@ -52,6 +52,7 @@ import tempfile
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate
 from subprocess import check_output  # python2.7+
 
 
@@ -226,6 +227,7 @@ def send_mails(decoded):
         msg['Subject'] = unicode(SUBJECT) % commitvars
         msg['From'] = MAIL_FROM
         msg['To'] = ', '.join(MAIL_TO)
+        msg['Date'] = formatdate(localtime=True)
         msg.attach(MIMEText(changes, 'plain', _charset='UTF-8'))
         msg.attach(MIMEText(changes_html, 'html', _charset='UTF-8'))
         s = smtplib.SMTP('localhost')
@@ -268,6 +270,7 @@ elif is_daemon_child():
         msg['Subject'] = 'ERROR in gitlab-hook-postcommit-coloremail'
         msg['From'] = MAIL_FROM
         msg['To'] = ', '.join(MAIL_TO)
+        msg['Date'] = formatdate(localtime=True)
         s = smtplib.SMTP('localhost')
         s.sendmail(MAIL_FROM, MAIL_TO, msg.as_string())
         s.quit()
