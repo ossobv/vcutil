@@ -275,24 +275,22 @@ GITLAB_HOOK_RC = os.environ.get(
     'GITLAB_HOOK_RC', '/etc/gitlab-hook-rc.py')
 update_globals_from_file(GITLAB_HOOK_RC)
 
-# Sanity checks:
-os.stat(REPOSITORIES_ROOT)  # does root path exist at all?
-
-# Get/parse input
-stdin = get_stdin()
-decoded = json.loads(stdin)
-
 # If this is a POST request, daemonize and send OK to caller. If we're
 # ran from the CLI, don't daemonize and don't print any HTTP status.
-is_cgi = (os.environ.get('REQUEST_METHOD') == 'POST')
+is_cgi = bool(os.environ.get('REQUEST_METHOD'))  # GET/POST/HEAD
+
+# Get data, must be done in the foreground.
+stdin = get_stdin()
 
 if not is_cgi:
     # Do everything in the foreground (testing mode).
+    decoded = json.loads(stdin.decode('utf-8'))
     send_mails(decoded)
 
 elif is_daemon_child():
     # Do that mailing as a background job.
     try:
+        decoded = json.loads(stdin.decode('utf-8'))
         send_mails(decoded)
     except:
         backtrace = traceback.format_exc()
