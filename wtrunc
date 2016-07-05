@@ -1,0 +1,22 @@
+#!/bin/sh
+# wtrunc (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Script to truncate output of stdin to at most $COLUMNS tokens per
+# line. Many programs (git, less, ps) already do that, but stop doing
+# that when stdout is piped to another application like grep.
+#
+# Example usage:
+#
+#     ps fax | grep -E 'rsync *-a' | wtrunc
+#
+# Without the wtrunc, the output would wrap, when we don't necessarily
+# want it to.
+#
+
+test -z "$COLUMNS" && COLUMNS=$(tput cols)
+if test -z "$COLUMNS"; then
+	echo 'No $COLUMNS ?' >&2
+	exit 1
+fi
+
+sed -e 's/\(.\{'${COLUMNS}'\}\).*/\1/'
