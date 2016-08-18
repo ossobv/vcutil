@@ -10,3 +10,9 @@ override_dh_auto_install:
 	dh_python2
 	dh_python3
 	dh_auto_install -- BINDIR=/usr/bin
+
+override_dh_builddeb:
+	# Compress .deb destination files with gzip instead of xz for
+	# compatibility.  See also debian/source/options for the source
+	# package.
+	dh_builddeb -- -Zgzip

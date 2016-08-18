@@ -1,3 +1,10 @@
+vcutil (1.2~all) UNRELEASED; urgency=low
+
+  * Set gzip as source/deb package formats for compatibility with older
+    systems.
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Thu, 18 Aug 2016 15:26:57 +0200
+
 vcutil (1.1~all) UNRELEASED; urgency=low
 
   * cert-expiry-finder: Also check SER (opensips/kamailio) certs.
