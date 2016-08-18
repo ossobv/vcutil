@@ -1,3 +1,22 @@
+vcutil (1.1~all) UNRELEASED; urgency=low
+
+  * cert-expiry-finder: Also check SER (opensips/kamailio) certs.
+  * dbschemadiff: Compares MySQL replication (or cluster) schema's.
+  * filespeed: Quick util to show speed of data inserted into a file.
+  * git-hook-postcommit-coloremail: Fix email address defaults.
+  * gitlab-hook-postcommit-coloremail: Now uses optional config py-file.
+  * mysql2csv: Dumps large tables from MySQL into CSV files (and prunes).
+  * psdiff: Fix ordering issue with processed with grandchildren.
+    (Would show changes that weren't.)
+  * pve-macaddr-security: Also allow multicast, not just broadcast.
+  * salt-highstate-pp: Wraps salt highstate with readable responses.
+    (Shows OK/FAIL only and keeps the logs for reading in /tmp.)
+  * uwsgi-kill: Uses -HUP kill.
+  * wgrep: Use case sensitive regex to find file types.
+  * wtrunc: Truncate output as if it's fed to a terminal.
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Thu, 18 Aug 2016 15:18:20 +0200
+
 vcutil (1.0~all) UNRELEASED; urgency=low
 
   * Initial version.
