@@ -1,3 +1,12 @@
+vcutil (1.3~all) UNRELEASED; urgency=low
+
+  * Actually add the following files to the install:
+    dbschemadiff, filespeed, mysql2csv
+  * Don't add this:
+    tcpdump247 (it's supposed to be an init script)
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Fri, 18 Aug 2016 15:55:27 +0200
+
 vcutil (1.2~all) UNRELEASED; urgency=low
 
   * Set gzip as source/deb package formats for compatibility with older

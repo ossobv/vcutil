@@ -10,13 +10,16 @@ BINS = \
 	censored-for-email \
 	cert-expiry-check \
 	cert-expiry-finder \
+	dbschemadiff \
 	difftac \
 	easycert \
+	filespeed \
 	gitbackhub \
 	git-hook-postcommit-coloremail \
 	gitlab-hook-postcommit-coloremail \
 	indirect-scp \
 	linux-kernel-autoremove \
+	mysql2csv \
 	psdiff \
 	pve-macaddr-security \
 	svn-diff \
@@ -32,6 +35,9 @@ BINS = \
 	wgrep \
 	wtimediff \
 	wtimestamp
+
+OTHER = \
+	tcpdump247
 
 .PHONY: all deb hashes
 all: hashes
