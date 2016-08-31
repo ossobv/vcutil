@@ -82,6 +82,11 @@ class Process(object):
             child.sort()
         self.children = list(sorted(self.children))
 
+    def __hash__(self):
+        # Needs to be reimplemented because Python3 drops the
+        # auto-generated one when __eq__ is defined.
+        return id(self)
+
     def __eq__(self, other):
         # Only identity comparison yields same.
         return (id(self) == id(other))
