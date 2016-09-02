@@ -9,6 +9,11 @@
 # on Desktop to copy stuff from ServerA to ServerB will then fail. This
 # script adds an indirect copy fallback, copying the data via Desktop.
 #
+# NOTE: 2016-09-02: I just found out that scp(1) has the `-3` option to
+# have the file copy go through localhost. That sort of defeats the
+# purpose of this script. Although you'll miss out on the progress
+# meter.
+#
 # Installation:
 #
 #     cd /usr/local/bin
