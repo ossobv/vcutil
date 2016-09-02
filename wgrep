@@ -12,6 +12,7 @@
 # 
 path="$1"; shift
 find "$path" \
+    '(' -type f -o -type l ')' \
     -regextype posix-extended \
     -regex '.*\.(asp|c|cfg|conf|cpp|css|cxx|h|hpp|htm|html|java|js|less|m4|php|po|py|rst|sh|sls|sql|tpl|template|txt|xml)' \
     '!' -name '*.min.*' \
