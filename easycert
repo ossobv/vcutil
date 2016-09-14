@@ -1,5 +1,5 @@
 #!/bin/sh
-# easycert (part of ossobv/vcutil) // wdoekes/2012-2014 // Public Domain
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2016 // Public Domain
 #
 # Wrapper around openssl to create basic KEY+CSR pairs for submittal to
 # a certificate authority.
@@ -11,14 +11,14 @@
 #     # Create two files:
 #     # -rw-rw-r-- my_example_com-2014.csr
 #     # -rw------- my_example_com-2014.key
-#     easycert -c UK -l London -o MyCompany -e my@example.com \
+#     easycert -c UK -l London -s London -o MyCompany -e my@example.com \
 #         my.example.com
 #
 #     # Or, an alternate notation:
 #     # -rw-rw-r-- STAR_example_com-2014.csr
 #     # -rw------- STAR_example_com-2014.key
 #     easycert '*.example.com' \
-#         '/C=UK/L=London/O=MyCompany/CN=*.example.com/'
+#         '/C=UK/L=London/ST=State/O=MyCompany/CN=*.example.com/'
 #
 #     # Test if the certificate chain is in the right order:
 #     #  0 s:/OU=Domain .../OU=PositiveSSL Wildcard/CN=*.osso.nl
@@ -34,6 +34,7 @@
 # defaults
 country=NL
 city=Groningen
+state=Groningen
 organisation="OSSO B.V."
 email="info@osso.nl"
 
@@ -42,7 +43,8 @@ CERTHOME=/srv/easycert
 
 run_help() {
     echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
-    echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/O=OSSO B.V./CN=osso.nl/\""
+    echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/ST=Groningen/\
+O=OSSO B.V./CN=osso.nl/\""
     echo "Usage: $0 -T www.osso.nl"
 }
 
@@ -137,6 +139,7 @@ cgi_get() {
         <input name="organisation" value="$organisation"/> Company<br/>
         <input name="email" value="$email"/> E-mail<br/>
         <input name="city" value="$city"/> City<br/>
+        <input name="state" value="$state"/> State<br/>
         <input name="country" value="$country"/> Country<br/>
         <input type="submit"/>
     </form>
@@ -146,12 +149,12 @@ __EOF__
 cgi_post() {
     eval "`cat | python -c 'import urlparse
 for k,v in urlparse.parse_qs(raw_input()).items():
-    if k in ("cn","organisation","email","city","country"):
+    if k in ("cn","organisation","email","city","state","country"):
         print "%s='\''%s'\''" % (k,v[0].replace("\\"","").replace("/","")
                                    .replace(",",";").replace("'\''",""))'`"
     # "`"`" # vim.. break out of syntax fun
     if test -n "$cn" -o -n "$organisation" -o -n "$email" -o \
-            -n "$city" -o -n "$country"; then
+            -n "$city" -o -n "$state" -o -n "$country"; then
         echo "Invalid arguments...<br/>"
         exit 0
     fi
@@ -161,7 +164,8 @@ for k,v in urlparse.parse_qs(raw_input()).items():
         exit 0
     fi
     cd "$CERTHOME"
-    subject="/C=$country/L=$city/O=$organisation/CN=$cn/emailAddress=$email"
+    subject="/C=$country/L=$city/ST=$state/O=$organisation/CN=$cn/\
+emailAddress=$email"
     file="`run_generate "$cn" "$subject" </dev/null 2>&0`"
     if test $? != 0; then
         echo "Failure...<br/>"
@@ -188,8 +192,8 @@ action=generate
 
 # Trick: we use getopt(1) to reposition the arguments, because the
 # builtin getopts plays POSIXLY_CORRECT and refuses to do so. We then
-# use builtin getopts (with 's') that handles quoted arguments.
-options=Thc:l:o:e:
+# use builtin getopts (plural!) that handles quoted arguments.
+options=Thc:l:s:o:e:
 temp=`getopt -o $options -- "$@"`
 test $? != 0 && exit 1
 eval set -- "$temp"
@@ -200,6 +204,9 @@ while getopts $options opt; do
         ;;
     l)
         city="$OPTARG"
+        ;;
+    s)
+        state="$OPTARG"
         ;;
     o)
         organisation="$OPTARG"
@@ -242,7 +249,7 @@ generate)
     fi
     cn="$1"
     test -n "$2" && subject="$2"
-    test -z "$2" && subject="/C=$country/L=$city/O=$organisation/\
+    test -z "$2" && subject="/C=$country/L=$city/ST=$state/O=$organisation/\
 CN=$cn/emailAddress=$email"
     if ! echo "$subject" | grep -q ^/; then
         echo "Subject does not start with '/'." >&2
