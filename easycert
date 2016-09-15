@@ -41,6 +41,12 @@ email="info@osso.nl"
 # cgi config
 CERTHOME=/srv/easycert
 
+openssl_connect() {
+    host="$1"; shift
+    port="$1"; shift
+    openssl s_client -connect "$host:$port" -servername "$host" "$@"
+}
+
 run_help() {
     echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
     echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/ST=Groningen/\
@@ -61,10 +67,10 @@ show_certchain() {
     echo "(Although the last one is optional and only "
     echo "overhead.)"
     echo
-    output="`openssl s_client -connect "$host:$port" </dev/null 2>&0 |
+    output="`openssl_connect $host $port </dev/null 2>&0 |
         sed -e '/^Certificate chain/,/^---/!d'`"
     if test -z "$output"; then
-        openssl s_client -connect "$host:$port" </dev/null
+        openssl_connect $host $port </dev/null
         exit 1
     fi
     echo "$output"
@@ -73,8 +79,8 @@ show_certchain() {
 get_expiry() {
     host="$1"
     port="$2"
-    certinfo=`openssl s_client -connect "$host:$port" -showcerts </dev/null \
-              2>/dev/null | openssl x509 -text`
+    certinfo=`openssl_connect $host $port -showcerts </dev/null 2>/dev/null |
+        openssl x509 -text`
     sigalgo=`echo "$certinfo" |
              sed -n 's/^ *Signature Algorithm: \([^ ]*\).*/\1/p' | head -n1`
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
