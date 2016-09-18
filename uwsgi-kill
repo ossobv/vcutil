@@ -24,5 +24,6 @@ echo "Sending restart signal to uwsgi(-cores):"
 comma_pids=$(echo $pids | sed -e 's/[[:blank:]]\+/,/;s/,$//')
 ps hf -p $comma_pids | sed -e '
     s#^\([[:blank:]]*[0-9]\+\) .* /usr/bin/uwsgi[^ ]* #  \1 uwsgi #
-    s# /\([^ /]\+/\)*# #g'
+    s# /\([^ /]\+/\)*# #g' | sort -k2 |
+    grep --color=auto -C100 "$args"
 kill -HUP $pids
