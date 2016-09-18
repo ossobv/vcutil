@@ -1,23 +1,28 @@
 #!/bin/sh
 # uwsgi-kill (part of ossobv/vcutil) // wdoekes/2014-2016 // Public Domain
 #
-# Sends the TERM signal to the parent uwsgi(-core) process to make it
+# Sends the HUP signal to the parent uwsgi(-core) process to make it
 # restart all children. Instead of doing /etc/init.d/uwsgi restart, this
 # is quicker (less downtime).
 #
-# As an added bonus, you can select which parent you want to kill by
+# As an added bonus, you can select which parent you want to HUP by
 # adding arguments.
 #
 # Usage:
 #
 #    uwsgi-kill
-#    # kills all uwsgi parents
+#    # HUPs all uwsgi parents
 #
 #    uwsgi-kill somesite
-#    # kills the uwsgi parent that matches "somesite"
+#    # HUPs the uwsgi parent that matches "somesite"
 #
-args=`echo "$*" | sed -e 's#[^A-Za-z0-9]\+#.*#g'`
-pids=`ps fax | sed -e '/[0-9] \/usr\/bin\/uwsgi.*'"$args"'/!d;s/^ *//;s/ .*//'`
+args=$(echo "$*" |
+    sed -e 's#[^[:blank:]A-Za-z0-9]#[^A-Za-z0-9]#g;s#[[:blank:]]\+#.*#')
+pids=$(pgrep -P1 -xf "^/usr/bin/uwsgi.*[^A-Za-z0-9]$args.*$")
 test -z "$pids" && echo "Nothing matches..." >&2 && exit 1
-echo "Sending restart signal to uwsgi(-cores)" $pids "..."
+echo "Sending restart signal to uwsgi(-cores):"
+comma_pids=$(echo $pids | sed -e 's/[[:blank:]]\+/,/;s/,$//')
+ps hf -p $comma_pids | sed -e '
+    s#^\([[:blank:]]*[0-9]\+\) .* /usr/bin/uwsgi[^ ]* #  \1 uwsgi #
+    s# /\([^ /]\+/\)*# #g'
 kill -HUP $pids
