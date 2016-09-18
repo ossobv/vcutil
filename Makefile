@@ -28,6 +28,7 @@ BINS = \
 	svn-show-mergable \
 	svn-status \
 	udiff \
+	uwsgi-list \
 	uwsgi-kill \
 	venvpatch \
 	wcheckrestart \

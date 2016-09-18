@@ -1,0 +1,21 @@
+#!/bin/sh
+# uwsgi-list (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Lists running uwsgi parents. If you're not using an emperor, but
+# using the Debian/Ubuntu default uwsgi config, all apps are children
+# of init.  This command quickly lists those running apps.
+#
+# See also:
+#
+#     uwsgi-kill
+#
+pids=$(pgrep -P1 -xf "^/usr/bin/uwsgi.*[^A-Za-z0-9]$args.*$")
+test -z "$pids" && echo "No uwsgi running..." >&2 && exit 1
+if test -t 1; then
+    printf 'Currently running uwsgi(-cores): %s/%s\n' \
+      $(echo $pids | wc -w) $(echo /etc/uwsgi/apps-enabled/*.ini | wc -w)
+fi
+comma_pids=$(echo $pids | sed -e 's/[[:blank:]]\+/,/;s/,$//')
+ps hf -p $comma_pids | sed -e '
+    s#^\([[:blank:]]*[0-9]\+\) .* /usr/bin/uwsgi[^ ]* #  \1 uwsgi #
+    s# /\([^ /]\+/\)*# #g' | sort -k2

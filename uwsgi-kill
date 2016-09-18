@@ -16,6 +16,10 @@
 #    uwsgi-kill somesite
 #    # HUPs the uwsgi parent that matches "somesite"
 #
+# See also:
+#
+#     uwsgi-list
+#
 args=$(echo "$*" |
     sed -e 's#[^[:blank:]A-Za-z0-9]#[^A-Za-z0-9]#g;s#[[:blank:]]\+#.*#')
 pids=$(pgrep -P1 -xf "^/usr/bin/uwsgi.*[^A-Za-z0-9]$args.*$")
