@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# gitbackhub (part of ossobv/vcutil) // wdoekes/2015 // Public Domain
+# gitbackhub (part of ossobv/vcutil) // wdoekes/2015-2016 // Public Domain
 #
 # GitHub is cool. But since we aren't paying for it, we can't rely on
 # its availability. This script ensures that we get a daily backup of
@@ -24,8 +24,11 @@
 # Notes:
 #
 #     As a default, the script denies destructive updates like
-#     force-updates and even branch deletes. This will probably have
-#     to be revised soon.
+#     force-updates and even branch deletes, except if the name
+#     contains any of "wip", "feat", "fix" like "development-wip".
+#     That way you can have certain branches that force-pushes are
+#     allowed on, like feature-branches that need to be rebased
+#     every now and then.
 #
 import os
 from re import compile
@@ -36,6 +39,7 @@ from urllib.request import HTTPError, urlopen
 
 SAFE_REPO_NAME_RE = compile(
     r'^[A-Za-z0-9_][A-Za-z0-9_-]*$')
+WIP_WORDS = ('wip', 'feat', 'fix')
 
 
 class DestructiveChanges(ValueError):
@@ -52,9 +56,14 @@ class ChangeSet(object):
         self.deletes = 0    # deleted branch/tag/...
         self.changes = 0    # forced update
 
+        # Destructive, but we don't care (WIP=work in progress):
+        self.deletes_wip = 0    # deleted branch/tag/... with "-wip"
+        self.changes_wip = 0    # forced update with "-wip"
+
         self.log = []
 
     def is_destructive(self):
+        # We ignore the "work in progress" changes here.
         return bool(self.deletes + self.changes)
 
     def __str__(self):
@@ -71,6 +80,9 @@ class ChangeSet(object):
             ret.append('%d DELETED items' % (self.deletes,))
         if self.changes:
             ret.append('%d CHANGED items' % (self.changes,))
+        if self.changes_wip or self.deletes_wip:
+            ret.append('%d/%d "work in progress" deletes/changes' % (
+                self.deletes_wip, self.changes_wip))
         ret = ', '.join(ret)
 
         lines = [ret] + self.log
@@ -78,7 +90,7 @@ class ChangeSet(object):
 
     def __bool__(self):  # __nonzero__ in python2
         return bool(self.clones + self.news + self.updates + self.deletes +
-                    self.changes)
+                    self.changes + self.deletes_wip + self.changes_wip)
 
 
 class Repository(object):
@@ -168,11 +180,17 @@ class Repository(object):
             # Deleted stuff:
             #  x [deleted]         (none)     -> origin/test-fetch
             elif line.startswith(' x '):
-                changeset.deletes += 1
+                if any(wip_word in line for wip_word in WIP_WORDS):
+                    changeset.deletes_wip += 1
+                else:
+                    changeset.deletes += 1
             # Changed stuff:
             #  + af324cd...1d3a96e test-fetch -> test-fetch (forced update)
             elif line.startswith(' + '):
-                changeset.changes += 1
+                if any(wip_word in line for wip_word in WIP_WORDS):
+                    changeset.changes_wip += 1
+                else:
+                    changeset.changes += 1
             # else: unexpected git output.
             else:
                 raise ValueError('Unexpected git output on line %d in:\n%s' %
