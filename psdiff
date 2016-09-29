@@ -158,11 +158,13 @@ class FilteredProcessFormatter(ProcessFormatter):
         # We want to monitor these daemons, but not their
         # (grand)children, as they come and go:
         if process.has_parent(include_self=False, cmdline__startswith=(
+                'gocollect',                        # ubuntu (upstart)
                 '/usr/lib/postfix/master',          # debian/ubuntu
                 '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
                 '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
                 '/usr/sbin/dovecot',
+                '/usr/sbin/gocollect',              # sysv/systemd
                 '/usr/sbin/vsftpd',
                 '/usr/sbin/zabbix_agentd')):
             return False
