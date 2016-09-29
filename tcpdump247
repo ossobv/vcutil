@@ -1,5 +1,5 @@
 #!/bin/bash
-# tcpdump247 (part of ossobv/vcutil) // wdoekes/2013-2015 // Public Domain
+# tcpdump247 (part of ossobv/vcutil) // wdoekes/2013-2016 // Public Domain
 #
 # Script to start a rotating tcpdump. Restarts tcpdump if it dies.
 #
@@ -50,8 +50,8 @@ PIDFILE=/var/run/tcpdump247.pgid  # it's a pgid-file actually
 # load local settings
 test -r /etc/default/tcpdump247 && . /etc/default/tcpdump247
 # sanity checks
-test "$ENABLED" != "1" && exit 1    # enabled?
-test -x "$TCPDUMP" || exit 1        # tcpdump found?
+test "$ENABLED" != "1" && exit 0    # not enabled? (or exit 6?)
+test -x "$TCPDUMP" || exit 5        # no tcpdump found?
 
 
 start_scripts() {

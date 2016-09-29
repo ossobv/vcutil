@@ -3,6 +3,7 @@ HASHES = $(wildcard *.hash)
 DESTDIR =
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
+SYSCONFDIR = /etc
 
 BINS = \
 	asterisk-gitlog-find \
@@ -59,6 +60,8 @@ deb:
 install:
 	install -d $(DESTDIR)$(BINDIR)
 	install $(BINS) $(DESTDIR)$(BINDIR)
+	#install -D -T tcpdump247 $(DESTDIR)$(SYSCONFDIR)/init.d/tcpdump247
+	#install -m0600 -D -T tcpdump247.default $(DESTDIR)$(SYSCONFDIR)/default/tcpdump247
 
 # salt.states.file.managed likes to have hashes to download, to check
 # whether it has the newest version. See:
