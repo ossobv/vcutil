@@ -1,3 +1,19 @@
+vcutil (1.4~all) UNRELEASED; urgency=low
+
+  * Command updates:
+    - easycert: Add ST= state by default. Fix so SNI works in -T mode.
+    - gitbackhub: Allow force-push/deletes on "work in progress" branches.
+    - indirect-scp: Document that scp -3 should work equally well.
+    - psdiff: Fix python3 issue. Add "dovecot", "php-fpm", "gocollect".
+    - tcpdump247: Update defaults file; add example sniffing SYN/FIN/RST.
+    - uwsgi-kill: Improve matching, improve output.
+    - wgrep: Don't match dirs. Do match: cc, erb, go, pp, rb, sls, yaml, yml.
+  * New commands:
+    - uwsgi-list: Complement uwsgi-kill.
+  * Add tcpdump247 into /etc/init.d through the debian installer.
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Thu, 29 Sep 2016 12:31:18 +0200
+
 vcutil (1.3~all) UNRELEASED; urgency=low
 
   * Actually add the following files to the install:
