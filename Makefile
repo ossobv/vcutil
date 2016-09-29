@@ -22,6 +22,7 @@ BINS = \
 	mysql2csv \
 	psdiff \
 	pve-macaddr-security \
+	salt-highstate-pp \
 	svn-diff \
 	svn-hook-postcommit-coloremail \
 	svn-merge-msg \
@@ -35,13 +36,22 @@ BINS = \
 	wdiffcount \
 	wgrep \
 	wtimediff \
-	wtimestamp
+	wtimestamp \
+	wtrunc
 
 OTHER = \
-	tcpdump247
+	Makefile \
+	README.md \
+	gitlab-hook-postcommit-coloremail.example \
+	psdiff.hash \
+	psdiff.rst \
+	tcpdump247 \
+	tcpdump247.default \
+	udiff.selftest \
+	wsvreader.py
 
-.PHONY: all deb hashes
-all: hashes
+.PHONY: all deb hashes make_has_all_files
+all: hashes make_has_all_files
 
 deb:
 	dpkg-buildpackage -us -uc -sa
@@ -55,6 +65,10 @@ install:
 # https://docs.saltstack.com/en/latest/ref/states/all/
 #   salt.states.file.html#salt.states.file.managed
 hashes: $(HASHES)
+
+make_has_all_files:
+	@bash -c "diff -pu <(git ls-files | grep -vF / | sort -V) \
+		<(echo $(BINS) $(OTHER) | tr ' ' '\n' | sort -V)"
 
 %.hash: % Makefile
 	sha256sum $< > $@
