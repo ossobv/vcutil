@@ -162,7 +162,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
                 '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
-                '/usr/sbin/dovecot ',
+                '/usr/sbin/dovecot',
                 '/usr/sbin/vsftpd',
                 '/usr/sbin/zabbix_agentd')):
             return False
@@ -172,7 +172,8 @@ class FilteredProcessFormatter(ProcessFormatter):
         #   based on demand
         if process.cmdline.startswith((
                 '/usr/sbin/apache2 ',       # debian/ubuntu
-                '/usr/sbin/httpd ')):       # redhat
+                '/usr/sbin/httpd ',         # redhat
+                'php-fpm: ')):
             key = (process.parent.pid, process.user, process.cmdline)
             if key in self._include_once:
                 return False
