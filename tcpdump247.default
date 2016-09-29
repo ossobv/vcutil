@@ -1,7 +1,10 @@
-# tcpdump247 settings
+# tcpdump247 (bash) settings
 
 # use ENABLED=0 or ENABLED=1
-ENABLED=1
+ENABLED=0
+
+# =====================================================================
+if test $ENABLED -ne 0; then # --skipping below if not enabled--
 
 # helpers
 IFACE=`/sbin/ip route get 1.2.3.4 | sed -e 's/.* dev //;s/ .*//;q'`
@@ -19,4 +22,6 @@ ARGS_LIST=(
     "-i $IFACE -pnns0 -w /var/spool/tcpdump/3306synfinrst.pcap. -W 10 -C 10 'tcp and port 3306 and (tcp[13] & 0x47) != 0'"
 )
 
+fi # --skipped above if not enabled--
+# =====================================================================
 # vim: set syn=sh ts=8 sw=4 sts=4 et ai:
