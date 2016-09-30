@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+# tls-sniff-ciphers (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+#
+# Sniff TLS traffic off the wire and show which TLS/SSL cipher is being
+# negotiated. Useful to debug TLS cipher selection issues, commonly
+# caused by old clients or bad configuration.
+#
+# Sure, wireshark does that too, and more. But this is more convenient
+# to run on the server directly.
+#
+# Uses scapy and scpya-ssl_tls to capture and decode packets. Prints a
+# very coarse listing of TLS Client Hello and TLS Server Hello packets.
+# The client lists what it accepts and the server chooses one, so the
+# Server Hello will contain the selected cipher.
+#
+# Example:
+#
+#     $ tls-sniff-ciphers host 1.2.3.4 and not port 22
+#
+#     2016-09-30 13:34:16.924273: 1.2.3.4:1782 -> 5.5.5.5:25: TLS Client Hello:
+#       VERSION 0x303: TLS_1_2
+#       CIPHER 0xc02f: ECDHE_RSA_WITH_AES_128_GCM_SHA256
+#       CIPHER 0xc02b: ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+#       CIPHER 0x009e: DHE_RSA_WITH_AES_128_GCM_SHA256
+#       ...
+#
+#     2016-09-30 13:34:16.927713: 5.5.5.5:25 -> 1.2.3.4:1782: TLS Server Hello:
+#       VERSION 0x303: TLS_1_2
+#       CIPHER 0xc030: ECDHE_RSA_WITH_AES_256_GCM_SHA384
+#
+# Here we see that the TLS setup between 1.2.3.4 and 5.5.5.5 selected
+# ECDHE_RSA_WITH_AES_256_GCM_SHA384. That's fine.
+#
+# At other times, you may see that the client sends ciphers that are not
+# in your cipherlist. For instance, you have a cipherlist set to HIGH,
+# and the client shows up with cipher 0x000a DES-CBC3-SHA. You can check
+# that it's not compatible with your server cipherlist using "openssl
+# ciphers":
+#
+#    $ openssl ciphers -V HIGH | grep 0x00,0x0A
+#    (empty)
+#
+#    $ openssl ciphers -V HIGH:DES-CBC3-SHA | grep 0x00,0x0A
+#    0x00,0x0A - DES-CBC3-SHA  SSLv3 Kx=RSA  Au=RSA  Enc=3DES(168) Mac=SHA1
+#
+# Or, you may see that the server has selected an unexpected cipher
+# like 0xc019 TLS_ECDH_anon_WITH_AES_256_CBC_SHA (AECDH-AES256-SHA)
+# after which the client reports "unable to get issuer certificate".
+# (Well, maybe it shouldn't have provided anonymous ciphers in the if
+# it wanted to do authentication.) You can then consider dropping the
+# aNULL ciphers from the list:
+#
+#     $ openssl ciphers -V 'HIGH:!aNULL' | grep 0xC0,x19
+#     (empty)
+#
+# Installing tls-sniff-ciphers:
+#
+#     apt-get install python-scapy python-pip python-crypto
+#     pip install scapy-ssl_tls
+#     install tls-sniff-ciphers /usr/local/bin/
+#
+# Further reading:
+#
+#     A mapping between the common and OpenSSL cipher names, and a
+#     description of how the cipher groups work can be found in the
+#     ciphers(1ssl) man-page.
+#
+import sys
+from datetime import datetime
+from scapy.all import IP, TCP, sniff
+from scapy_ssl_tls.ssl_tls import (
+    TLS_VERSIONS, TLS_CIPHER_SUITES,
+    TLS, TLSClientHello, TLSServerHello)
+
+
+def traffic_callback(pkt):
+    if TCP not in pkt:
+        print >>sys.stderr, pkt.show()
+        return
+
+    try:
+        pkt[TCP].decode_payload_as(TLS)
+    except TypeError:
+        pass
+    else:
+        if TLS in pkt:
+            tls_callback(pkt)
+
+
+def tls_callback(pkt):
+    # pkt[TLS].show()
+    if TLSClientHello in pkt or TLSServerHello in pkt:
+        us = '%s:%s' % (pkt[IP].src, pkt[TCP].sport)
+        them = '%s:%s' % (pkt[IP].dst, pkt[TCP].dport)
+        tuple4 = '%s -> %s' % (us, them)
+        when = datetime.now()
+
+        if TLSClientHello in pkt:
+            hello = pkt[TLSClientHello]
+            print '%s: %s: TLS Client Hello:' % (when, tuple4)
+            print '  VERSION 0x%x: %s' % (
+                hello.version, TLS_VERSIONS.get(hello.version))
+            for cipher in hello.cipher_suites:
+                print '  CIPHER 0x%04x: %s' % (
+                    cipher, TLS_CIPHER_SUITES.get(cipher))
+            print
+
+        if TLSServerHello in pkt:
+            hello = pkt[TLSServerHello]
+            print '%s: %s: TLS Server Hello:' % (when, tuple4)
+            cipher = hello.cipher_suite
+            print '  VERSION 0x%x: %s' % (
+                hello.version, TLS_VERSIONS.get(hello.version))
+            print '  CIPHER 0x%04x: %s' % (
+                cipher, TLS_CIPHER_SUITES.get(cipher))
+            print
+
+
+def main():
+    if len(sys.argv) <= 1:
+        print >>sys.stderr, (
+            'Listen for TCP packets and report TLS Hello packets.\n'
+            'Use this to debug SSL/TLS setup problems.\n'
+            '\n'
+            'Please supply a pcap-filter expression on the command line,\n'
+            'like: port 25 and host 1.2.3.4\n')
+        sys.exit(1)
+
+    pcap_filter = ' '.join(sys.argv[1:])
+    real_filter = 'tcp and (%s)' % (pcap_filter,)
+    print 'Listening for TCP packets on: %s' % (pcap_filter,)
+    sniff(prn=traffic_callback, filter=real_filter, store=0)
+
+
+if __name__ == '__main__':
+    main()
+# vim: set ts=8 sw=4 sts=4 et ai:

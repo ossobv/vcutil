@@ -29,6 +29,7 @@ BINS = \
 	svn-merge-msg \
 	svn-show-mergable \
 	svn-status \
+	tls-sniff-ciphers \
 	udiff \
 	uwsgi-list \
 	uwsgi-kill \
