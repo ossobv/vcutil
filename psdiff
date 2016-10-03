@@ -143,9 +143,17 @@ class FilteredProcessFormatter(ProcessFormatter):
         if process.has_parent(include_self=True, pid=2):
             return False
 
+        # Systemd renames itself after an update. We can't rename it
+        # back to /sbin/init because it may have been called differently
+        # (/sbin/init splash or whatever) in the first place.
+        elif process.pid == 1:
+            # /sbin/init [splash]
+            # /lib/systemd/systemd --system --deserialize 19
+            process.cmdline = 'INIT'
+
         # Children of these commands are generally not daemons, skip
         # them:
-        if process.has_parent(include_self=True, cmdline__startswith=(
+        elif process.has_parent(include_self=True, cmdline__startswith=(
                 'sshd:', 'CRON', 'SCREEN',
                 '/USR/SBIN/CRON',  # older cron
                 '/usr/sbin/CRON',  # newer cron
@@ -157,7 +165,7 @@ class FilteredProcessFormatter(ProcessFormatter):
 
         # We want to monitor these daemons, but not their
         # (grand)children, as they come and go:
-        if process.has_parent(include_self=False, cmdline__startswith=(
+        elif process.has_parent(include_self=False, cmdline__startswith=(
                 'gocollect',                        # ubuntu (upstart)
                 '/usr/lib/postfix/master',          # debian/ubuntu
                 '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
@@ -172,7 +180,7 @@ class FilteredProcessFormatter(ProcessFormatter):
         # These children may come and go, but we expect at least one:
         # - multiprocess apache creates at least N processes but may add/remove
         #   based on demand
-        if process.cmdline.startswith((
+        elif process.cmdline.startswith((
                 '/usr/sbin/apache2 ',       # debian/ubuntu
                 '/usr/sbin/httpd ',         # redhat
                 'php-fpm: ')):
