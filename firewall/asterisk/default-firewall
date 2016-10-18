@@ -1,0 +1,15 @@
+# Custom hosts
+OSSO="123.123.123.123 9.9.9.9"
+EXAMPLE="$(ipof example.com)"
+
+# Whitelist
+WHITELIST="$OSSO $EXAMPLE"
+
+# Blacklist
+BLACKLIST=""
+BLACKLIST="$BLACKLIST 62.210.0.0/16"    # Iliad/Tiscali, never acts on abuse mail
+BLACKLIST="$BLACKLIST 91.121.0.0/16"    # OVH SAS, French, SIP-cracks
+BLACKLIST="$BLACKLIST 94.23.0.0/16"     # OVH ISP, fail2ban spam
+BLACKLIST="$BLACKLIST 195.154.48.0/20"  # Tiscali France Backbone
+BLACKLIST="$BLACKLIST 212.83.128.0/19"  # Iliad/Tiscali, you suck the most
+BLACKLIST="$BLACKLIST 212.83.160.0/19"  # Iliad/Tiscali, argh

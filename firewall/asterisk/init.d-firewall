@@ -1,0 +1,181 @@
+#!/bin/sh
+
+### BEGIN INIT INFO
+# Provides:        iptables
+# Required-Start:  $network
+# Required-Stop:
+# Default-Start:   2 3 4 5
+# Default-Stop:    0 1 6
+# Short-Description: Start/stop firewall
+### END INIT INFO
+# (provides 'iptables' because other tools rely on that)
+
+# Program variables
+NAME=firewall
+IP4T=/sbin/iptables
+
+ip4t() {
+    error=$($IP4T "$@" 2>&1)
+    if test $? -ne 0; then
+        echo >&2
+        echo "firewall: Failure on: $IP4T $@" >&2
+        echo "  $error" >&2
+        fw_down
+        exit 1
+    fi
+}
+
+ipof() {
+    for hostname in "$@"; do
+        ret=$(timeout 2s getent ahostsv4 "$hostname" | awk '{print $1}' | sort -u)
+        test -z "$ret" && echo "$NAME: ${hostname}: NOT FOUND" >&2 || echo "$ret"
+    done
+}
+
+# General network definitions
+EXTIF=$(ip route get 1.2.3.4 | sed -re '1!d;s/.* +dev +([^ ]+) +src+.*/\1/')
+EXTIP=$(ip route get 1.2.3.4 | sed -re '1!d;s/.* +dev +[^ ]+ +src+ +([^ ]+).*/\1/')
+
+# Configure these in /etc/default/firewall!
+WHITELIST=""
+BLACKLIST=""
+
+# Update config from /etc/default
+test -f /etc/default/firewall && . /etc/default/firewall
+
+# Load debian default config
+. /lib/lsb/init-functions
+
+
+fw_flush() {
+    ip4t -P INPUT DROP
+    ip4t -P OUTPUT DROP
+    ip4t -P FORWARD DROP
+    ip4t -F
+    ip4t -X
+    ip4t -Z
+}
+
+fw_down() {
+    ip4t -P INPUT ACCEPT
+    ip4t -P OUTPUT ACCEPT
+    ip4t -P FORWARD ACCEPT
+    ip4t -F
+    ip4t -X
+    ip4t -Z
+}
+
+fw_input() {
+    # Create prerequisites.
+    fw_input_whitelist
+    fw_input_blacklist
+    fw_input_tarpit
+
+    # Allow localhost.
+    ip4t -A INPUT -i lo -j ACCEPT
+
+    # Whitelist.
+    for net in $WHITELIST; do
+        ip4t -A INPUT -i $EXTIF -s $net -j WHITE
+    done
+
+    # Blacklist.
+    for net in $BLACKLIST; do
+        ip4t -A INPUT -i $EXTIF -s $net -j BLACK
+    done
+
+    # Allow SIP from all, but ratelimit it.
+    ip4t -A INPUT -i $EXTIF -d $EXTIP -p tcp --dport 5060 -j TARPIT
+    ip4t -A INPUT -i $EXTIF -d $EXTIP -p udp --dport 5060 -j TARPIT
+
+    # Allow RTP according to rules in /etc/asterisk/rtp.conf.
+    ip4t -A INPUT -i $EXTIF -d $EXTIP -p udp --dport 10000:20001 -j ACCEPT
+
+    # Allow established/related traffic.
+    # This should work, unless you have no connection tracking.
+    ip4t -A INPUT -i $EXTIF -d $EXTIP -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+    # SMTP/DNS/HTTP/HTTPS responses; if/when don't have a working
+    # iptables-conntrack.
+    #ip4t -A INPUT -i $EXTIF -d $EXTIP -p tcp --sport 25 -j ACCEPT
+    #ip4t -A INPUT -i $EXTIF -d $EXTIP -p tcp --sport 53 -j ACCEPT
+    #ip4t -A INPUT -i $EXTIF -d $EXTIP -p udp --sport 53 -j ACCEPT
+    #ip4t -A INPUT -i $EXTIF -d $EXTIP -p tcp --sport 80 -j ACCEPT
+    #ip4t -A INPUT -i $EXTIF -d $EXTIP -p tcp --sport 443 -j ACCEPT
+}
+
+fw_input_whitelist() {
+    # Whitelisted stuff.
+    ip4t -N WHITE
+    # SSH and SIP in.
+    ip4t -A WHITE -p tcp --dport 22 -j ACCEPT
+    ip4t -A WHITE -p tcp --dport 5060 -j ACCEPT
+    ip4t -A WHITE -p udp --dport 5060 -j ACCEPT
+}
+
+fw_input_blacklist() {
+    # Blacklisted stuff.
+    ip4t -N BLACK
+    ip4t -A BLACK -j DROP
+}
+
+fw_input_tarpit() {
+    # Ratelimited SIP.
+    ip4t -N TARPIT
+    ip4t -A TARPIT -j ACCEPT -m limit --limit 3/s --limit-burst 12
+    #ip4t -A TARPIT -j LOG -m limit --limit 1/m --log-prefix "RATELIM " --log-level info
+    ip4t -A TARPIT -j DROP
+}
+
+fw_output() {
+    # Basically allow all, for sane IPs/destinations.
+    ip4t -A OUTPUT -o lo -j ACCEPT
+    for net in $WHITELIST; do
+        ip4t -A OUTPUT -o $EXTIF -d $net -j ACCEPT
+    done
+    ip4t -A OUTPUT -o $EXTIF -s $EXTIP -j ACCEPT
+}
+
+
+case "$1" in
+    start|reload|restart|force-reload)
+        # Stop fail2ban if we're in TTY mode.
+        test -t 0 && service fail2ban status >/dev/null
+        fail2ban=$?
+        test $fail2ban -eq 0 && service fail2ban stop
+
+        log_daemon_msg "Starting (or restarting) OSSO firewall" $NAME
+        fw_flush
+        fw_input
+        fw_output
+        log_end_msg 0
+
+        test $fail2ban -eq 0 && service fail2ban start
+        ;;
+    stop)
+        # Stop fail2ban if we're in TTY mode.
+        test -t 0 && service fail2ban status >/dev/null
+        fail2ban=$?
+        test $fail2ban -eq 0 && service fail2ban stop
+
+        log_daemon_msg "Stopping OSSO firewall" $NAME
+        fw_down
+        log_end_msg 0
+        ;;
+    status)
+        if test $($IP4T -nvL | wc -l) -gt 20; then
+            log_success_msg "$NAME is enabled"
+            exit 0
+        else
+            log_failure_msg "$NAME is NOT enabled"
+            exit 3
+        fi
+        ;;
+    *)
+        N=/etc/init.d/$NAME
+        log_action_msg "$N {start|stop|reload|restart|force-reload|status}"
+        exit 1
+        ;;
+esac
+
+exit 0  # vim: set ts=8 sw=4 sts=4 et ai:
