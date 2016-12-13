@@ -393,6 +393,12 @@ class AbstractDatabase(object):
             self.cache[req] = (fields, values)
         return dataset_class(self.connector, *self.cache[req])
 
+    def __repr__(self):
+        return '<%s(%s:***@%s:%s/%s)>' % (
+            self.__class__.__name__, self.connector.username,
+            self.connector.hostname, self.connector.port,
+            self.connector.name)
+
 
 class MysqlDatabase(AbstractDatabase):
     def routines(self):
@@ -462,7 +468,7 @@ class DatabaseConnector(object):
 
 def inifile_to_databases(inifile, use_cache=False):
     # Open ini file.
-    config = RawConfigParser()
+    config = RawConfigParser(dict_type=OrderedDict)
     with open(inifile, 'r') as fp:
         config.readfp(fp)
 
