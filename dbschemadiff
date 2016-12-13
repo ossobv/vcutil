@@ -340,12 +340,11 @@ class DataSet(object):
         return self.datalen
 
     def __str__(self):
-        fmt = '  '.join('{{{0}:20.20}}'.format(i)
-                        for i in range(len(self.metadata.fields)))
-        ret = [fmt.format(*self.metadata.fields)]
-        ret.append(fmt.format(*(['-' * 20] * len(self.metadata.fields))))
+        fmt = '  '.join(['%-20.20s'] * len(self.metadata.fields))
+        ret = [fmt % self.metadata.fields]
+        ret.append(fmt % (['-' * 20] * len(self.metadata.fields)))
         for i, row in enumerate(self.data):
-            ret.append(fmt.format(*[repr(i) for i in row]))
+            ret.append(fmt % row)
             if i == 3:
                 ret.append('...')
                 break
