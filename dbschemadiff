@@ -52,15 +52,10 @@ class DataDiffer(object):
             # Must be equal to [sets[*][1]]
             indexes = [sources.keys()]
         else:
-            # Order sets by index.
+            # Order sets by index with None-set last.
             ordered_sets = list(sets)
-            ordered_sets.sort(key=(
-                lambda x: sorted(x[1])[0]))
-
-            # Place None-set last.
-            if ordered_sets[0][0] is None:
-                move = ordered_sets.pop(0)
-                ordered_sets.append(move)
+            ordered_sets.sort(key=(lambda x: (
+                x[0] is None, sorted(x[1])[0])))
 
             # Split sets from indexes.
             indexes = [i[1] for i in ordered_sets]
@@ -123,12 +118,13 @@ class DataDiffer(object):
                 # Local ref.
                 in_fields = self.metadata.fields
                 # Only compare the sets with actual contents.
-                non_null_sets = self.ordered_sets
-                if self.ordered_sets[-1] is None:
-                    non_null_sets = non_null_sets[0:-1]
+                non_null_sets = [i for i in self.ordered_sets if i is not None]
+                #if self.ordered_sets[-1] is None:
+                #    non_null_sets = non_null_sets[0:-1]
                 # Check every field for differences.
                 for i, field in enumerate(in_fields):
-                    cmpcols = [columns[i] for columns in non_null_sets]
+                    cmpcols = [
+                        columns and columns[i] for columns in non_null_sets]
                     if any(cmpcols[0] != column for column in cmpcols[1:]):
                         diff_fields.append(field)
 
