@@ -21,6 +21,7 @@ BINS = \
 	indirect-scp \
 	linux-kernel-autoremove \
 	mysql2csv \
+	pdns-mysql-slave-prune \
 	psdiff \
 	pve-macaddr-security \
 	salt-highstate-pp \

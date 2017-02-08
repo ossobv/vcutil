@@ -1,0 +1,78 @@
+#!/bin/sh
+# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017 //
+#   Public Domain
+#
+# Reads PowerDNS MySQL backend SLAVE data for stale domains and prunes
+# those.
+#
+# Usage:
+#
+#   # pdns-mysql-slave-prune
+#   Pruning SLAVE domain 'old-removed-domain.tld' (704)
+#   ...
+#
+# It works by checking your PowerDNS MySQL database backend for domains
+# with:
+# - type set to SLAVE
+# - that haven't been 'last_check' updated in the last 3 days
+#
+# An extra check is performed before removal to confirm that the AVG of
+# the last_check updates is at least two days ago. If the average is
+# older, it aborts because the slaving might be broken.
+#
+#
+# Tested with PowerDNS 4.0, but should work with PowerDNS 3.4 as well.
+# Silence regular output by discarding stdout.
+#
+
+DBNAME=$(find /etc/powerdns/ -name '*.conf' -type f |
+         xargs grep -h ^gmysql-dbname= | sed -e 's/[^=]*=//')
+
+myquery() {
+    mysql --defaults-file=/etc/mysql/debian.cnf "$DBNAME" -Ne "$1"
+}
+
+test_slave_running() {
+    if test "$(myquery "
+            SELECT AVG(last_check) > (UNIX_TIMESTAMP() - 2*86400) AS val
+            FROM domains WHERE type = 'SLAVE';")" != "1"; then
+        echo 'Slave updates appear broken! Stopping...' >&2
+        exit 1
+    fi
+}
+
+old_slave_domains() {
+    myquery "
+        SELECT id, name FROM domains
+        WHERE type = 'SLAVE' AND last_check < (UNIX_TIMESTAMP() - 3*86400)
+        ORDER BY name, id;"
+}
+
+prune_domain() {
+    id=$1
+    domain=$2
+    if ! test "$((id-1))" -lt "$id"; then
+        echo "Not an integer id for domain '$domain': $id" >&2
+        exit 1
+    fi
+
+    echo "Pruning SLAVE domain '$domain' ($id)"
+    myquery "
+        DELETE FROM comments WHERE domain_id = $id;
+        DELETE FROM cryptokeys WHERE domain_id = $id;
+        DELETE FROM domainmetadata WHERE domain_id = $id;
+        DELETE FROM records WHERE domain_id = $id;
+        DELETE FROM domains WHERE id = $id;"
+}
+
+# Only prune data if most of the slaving works.
+test_slave_running || exit 1
+
+# Do some pruning.
+old_slave_domains | awk -F'\t' '{print $1 ";" $2}' | while read line; do
+    id=${line%;*}
+    domain=${line#*;}
+    prune_domain $id $domain
+done
+
+# vim: set ts=8 sw=4 sts=4 et ai:
