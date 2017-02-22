@@ -1,2 +1,6 @@
 # Maximum compatibility.
 compression = "gzip"
+# Don't include .git, .swp into the tar.
+# See: dpkg-source --help for defaults.
+tar-ignore = ".git"
+tar-ignore = ".*.sw?"
