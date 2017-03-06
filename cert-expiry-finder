@@ -53,7 +53,7 @@ enum_nginx_certs() {
 
 enum_postfix_certs() {
     postconf 'smtpd_tls_cert_file' 2>/dev/null |
-    sed -e 's/.* = //'
+    sed -e 's/.* = *//'
 }
 
 enum_ser_certs() {
