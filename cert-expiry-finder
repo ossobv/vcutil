@@ -20,6 +20,7 @@ enum_all_certs() {
     (
         enum_apache2_certs
         enum_dovecot_certs
+        enum_haproxy_certs
         enum_nginx_certs
         enum_postfix_certs
         enum_ser_certs
@@ -40,6 +41,14 @@ enum_dovecot_certs() {
         -print0 2>/dev/null |
     xargs -0 sed -ne '
         s/^ssl_cert_file[[:blank:]]*=[[:blank:]]*\([^[:blank:]]\+\).*/\1/p'
+}
+
+enum_haproxy_certs() {
+    find /etc/haproxy/ -name '*.cfg' -print0 |
+    find /etc/haproxy/ -name '*.cfg' -print0 | xargs -0 sed -e '
+        /^[[:blank:]]*bind[[:blank:]].*[[:blank:]]ssl\($\|[[:blank:]]\)/!d
+        s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
+    sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//'
 }
 
 enum_nginx_certs() {
