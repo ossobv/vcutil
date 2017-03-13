@@ -66,10 +66,17 @@ enum_postfix_certs() {
 }
 
 enum_ser_certs() {
-    find /etc/kamailio /etc/opensips /etc/ser \
+    # tls_certificate = XYZ
+    find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs -0 sed -ne '
         s/^[[:blank:]]*tls_certificate[[:blank:]]*=[[:blank:]]*"\([^[:blank:]]*\)".*/\1/p'
+
+    # modparam("tls", "certificate", "XYZ")
+    find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
+        '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
+    xargs -0 sed -ne '
+        s/^[[:blank:]]*modparam("tls",[[:blank:]]*"certificate"[[:blank:]]*,[[:blank:]]*"\([^"]*\)".*/\1/p'
 }
 
 list_cert_expiry_days() {
