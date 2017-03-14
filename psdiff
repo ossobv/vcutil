@@ -169,6 +169,22 @@ class FilteredProcessFormatter(ProcessFormatter):
             # These processes have fluctuating arguments. Drop them.
             process.cmdline = process.cmdline.split(' ', 1)[0]
 
+        elif process.cmdline.startswith((
+                '/usr/sbin/zabbix_proxy: ',
+                '/usr/sbin/zabbix_server: ')):
+            # zabbix_proxy and zabbix_server add " [info]" which changes.
+            # Drop it.
+            process.cmdline = process.cmdline.split(' [', 1)[0]
+
+        elif process.cmdline.startswith('docker-containerd-shim '):
+            # Docker instances have fluctuating arguments:
+            #   docker-containerd-shim ID /var/...containerd/ID docker-runc
+            args = process.cmdline.split()
+            if len(args) == 4 and args[3] == 'docker-runc':
+                args[1] = '<ID>'
+                args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
+                process.cmdline = ' '.join(args)
+
     def include(self, process):
         # Ignore kernel threads.
         if process.has_parent(include_self=True, pid=2):
