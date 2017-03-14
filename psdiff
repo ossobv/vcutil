@@ -115,13 +115,18 @@ class ProcessFormatter(object):
     def __init__(self, root):
         self.root = root
 
-    def include(self, process):
-        return True
+        # Add self.adjust hook to alter process traits before sort.
+        self.visit(self.adjust)
+        # Sort processes.
+        self.visit((lambda process: process.sort()))
 
-    def to_string(self, process, indent=0):
-        return self.process.to_string(indent)
+    def visit(self, callable_):
+        "Visit all processes with callable."
+        for process in self.root.process_map.values():
+            callable_(process)
 
     def to_strings(self, process, indent=0):
+        "Return a list of stringified children with indentation."
         ret = []
         if self.include(process):
             ret.append(self.to_string(process, indent))
@@ -132,11 +137,37 @@ class ProcessFormatter(object):
     def __str__(self):
         return '\n'.join(self.to_strings(self.root)) + '\n'
 
+    def adjust(self, process):
+        """
+        The possibility to adjust cmdline and other process traits.
+
+        This is called before sort, so you'll want to use this to alter
+        cmdline.
+        """
+        pass
+
+    def include(self, process):
+        "The possibility to exclude processes from the listing."
+        return True
+
+    def to_string(self, process, indent=0):
+        "The old hook to alter cmdline appearance."
+        return process.to_string(indent)
+
 
 class FilteredProcessFormatter(ProcessFormatter):
     def __init__(self, *args, **kwargs):
         super(FilteredProcessFormatter, self).__init__(*args, **kwargs)
         self._include_once = set()
+
+    def adjust(self, process):
+        super(FilteredProcessFormatter, self).adjust(process)
+
+        if process.cmdline.startswith((
+                'astcanary',  # astcanary /var/run/asterisk/... <pid>
+                '/usr/sbin/amavisd-new ')):
+            # These processes have fluctuating arguments. Drop them.
+            process.cmdline = process.cmdline.split(' ', 1)[0]
 
     def include(self, process):
         # Ignore kernel threads.
@@ -192,14 +223,6 @@ class FilteredProcessFormatter(ProcessFormatter):
 
         return super(FilteredProcessFormatter, self).include(process)
 
-    def to_string(self, process, indent):
-        if process.cmdline.startswith((
-                'astcanary',  # astcanary /var/run/asterisk/... <pid>
-                '/usr/sbin/amavisd-new ')):
-            process.cmdline = process.cmdline.split(' ', 1)[0]
-
-        return process.to_string(indent)
-
 
 def diff(a, b):
     a = a.rstrip().split('\n')  # drop trailing LF
@@ -243,10 +266,6 @@ def ps_faxu():
     # process info yet earlier.
     for process in root.process_map.values():
         process.fix_links()
-
-    # Sort children and fix them as sorted lists.
-    for process in root.process_map.values():
-        process.sort()
 
     return root
 
@@ -312,16 +331,25 @@ def main():
 
                 class LocalFilteredProcessFormatter(
                         FilteredProcessFormatter):
+                    def adjust(self, process):
+                        super(LocalFilteredProcessFormatter, self).adjust(
+                            process)
+
+                        # haproxy(1) sometimes adds " -sf PIDLIST" at the tail
+                        if process.cmdline.startswith('/usr/sbin/haproxy'):
+                            process.cmdline = (
+                                process.cmdline.split(' -sf ', 1)[0])
+
                     def include(self, process):
-                        # I don't care about atop(1) and its fluctuating
-                        # arguments.
-                        if process.cmdline.startswith(
-                                '/usr/bin/atop '):
+                        # atop(1) has fluctuating arguments. I don't care
+                        # whether it runs.
+                        if process.cmdline.startswith('/usr/bin/atop '):
                             return False
 
                         return (
                             super(LocalFilteredProcessFormatter, self)
                             .include(process))
+
                 # vim: set syn=python:
 
             Zabbix example
