@@ -27,6 +27,9 @@
 #          i:/C=SE/O=AddTrust AB/OU=AddTrust .../CN=AddTrust External CA Root
 #     easycert -T www.osso.nl 443
 #
+#     # Test if the certificate chain of a PEM file is in the right order:
+#     easycert -T /path/to/chain.pem
+#
 # When run as CGI service, it displays input boxes for the options
 # and writes the output to CERTHOME.
 #
@@ -51,24 +54,56 @@ run_help() {
     echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
     echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/ST=Groningen/\
 O=OSSO B.V./CN=osso.nl/\""
-    echo "Usage: $0 -T www.osso.nl"
+    echo "Usage: $0 -T www.osso.nl 443"
+    echo "Usage: $0 -T /path/to/chain.pem"
 }
 
 run_test() {
     show_certchain "$@"
-    echo "Expires in `get_expiry "$@"` days"
+    echo "Expires in $(get_expiry "$@") days"
 }
 
 show_certchain() {
-    host="$1"
-    port="$2"
     echo "The list below should be logically ordered,"
     echo "and end with a self-signed root certificate."
     echo "(Although the last one is optional and only "
     echo "overhead.)"
     echo
-    output="`openssl_connect $host $port </dev/null 2>&0 |
-        sed -e '/^Certificate chain/,/^---/!d'`"
+    if test $# -eq 1; then
+        show_local_certchain "$@"
+    else
+        show_remote_certchain "$@"
+    fi
+}
+
+show_local_certchain() {
+    file="$1"
+    n=0
+    res=$(
+    sed -e '/^-----BEGIN CERTIFICATE/,/-----END CERTIFICATE/{s/$/|/g}' \
+        <"$file" | tr -d '\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
+    while read cert; do
+        out=$(echo "$cert" | tr '|' '\n' |
+              openssl x509 -noout -subject -issuer)
+        if test $? -ne 0; then
+            echo 'Read failure' >&2
+            exit 1
+        fi
+        test $n -eq 0 && echo 'Certificate chain'
+        echo "$out" | sed -e "s/^subject= / $n s:/;s/^issuer= /   i:/"
+        n=$((n+1))
+    done
+    )
+    test -z "$res" && exit 1
+    echo "$res"
+    echo '---'
+}
+
+show_remote_certchain() {
+    host="$1"
+    port="$2"
+    output="$(openssl_connect $host $port </dev/null 2>&0 |
+        sed -e '/^Certificate chain/,/^---/!d')"
     if test -z "$output"; then
         openssl_connect $host $port </dev/null
         exit 1
@@ -77,35 +112,51 @@ show_certchain() {
 }
 
 get_expiry() {
+    if test $# -eq 1; then
+        get_local_expiry "$@"
+    else
+        get_remote_expiry "$@"
+    fi
+}
+
+get_local_expiry() {
+    file="$1"
+    date=$(openssl x509 -dates -noout <"$file" |
+           sed -e '/^notAfter=/!d;s/^[^=]*=//')
+    echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
+}
+
+get_remote_expiry() {
     host="$1"
     port="$2"
-    certinfo=`openssl_connect $host $port -showcerts </dev/null 2>/dev/null |
-        openssl x509 -text`
-    sigalgo=`echo "$certinfo" |
-             sed -n 's/^ *Signature Algorithm: \([^ ]*\).*/\1/p' | head -n1`
+    certinfo=$(openssl_connect $host $port -showcerts </dev/null 2>/dev/null |
+               openssl x509 -text)
+    sigalgo=$(echo "$certinfo" |
+              sed -n 's/^ *Signature Algorithm: \([^ ]*\).*/\1/p' | head -n1)
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
         echo "WARNING: Uses old SHA-1 hash" >&2
     fi
-    cn=`echo "$certinfo" | sed -e '/Subject.*CN=/!d;s/.*CN=\([^/]*\).*/\1/'`
-    date=`echo "$certinfo" | sed -e '/^ *Not After :/!d;s/^[^:]*: *//'`
+    cn=$(echo "$certinfo" | sed -e '/Subject.*CN=/!d;s/.*CN=\([^/]*\).*/\1/')
+    date=$(echo "$certinfo" | sed -e '/^ *Not After :/!d;s/^[^:]*: *//')
     if test "$host" = "$cn"; then
         :
     elif test "*.$host" = "$cn"; then
         :
     elif test "$host" = "www.$cn"; then
         :
-    elif echo "$host" | grep -q `echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'`; then
+    elif echo "$host" |
+         grep -q $(echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'); then
         :
     else
         echo "($host!=$cn)"
     fi
-    echo $(( (`date -d "$date" +%s` - `date +%s`) / 86400 ))  # days
+    echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
 }
 
 run_generate() {
     cn="$1"
     subject="$2"
-    dst="`echo "$cn" | tr . _ | sed -e 's/\*/STAR/g'`-`date +%Y`"
+    dst="$(echo "$cn" | tr . _ | sed -e 's/\*/STAR/g')-$(date +%Y)"
 
     if test -f "$dst.key" -o \
             -f "$dst.csr" -o \
@@ -122,7 +173,7 @@ run_generate() {
     fi
 
     # Generate new private key.
-    old_umask=`umask`
+    old_umask=$(umask)
     umask 0077
     openssl genrsa -out "$dst.key" 4096 >&2
     umask $old_umask
@@ -153,12 +204,11 @@ __EOF__
 }
 
 cgi_post() {
-    eval "`cat | python -c 'import urlparse
+    eval "$(cat | python -c 'import urlparse
 for k,v in urlparse.parse_qs(raw_input()).items():
     if k in ("cn","organisation","email","city","state","country"):
         print "%s='\''%s'\''" % (k,v[0].replace("\\"","").replace("/","")
-                                   .replace(",",";").replace("'\''",""))'`"
-    # "`"`" # vim.. break out of syntax fun
+                                   .replace(",",";").replace("'\''",""))')"
     if test -n "$cn" -o -n "$organisation" -o -n "$email" -o \
             -n "$city" -o -n "$state" -o -n "$country"; then
         echo "Invalid arguments...<br/>"
@@ -172,7 +222,7 @@ for k,v in urlparse.parse_qs(raw_input()).items():
     cd "$CERTHOME"
     subject="/C=$country/L=$city/ST=$state/O=$organisation/CN=$cn/\
 emailAddress=$email"
-    file="`run_generate "$cn" "$subject" </dev/null 2>&0`"
+    file="$(run_generate "$cn" "$subject" </dev/null 2>&0)"
     if test $? != 0; then
         echo "Failure...<br/>"
         exit 0
@@ -200,7 +250,7 @@ action=generate
 # builtin getopts plays POSIXLY_CORRECT and refuses to do so. We then
 # use builtin getopts (plural!) that handles quoted arguments.
 options=Thc:l:s:o:e:
-temp=`getopt -o $options -- "$@"`
+temp=$(getopt -o $options -- "$@")
 test $? != 0 && exit 1
 eval set -- "$temp"
 while getopts $options opt; do
@@ -237,13 +287,12 @@ help)
     run_help
     ;;
 test)
-    if test $# != 2; then
-        echo "Action test requires host and port!" >&2
+    if test $# -ge 1 && test $# -le 2; then
+        run_test "$@"
+    else
+        echo "Action 'test' requires either host+port or a local file!" >&2
         exit 1
     fi
-    host="$1"
-    port="$2"
-    run_test "$host" "$port"
     ;;
 generate)
     if test $# -lt 1; then
