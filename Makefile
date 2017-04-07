@@ -40,7 +40,8 @@ BINS = \
 	wgrep \
 	wtimediff \
 	wtimestamp \
-	wtrunc
+	wtrunc \
+	zabdig
 
 OTHER = \
 	Makefile \

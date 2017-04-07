@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+# zabdig (part of ossobv/vcutil) // wdoekes/2017 // Public Domain
+#
+# Quickly query the zabbix server for hosts and hostnames/IPs, using the
+# Zabbix JSON API.
+#
+# Usage examples:
+#
+#     $ zabdig walter
+#     Walter Privé                    wjdsys.example.com (zabbix-proxy2)
+#     walter.internal.lan             10.32.1.5 (zabbix-proxy-lan)
+#     walterdev.example.com           walterdev.example.com
+#
+#     $ zabdig walter.internal.lan
+#     10.32.1.5
+#
+# Configure by setting up a ~/.zabbixrc with sections:
+#
+#     [myorganisation]
+#     api=https://zabbix-server.example.com/api_jsonrpc.php
+#     user=myusername
+#     password=mypassword
+#
+# If you have multiple zabbix servers you wish to speak to, add
+# additional sections. Use zabdig -g SECTION to select a different
+# section/organisation than the first.
+#
+# See zabdig --help for more info.
+#
+# Requirements: requests (python3-requests)
+#
+import argparse
+import configparser
+import json
+import os
+import requests
+import sys
+
+
+class ZConfigError(ValueError):
+    pass
+
+
+class ZInterfaceError(IOError):
+    pass
+
+
+class ZLoginError(ZInterfaceError):
+    pass
+
+
+class ZDataError(ZInterfaceError):
+    pass
+
+
+class ZHost(object):
+    def __init__(self, hostinfo, proxies):
+        self._hostinfo = hostinfo
+
+        self.name = hostinfo['name']
+        if proxies and hostinfo['proxy_hostid'] != '0':
+            self.proxy = proxies[hostinfo['proxy_hostid']]
+        else:
+            self.proxy = None
+
+    def get_zabbix_addr(self):
+        ret = []
+        for interface in self._hostinfo['interfaces']:
+            if int(interface['useip']):
+                ret.append(interface['ip'])
+            else:
+                ret.append(interface['dns'])
+        return ', '.join(ret)
+
+    def __str__(self):
+        return (
+            self.name or  # "visible name"
+            self._hostinfo['host'] or
+            '<ZHost({})>'.format(self._hostinfo['hostid']))
+
+    def __eq__(self, other):
+        return self._hostinfo['hostid'] == other._hostinfo['hostid']
+
+    def __lt__(self, other):
+        if self.name != other.name:
+            return self.name < other.name
+        if self.host != other.host:
+            return self.host < other.host
+        return self._hostinfo['hostid'] < other._hostinfo['hostid']
+
+
+class ZInterface(object):
+    def __init__(self, url, username, password):
+        if not url or not username or not password:
+            raise ZConfigError(
+                'cannot login without api/url, username and password')
+
+        self.url = url
+        self.username = username
+        self.password = password
+
+        self.token = None
+        self.postid = 0
+
+    def _zabbix_call(self, method, params):
+        self.postid += 1
+        data = {
+            'jsonrpc': '2.0',
+            'method': method,
+            'params': params,
+            'id': self.postid,
+        }
+        if self.token:
+            data['auth'] = self.token
+        return self._zabbix_post(self.url, data)
+
+    def _zabbix_post(self, url, data):
+        res = requests.post(
+            url, data=json.dumps(data),
+            headers={'Content-Type': 'application/json-rpc'})
+
+        if 'error' in res.json():
+            raise ZInterfaceError(res.json()['error'], data)
+
+        return res.json()['result']
+
+    def _login(self):
+        if not self.token:
+            class PrivacyDict(dict):
+                "Don't show username/password in stack traces."
+                def __repr__(self):
+                    # Yes, this repr is broken for abnormal keys, but
+                    # we don't use those.
+                    return '{{{}}}'.format(', '.join(
+                        "'{}': '****'".format(key)
+                        for key in sorted(self.keys())))
+
+            try:
+                self.token = self._zabbix_call(
+                    'user.login',
+                    PrivacyDict(
+                        user=self.username,
+                        password=self.password))
+            except ZInterfaceError as e:
+                raise ZLoginError(*e.args)
+
+    def get_hosts(self, hostname_search):
+        self._login()
+
+        hosts = self._zabbix_call(
+            'host.get',
+            {'output': ['name', 'host', 'interfaces', 'proxy_hostid'],
+             # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
+             #            'status'],
+             'selectInterfaces': 'extend',
+             'selectGroups': 'extend',
+             'search': {
+                'name': hostname_search}})
+
+        for host in hosts:
+            try:
+                yield ZHost(host, self.get_proxies())
+            except Exception as e:
+                raise ZDataError('got err {} for hostinfo {}'.format(
+                    e, host))
+
+    def get_proxies(self):
+        if not hasattr(self, '_get_proxies'):
+            self._login()
+
+            proxies = self._zabbix_call(
+                'proxy.get',
+                {'output': ['name', 'host']})
+
+            self._get_proxies = dict(
+                (proxy['proxyid'], ZHost(proxy, None))
+                for proxy in proxies)
+        return self._get_proxies
+
+
+class LocalConfig(object):
+    def __init__(self):
+        self.config = configparser.ConfigParser()
+        self.config.read(os.path.expanduser('~/.zabbixrc'))  # silent failure
+        if self.config.sections():
+            self.section = self.config.sections()[0]
+        else:
+            self.section = None
+
+    def select_section(self, section):
+        if section in self.config.sections():
+            self.section = section
+        else:
+            raise ZConfigError('no such section in config')
+
+    def get(self, key):
+        if not self.section:
+            return None
+        return self.config[self.section].get(key, None)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-g', '--section', dest='section',
+                        help='Use SECTION from ~/.zabbixrc for defaults')
+    parser.add_argument('-a', '--api', dest='api',
+                        help='Zabbix json_rpc API URL, for example: '
+                             'https://zabbix.example.nl/api_jsonrpc.php')
+    parser.add_argument('-u', '--user', dest='user',
+                        help='API username')
+    parser.add_argument('-p', '--password', dest='password',
+                        help='API password')
+    parser.add_argument('search', nargs='?',
+                        help='Hostname to search for')
+
+    args = parser.parse_args()
+
+    lconf = LocalConfig()
+    if args.section:
+        try:
+            lconf.select_section(args.section)
+        except ZConfigError:
+            print('no such section found in config file', file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        zint = ZInterface(
+            args.api or lconf.get('api'),
+            args.user or lconf.get('user'),
+            args.password or lconf.get('password'))
+    except ZConfigError as e:
+        print('login failed: {}; see zabdig --help'.format(e), file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        hosts = list(zint.get_hosts(args.search))
+    except ZInterfaceError as e:
+        print('fetch failed: {}'.format(e), file=sys.stderr)
+        sys.exit(1)
+
+    exact_hosts = [host for host in hosts if str(host) == args.search]
+
+    if len(exact_hosts) == 1:  # or len(hosts) == 1:
+        if exact_hosts:
+            host = exact_hosts[0]  # exact match
+        else:
+            host = hosts[0]  # only match
+        print(host.get_zabbix_addr())
+
+    elif len(hosts):
+        for host in sorted(hosts):
+            print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
+                name=host,
+                addr=host.get_zabbix_addr(),
+                optional_proxy=(
+                    host.proxy and ' ({!s})'.format(host.proxy) or '')))
+
+    else:
+        print('nothing found', file=sys.stderr)
+        sys.exit(1)
