@@ -7,6 +7,10 @@
 #
 #     difftac some/patch.diff > some/reversedpatch.diff
 #
+# Bugs:
+# - only works on patches that operate on a single file
+# - does not cope with leading "garbage"/comments before the patch
+#
 # Original author: Lie Ryan (2010)
 # Source: http://stackoverflow.com/questions/3902388/
 #                permanently-reversing-a-patch-file/3902431#3902431
@@ -30,6 +34,14 @@ file="$1"
 if test -z "$file"; then
     file="`mktemp`"
     cat > "$file"
+fi
+
+# Check whether our bugs might affect it
+if tail -n +2 "$file" | grep -q '^--- '; then
+    echo >&2
+    echo '*** Leading data or multiple files found. ***' >&2
+    echo '*** Diff may become corrupt! ***' >&2
+    echo >&2
 fi
 
 file_header "$file"
