@@ -45,7 +45,7 @@ BINS = \
 
 OTHER = \
 	Makefile \
-	README.md \
+	README.rst \
 	gitlab-hook-postcommit-coloremail.example \
 	psdiff.hash \
 	psdiff.rst \

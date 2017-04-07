@@ -1,3 +1,25 @@
+vcutil (1.5) UNRELEASED; urgency=low
+
+  * New commands:
+    - pdns-mysql-slave-prune: Prune domains on a PowerDNS slave DNS server.
+    - tls-sniff-ciphers: Sniff which TLS ciphers are negotiated.
+    - zabdig: Lookup hosts through zabbix json api.
+  * Improvements:
+    - cert-expiry-finder: Add haproxy file scan, fix postfix scan,
+        improve kamailio scan.
+    - easycert: Allow testing local certificate chain files.
+    - firewall: Add example firewalls.
+    - psdiff: Config interface improvement (def adjust) and a few
+        better defaults.
+  * Bug fixes:
+    - dbschemadiff: Improve output order.
+    - diffcat: Warn when it doesn't work as intended.
+  * Drop "~all" from version. We use a packaging/repackaging scheme to
+    create a package for all different distro's anyway (which also adds
+    ~distro-version).
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Fri, 07 Apr 2016 10:44:02 +0200
+
 vcutil (1.4~all) UNRELEASED; urgency=low
 
   * Command updates:
