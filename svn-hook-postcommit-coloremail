@@ -49,7 +49,8 @@ REV="$2"
 # Fetch data:
 DIR="file://$REPOS"
 PROJECT="`basename $REPOS`"
-AUTHOR="`svn log -r "$REV" "$DIR" | sed -e '2!d;s/^[^|]*|[[:blank:]]*\([^[:blank:]]\+\).*/\1/'`"
+AUTHOR="`svn log -r "$REV" "$DIR" |
+         sed -e '2!d;s/^[^|]*|[[:blank:]]*\([^[:blank:]]\+\).*/\1/'`"
 if test -z "$AUTHOR"; then
 	echo "Error" 2>&1 && exit 1
 fi
@@ -61,9 +62,9 @@ colormail()
 	txt="`mktemp`" # no --suffix.. debian does not like
 	head -n1000 > "$txt" # limit mail to 1000 lines
 	html="$txt.html" # unsafe, but we don't care
-	yes |
-		vim -n -T builtin_ansi -c 'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' "$txt" 2>&1 >/dev/null |
-		grep -v '^Vim: Warning: '
+	yes | vim -n -T builtin_ansi \
+	    -c 'syn on|set syn=diff|set bg=dark|runtime syntax/2html.vim|wqa' \
+	    "$txt" 2>&1 >/dev/null | grep -v '^Vim: Warning: '
 	# mail the stuff
 	(
 		echo 'This is MIME mail.'
@@ -80,7 +81,8 @@ colormail()
 		echo
 		echo '--e89a8f3ba551e83b0e04cdf77b8c--'
 	) | mail -a 'MIME-Version: 1.0' \
-		 -a 'Content-Type: multipart/alternative; boundary=e89a8f3ba551e83b0e04cdf77b8c' \
+		 -a 'Content-Type: multipart/alternative; '\
+'boundary=e89a8f3ba551e83b0e04cdf77b8c' \
 		 "$@"
 	# clean up
 	rm "$txt" "$html"
@@ -93,4 +95,5 @@ colormail()
 	# Print the entire changeset
 	svn diff -x -p -c "$REV" "$DIR"
 	echo
-) | "$CENSOR" | colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO
+) | "$CENSOR" |
+    colormail -s "`eval echo "$SUBJECT"`" -a "From: $MAIL_FROM" $MAIL_TO

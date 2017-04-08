@@ -1,5 +1,5 @@
 #!/bin/sh
-# easycert (part of ossobv/vcutil) // wdoekes/2012-2016 // Public Domain
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2017 // Public Domain
 #
 # Wrapper around openssl to create basic KEY+CSR pairs for submittal to
 # a certificate authority.

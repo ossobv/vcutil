@@ -50,11 +50,12 @@ for pid in `ps fhax -opid`; do  # we need 'f' for the right order
         ppid=$(awk '{print $4}' /proc/$pid/stat)
         shown="$shown $pid "
 
-        # If not verbose, and parentpid is not 1 (in case we've already shown
-        # /sbin/init) and we've already shown the parent, then don't show it.
-        if test $verbose -eq 0 -a $ppid != 1 && echo "$shown" | grep -q " $ppid "; then
+        # If not verbose, and parentpid is not 1 (in case we've already
+        # shown /sbin/init) and we've already shown the parent, then
+        # don't show it.
+        test $verbose -eq 0 -a $ppid != 1 &&
+            echo "$shown" | grep -q " $ppid " &&
             continue
-        fi
 
         toshow="$toshow,$pid"
         if test $verbose -ge 2; then

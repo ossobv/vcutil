@@ -12,7 +12,7 @@
    "commits" : [
       {
          "timestamp" : "2013-03-22T16:18:55+01:00",
-         "url" : "https://YOUR_GITLAB/test/commit/404ce9f03d47fb478872cf2438695b1b18000c4a",
+         "url" : "https://YOUR_GITLAB/test/commit/404ce9f03d47fb478872cf24004",
          "author" : {
             "email" : "walter@example.com",
             "name" : "Walter TEST Doekes"
@@ -22,7 +22,7 @@
       },
       {
          "timestamp" : "2013-03-22T16:20:21+01:00",
-         "url" : "https://YOUR_GITLAB/test/commit/412b1cd7b30ce29cd57291dea2b2b404d8140eeb",
+         "url" : "https://YOUR_GITLAB/test/commit/412b1cd7b30ce29cd5724d8140e",
          "author" : {
             "email" : "walter@example.com",
             "name" : "Walter TEST Doekes"

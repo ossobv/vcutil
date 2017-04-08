@@ -117,7 +117,8 @@ def filediff(file1, file2):
             # Dump sub-heading and context if not done yet
             if mode == 'skip':
                 if not has_heading or len(context) == max_context:
-                    yield '@@ -%s,? +%s,? @@\n' % (lineno1 - len(context), lineno2 - len(context))
+                    yield '@@ -%s,? +%s,? @@\n' % (
+                        lineno1 - len(context), lineno2 - len(context))
                     has_heading = True
                 while context:
                     yield ' %s' % (context.pop(0),)
@@ -127,10 +128,12 @@ def filediff(file1, file2):
             lines1 = reader1.find(line2)
             if lines1 is not None or lines2 is not None:
                 # Okay.. we've found something here
-                if lines1 is not None and ((lines2 is None) or (lines1 < lines2)):
+                if lines1 is not None and (
+                        lines2 is None or lines1 < lines2):
                     line, reader, lines, sign = line1, reader1, lines1, '-'
                     reader2.push_back((lineno2, line2))
-                elif lines2 is not None and ((lines1 is None) or (lines2 < lines1)):
+                elif lines2 is not None and (
+                        lines1 is None or lines2 < lines1):
                     line, reader, lines, sign = line2, reader2, lines2, '+'
                     reader1.push_back((lineno1, line1))
                 else:
@@ -154,7 +157,8 @@ def filediff(file1, file2):
                 lineno1 = 0
             if lineno2 == -1 and reader2.has_next():
                 lineno2 = 0
-            yield '@@ -%s,? +%s,? @@\n' % (lineno1 - len(context) + 1, lineno2 - len(context) + 1)
+            yield '@@ -%s,? +%s,? @@\n' % (
+                lineno1 - len(context) + 1, lineno2 - len(context) + 1)
             has_heading = True
         while context:
             yield ' %s' % (context.pop(0),)
@@ -170,7 +174,9 @@ def fixheadings(iterator):
     for line in iterator:
         if line.startswith('@@'):
             if buf:
-                yield buf[0].replace('?', '%u' % (blank + left), 1).replace('?', '%u' % (blank + right), 1)
+                yield (
+                    buf[0].replace('?', '%u' % (blank + left), 1)
+                    .replace('?', '%u' % (blank + right), 1))
                 for i in buf[1:]:
                     yield i
                 buf = []
@@ -193,7 +199,9 @@ def fixheadings(iterator):
             return
             
     if buf:
-        yield buf[0].replace('?', '%u' % (blank + left), 1).replace('?', '%u' % (blank + right), 1)
+        yield (
+            buf[0].replace('?', '%u' % (blank + left), 1)
+            .replace('?', '%u' % (blank + right), 1))
         for i in buf[1:]:
             yield i
 
@@ -218,8 +226,10 @@ def diff(args, stdout, stderr):
             nsec[i] = '%09d' % (int((mtime[i] - int(mtime[i])) * 1000000000),)
         fmt = '%Y-%m-%d %H:%M:%S'
         tz = '+0000' # for another rainy day
-        stdout.write('--- %s\t%s.%s %s\n' % (args[0], mdate[0].strftime(fmt), nsec[0], tz))
-        stdout.write('+++ %s\t%s.%s %s\n' % (args[1], mdate[1].strftime(fmt), nsec[1], tz))
+        stdout.write('--- %s\t%s.%s %s\n' % (
+            args[0], mdate[0].strftime(fmt), nsec[0], tz))
+        stdout.write('+++ %s\t%s.%s %s\n' % (
+            args[1], mdate[1].strftime(fmt), nsec[1], tz))
         stdout.write(output)
         break
     # Print other output

@@ -47,39 +47,44 @@ dest=../merge.msg
 
 # check that source path exists
 if [ ! -d "$sourcepath" ]; then
-	if [ -z "$sourcepath" ]; then
-		sourcepath="../`basename "\`pwd\`" | sed -e 's/^live-//'`"
-	fi
-	if [ ! -d "$sourcepath" ]; then
-		echo "need merge source path as first argument" 2>/dev/null
-		exit 1
-	fi
+    if [ -z "$sourcepath" ]; then
+        sourcepath="../`basename "\`pwd\`" | sed -e 's/^live-//'`"
+    fi
+    if [ ! -d "$sourcepath" ]; then
+        echo "need merge source path as first argument" 2>/dev/null
+        exit 1
+    fi
 fi
 
-merged_revs=`svn diff 2>/dev/null | sed -ne 's/^[[:blank:]]*Merged \/trunk:r\(.*\)/\1/p;/^r/q'`
-[ -z "$merged_revs" ] && echo "svn diff did not produce a Merged.../trunk line" 2>/dev/null && exit 1
+merged_revs=`svn diff 2>/dev/null |
+         sed -ne 's/^[[:blank:]]*Merged \/trunk:r\(.*\)/\1/p;/^r/q'`
+if [ -z "$merged_revs" ]; then
+    echo "svn diff did not produce a Merged.../trunk line" 2>/dev/null
+    exit 1
+fi
 
 # Split up revs from "r1-2,4,5-6" to a list
 revs=""
 for rev_part in `echo $merged_revs | tr ',' ' '`; do
-	echo $rev_part | grep -q -- -
-	if [ $? = 0 ]; then
-		for rev in `seq \`echo $rev_part | tr '-' ' '\``; do
-			revs="$revs,$rev"
-		done
-	else
-		revs="$revs,$rev_part"
-	fi
+    echo $rev_part | grep -q -- -
+    if [ $? = 0 ]; then
+        for rev in `seq \`echo $rev_part | tr '-' ' '\``; do
+            revs="$revs,$rev"
+        done
+    else
+        revs="$revs,$rev_part"
+    fi
 done
 revs="`echo $revs | sed -e 's/^,//'`"
 
 # svn log these revisions with a bit of context
 (
-	echo "Merged /trunk:r$merged_revs"
-	echo
-	echo "{{{"
-	# awk reduces multiple blank lines to a single blank line, sed adds a bit of space
-	# (add space and not something more intrusive so e.g. SQL-in-comments is still valid)
-	svn log -c "$revs" "$sourcepath" | awk 1 RS= ORS="\n" | sed -e 's/^/    /'
-	echo "}}}"
+    echo "Merged /trunk:r$merged_revs"
+    echo
+    echo "{{{"
+    # awk reduces multiple blank lines to a single blank line, sed
+    # adds a bit of space (add space and not something more
+    # intrusive so e.g. SQL-in-comments is still valid)
+    svn log -c "$revs" "$sourcepath" | awk 1 RS= ORS="\n" | sed -e 's/^/    /'
+    echo "}}}"
 ) | tee "$dest"

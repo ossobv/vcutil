@@ -31,4 +31,5 @@ if [ ! -d "$sourcepath" ]; then
         fi
 fi
 
-svn log -c `svn mergeinfo --show-revs=eligible $sourcepath | tr '\n' ','` $sourcepath
+svn log -c `svn mergeinfo --show-revs=eligible $sourcepath |
+    tr '\n' ','` $sourcepath

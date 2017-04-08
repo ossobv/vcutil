@@ -1,5 +1,5 @@
 #!/bin/sh
-# difftac (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+# difftac (part of ossobv/vcutil) // wdoekes/2014,2017 // Public Domain
 #
 # Takes a unified diff and reverses it.
 #

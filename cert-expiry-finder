@@ -1,5 +1,6 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2017
+#   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
 # enumerates the expiry days.
@@ -44,8 +45,7 @@ enum_dovecot_certs() {
 }
 
 enum_haproxy_certs() {
-    find /etc/haproxy/ -name '*.cfg' -print0 |
-    find /etc/haproxy/ -name '*.cfg' -print0 | xargs -0 sed -e '
+    find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null | xargs -0 sed -e '
         /^[[:blank:]]*bind[[:blank:]].*[[:blank:]]ssl\($\|[[:blank:]]\)/!d
         s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
     sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//'
@@ -66,17 +66,19 @@ enum_postfix_certs() {
 }
 
 enum_ser_certs() {
+    w='[[:blank:]]'
+    W='[^[:blank:]]'
     # tls_certificate = XYZ
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
-    xargs -0 sed -ne '
-        s/^[[:blank:]]*tls_certificate[[:blank:]]*=[[:blank:]]*"\([^[:blank:]]*\)".*/\1/p'
+    xargs -0 sed -ne "
+        s/^$w*tls_certificate$w*=$w*\"\($W*\)\".*/\1/p"
 
     # modparam("tls", "certificate", "XYZ")
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
-    xargs -0 sed -ne '
-        s/^[[:blank:]]*modparam("tls",[[:blank:]]*"certificate"[[:blank:]]*,[[:blank:]]*"\([^"]*\)".*/\1/p'
+    xargs -0 sed -ne "
+        s/^$w*modparam(\"tls\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\1/p"
 }
 
 list_cert_expiry_days() {
