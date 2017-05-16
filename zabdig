@@ -63,14 +63,23 @@ class ZHost(object):
         else:
             self.proxy = None
 
+    def get_zabbix_addr_first(self):
+        addr_list = self.get_zabbix_addr_list()
+        if not addr_list:
+            addr_list = ['NONE']
+        return addr_list[0]
+
     def get_zabbix_addr(self):
+        return ', '.join(self.get_zabbix_addr_list())
+
+    def get_zabbix_addr_list(self):
         ret = []
         for interface in self._hostinfo['interfaces']:
             if int(interface['useip']):
                 ret.append(interface['ip'])
             else:
                 ret.append(interface['dns'])
-        return ', '.join(ret)
+        return list(sorted(set(ret)))
 
     def __str__(self):
         return (
@@ -241,11 +250,8 @@ if __name__ == '__main__':
     exact_hosts = [host for host in hosts if str(host) == args.search]
 
     if len(exact_hosts) == 1:  # or len(hosts) == 1:
-        if exact_hosts:
-            host = exact_hosts[0]  # exact match
-        else:
-            host = hosts[0]  # only match
-        print(host.get_zabbix_addr())
+        host = exact_hosts[0]  # exact match
+        print(host.get_zabbix_addr_first())
 
     elif len(hosts):
         for host in sorted(hosts):
