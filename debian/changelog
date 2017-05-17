@@ -1,10 +1,19 @@
+vcutil (1.7) UNRELEASED; urgency=low
+
+  * Improvements.
+    - zabdig: Now returns only 1 interface for the single-lookup-result.
+      This allows you to `ssh $(zabdig myhost)` even when there are multiple
+      check interfaces.
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Wed, 17 May 2017 12:02:18 +0200
+
 vcutil (1.6) UNRELEASED; urgency=low
 
   * Bug fixes:
     - cert-expiry-finder: Don't complain if there is no haproxy.
     - gitbackhub: Allow dots in repo names.
 
- -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Sat, 08 Apr 2016 11:01:57 +0200
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Sat, 08 Apr 2017 11:01:57 +0200
 
 vcutil (1.5) UNRELEASED; urgency=low
 
@@ -26,7 +35,7 @@ vcutil (1.5) UNRELEASED; urgency=low
     create a package for all different distro's anyway (which also adds
     ~distro-version).
 
- -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Fri, 07 Apr 2016 10:44:02 +0200
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Fri, 07 Apr 2017 10:44:02 +0200
 
 vcutil (1.4~all) UNRELEASED; urgency=low
 
