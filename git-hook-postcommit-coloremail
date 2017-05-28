@@ -11,7 +11,7 @@
 # Installation:
 #
 #     $ cd /path/to/local/git/checkout/.git
-#     $ ln -s /usr/local/bin/svn-hook-postcommit-coloremail hooks/post-commit
+#     $ ln -s /usr/local/bin/git-hook-postcommit-coloremail hooks/post-commit
 #
 # Usage:
 #
