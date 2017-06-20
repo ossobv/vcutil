@@ -103,6 +103,21 @@ class Repository(object):
         if not SAFE_REPO_NAME_RE.match(self.name):
             raise ValueError('Suspicious repository name %s!' % (self.name,))
 
+    def __eq__(self, other):
+        return (
+            self.name == other.name and
+            self.clone_url == other.clone_url and
+            self.github == other.github)
+
+    def __lt__(self, other):
+        if self.name < other.name:
+            return True
+        if self.clone_url < other.clone_url:
+            return True
+        if self.github == other.github:
+            return False
+        assert False, (self.github, other.github)
+
     def clone_or_update(self, allow_damaging_fetch=False):
         if self.exists():
             if not allow_damaging_fetch:
@@ -216,9 +231,28 @@ class GitHub(object):
     def get_backup_destination(self):
         return self.backup_destination
 
-    def get_repositories(self):
+    def _get_next_url(self, link):
+        # Link:
+        #   <https://api.github.com/organizations/:number/repos?
+        #    type=sources&page=2>; rel="next",
+        #   <https://api.github.com/organizations/:number/repos?
+        #    type=sources&page=5>; rel="last"
+        if link is None:
+            return None
+        links = [i.strip() for i in link.split(',')]
+        next_ = [i for i in links if i.endswith('; rel="next"')]
+        if not next_:
+            return None
+        next_ = next_[0]
+        if not next_ or next_[0] != '<' or '>' not in next_:
+            assert False, link
+        return next_[1:].split('>', 1)[0]
+
+    def _get_repositories(self):
         # With 'type=sources' we get only non-forked (i.e. our own)
         # projects.
+        # NOTE: For some projects we *do* depend on our own forks though...
+        # could be something to keep in mind.
         url = ('https://api.github.com/orgs/{0.organisation}/repos?'
                'type=sources').format(self)
         try:
@@ -228,10 +262,46 @@ class GitHub(object):
             url = ('https://api.github.com/users/{0.organisation}/repos?'
                    'type=sources').format(self)
             fp = urlopen(url)
-        blob = fp.read()
-        uniblob = blob.decode('utf-8')
-        json = loads(uniblob)
-        return [Repository(self, i) for i in json]
+
+        repositories = []
+        pages = 0
+        while True:
+            # The next_url may contain a page with the next resultset.
+            next_url = self._get_next_url(fp.headers.get('Link'))
+            blob = fp.read()
+            uniblob = blob.decode('utf-8')
+            json = loads(uniblob)
+            repositories.extend([Repository(self, i) for i in json])
+
+            if not next_url:
+                break
+            pages += 1
+            if pages >= 20:
+                assert False, 'more than 20 pages? {!r}'.format(next_url)
+
+            fp = urlopen(next_url)
+
+        return repositories
+
+    def get_repositories(self):
+        try:
+            repositories = self._get_repositories()
+        except HTTPError as err:
+            if err.fp:
+                try:
+                    data = err.fp.read().decode('ascii', 'replace')
+                except:
+                    data = ''
+            # TODO: Fix this:
+            print('URL', err.url)
+            print('CODE', err.code)
+            print('MSG', err.msg)
+            print('HDRS', err.headers)
+            print('BODY', data)
+            raise err
+
+        repositories.sort()
+        return repositories
 
     def __str__(self):
         return 'GitHub/orgs/{0.organisation}'.format(self)
