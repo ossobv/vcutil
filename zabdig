@@ -128,10 +128,17 @@ class ZInterface(object):
             url, data=json.dumps(data),
             headers={'Content-Type': 'application/json-rpc'})
 
-        if 'error' in res.json():
-            raise ZInterfaceError(res.json()['error'], data)
+        try:
+            js = res.json()
+        except ValueError as e:
+            raise ZInterfaceError(
+                'JSON error "{}" in\n\n  {!r}...\n\n'.format(
+                    e, res.content[0:512]), data)
 
-        return res.json()['result']
+        if 'error' in js:
+            raise ZInterfaceError(js['error'], data)
+
+        return js['result']
 
     def _login(self):
         if not self.token:
