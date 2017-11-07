@@ -73,12 +73,17 @@ class ZHost(object):
         return ', '.join(self.get_zabbix_addr_list())
 
     def get_zabbix_addr_list(self):
+        # type 1 = Zabbix Agent
+        # type 2 = SNMP
+        # type 3 = IPMI
+        # type 4 = JMX
         ret = []
         for interface in self._hostinfo['interfaces']:
-            if int(interface['useip']):
-                ret.append(interface['ip'])
-            else:
-                ret.append(interface['dns'])
+            if int(interface['type']) == 1:
+                if int(interface['useip']):
+                    ret.append(interface['ip'])
+                else:
+                    ret.append(interface['dns'])
         return list(sorted(set(ret)))
 
     def __str__(self):
