@@ -81,7 +81,7 @@ show_local_certchain() {
     n=0
     res=$(
     sed -e '/^-----BEGIN CERTIFICATE/,/-----END CERTIFICATE/{s/$/|/g}' \
-        <"$file" | tr -d '\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
+        <"$file" | tr -d '\r\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
     while read cert; do
         out=$(echo "$cert" | tr '|' '\n' |
               openssl x509 -noout -subject -issuer)
