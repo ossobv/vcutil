@@ -1,5 +1,5 @@
 #!/bin/sh
-# uwsgi-kill (part of ossobv/vcutil) // wdoekes/2014-2016 // Public Domain
+# uwsgi-kill (part of ossobv/vcutil) // wdoekes/2014-2018 // Public Domain
 #
 # Sends the HUP signal to the parent uwsgi(-core) process to make it
 # restart all children. Instead of doing /etc/init.d/uwsgi restart, this
@@ -22,12 +22,12 @@
 #
 args=$(echo "$*" |
     sed -e 's#[^[:blank:]A-Za-z0-9]#[^A-Za-z0-9]#g;s#[[:blank:]]\+#.*#')
-pids=$(pgrep -P1 -xf "^/usr/bin/uwsgi.*[^A-Za-z0-9]$args.*$")
+parents=$(pgrep -d, -xf '/usr/bin/uwsgi.*/emperor.ini( .*)?')
+pids=$(pgrep -d, -P${parents:-1} -xf "^/usr/bin/uwsgi.*[^A-Za-z0-9]$args.*$")
 test -z "$pids" && echo "Nothing matches..." >&2 && exit 1
 echo "Sending restart signal to uwsgi(-cores):"
-comma_pids=$(echo $pids | sed -e 's/[[:blank:]]\+/,/;s/,$//')
-ps hf -p $comma_pids | sed -e '
+ps hf -p $pids | sed -e '
     s#^\([[:blank:]]*[0-9]\+\) .* /usr/bin/uwsgi[^ ]* #  \1 uwsgi #
     s# /\([^ /]\+/\)*# #g' | sort -k2 |
     grep --color=auto -C100 "$args"
-kill -HUP $pids
+kill -HUP $(echo $pids | tr , ' ')
