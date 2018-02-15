@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# psdiff (part of ossobv/vcutil) // wdoekes/2016-2017 // Public Domain
+# psdiff (part of ossobv/vcutil) // wdoekes/2016-2018 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
 # with a monitoring suite like Zabbix.
@@ -73,7 +73,7 @@ class Process(object):
         return self.root.process_map[pid]
 
     def to_string(self, indent=0):
-        return '{0}{1}  {{user={2}}}'.format(
+        return u'{0}{1}  {{user={2}}}'.format(
             indent * '  ', self.cmdline.rstrip(), self.user)
 
     def sort(self):
@@ -135,7 +135,7 @@ class ProcessFormatter(object):
         return ret
 
     def __str__(self):
-        return '\n'.join(self.to_strings(self.root)) + '\n'
+        return u'\n'.join(self.to_strings(self.root)) + '\n'
 
     def adjust(self, process):
         """
@@ -309,7 +309,7 @@ def get_formatter_class():
 def get_new_output(formatter_class):
     root = ps_faxu()
     formatter = formatter_class(root)
-    return str(formatter)
+    return formatter.__str__()  # returns unicode(!) on py2
 
 
 def main():
@@ -401,23 +401,32 @@ def main():
     try:
         with open('/var/lib/psdiff.db', 'r') as fh:
             old_output = fh.read()
+        if isinstance('', bytes):  # py2
+            old_output = old_output.decode('utf-8', 'replace')
     except IOError as e:
         if e.errno != 2:  # no such file
             raise
-        old_output = ''
+        old_output = u''
 
     process(args, old_output, formatter_class)
 
 
 def process(args, old_output, formatter_class):
+    # NOTE: We never print() with u'' below, because in py2 it would "guess"
+    # the encoding of the recipient (tty) instead of choosing utf-8.
+
     if args.action == 'dump':
         new_output = get_new_output(formatter_class)
+        if isinstance('', bytes):  # py2
+            new_output = new_output.encode('utf-8', 'replace')
         print(new_output[0:-1])  # without trailing LF
 
     elif args.action == 'write':
         new_output = get_new_output(formatter_class)
         if old_output != new_output:
             with open('/var/lib/psdiff.new', 'w') as fh:
+                if isinstance('', bytes):  # py2
+                    new_output = new_output.encode('utf-8', 'replace')
                 fh.write(new_output)
             if old_output:
                 os.rename('/var/lib/psdiff.db', '/var/lib/psdiff.old')
@@ -460,6 +469,8 @@ def process(args, old_output, formatter_class):
         # Show changes, if any.
         status = 0
         for which, line in changes:
+            if which and isinstance('', bytes):  # py2
+                line = line.encode('utf-8', 'replace')
             if which < 0 and args.action in ('show', 'show-missing'):
                 print('-{0}'.format(line))
                 status = 1
