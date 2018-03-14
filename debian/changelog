@@ -1,3 +1,18 @@
+vcutil (1.8) UNRELEASED; urgency=low
+
+  * Bug fixes:
+    - gitbackhub: Cope with github repository listings larger than 30
+      entries.
+    - psdiff: python3/unicode compatibility.
+    - venvpatch: Cope with leading "b/" in patch name.
+
+  * Improvements:
+    - easycert: Cope with DOS-formatted files when doing local -T test.
+    - uwsgi-kill: Cope with emperor-style setups.
+    - zabdig: Some output fixes.
+
+ -- Walter Doekes <wjdoekes+vcutil@osso.nl>  Wed, 14 Mar 2018 14:56:23 +0100
+
 vcutil (1.7) UNRELEASED; urgency=low
 
   * Improvements.
