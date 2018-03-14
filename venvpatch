@@ -62,16 +62,16 @@ apply="$2"
 
 
 # Init globals.
-local_packages=`python -c 'import distutils;
-                           print(distutils.sysconfig.get_python_lib())' \
-                2>/dev/null`
-other_packages=`python -c 'import sys; print(" ".join(sys.path))'`
-cwd=`pwd`/
-patchpath=`echo "$patchpath" | sed -e 's#^\([^/]\)#'$cwd'\1#'`
+local_packages=$(
+    python -c 'import distutils;print(distutils.sysconfig.get_python_lib())' \
+      2>/dev/null)
+other_packages=$(python -c 'import sys; print(" ".join(sys.path))')
+cwd=$(pwd)/
+patchpath=$(echo "$patchpath" | sed -e 's#^\([^/]\)#'$cwd'\1#')
 
 # Fetch patch arguments.
-patchver=`patch --version | sed -e '1!d;s/.* //'`
-if test `printf '%s\n2.7\n' $patchver | sort -V | head -n1` = 2.7; then
+patchver=$(patch --version | sed -e '1!d;s/.* //')
+if test $(printf '%s\n2.7\n' $patchver | sort -V | head -n1) = 2.7; then
     patchargs="--follow-symlinks --forward"
 else
     patchargs="--forward"
@@ -80,7 +80,7 @@ fi
 
 # Echo source path so manual intervention is eased.
 if test -f "$patchpath"; then
-    echo "source = `dirname "$patchpath"`"
+    echo "source = $(dirname "$patchpath")"
 else
     echo "source = $patchpath"
 fi
@@ -90,19 +90,19 @@ fi
 ret=0
 find "$patchpath" -maxdepth 1 -type f -name '*.patch' | sort |
 while read patch; do
-    patch_basename=`basename "$patch"`
+    patch_basename=$(basename "$patch")
 
     # Get the first file to be patched.
-    path1=`grep ^+++ "$patch" | head -n1 | awk '{print $2}'`
+    path1=$(grep ^+++ "$patch" | head -n1 | awk '{print $2}')
 
-    # Does it begin with a/ ? Then we should check the second path
-    # element.
+    # Does it begin with a/ or b/ ? Then we should check the second path
+    # element instead.
     # NOTE: $dir may turn out to be a plain file.
-    if echo "$path1" | grep -q '^a/'; then
-        dir=`echo "$path1" | sed -e 's#^a/\([^/]*\)/.*#\1#'`
+    if echo "$path1" | grep -q '^[ab]/'; then
+        dir=$(echo "$path1" | sed -e 's#^[ab]/\([^/]*\)/.*#\1#')
         level=1
     else
-        dir=`echo "$path1" | sed -e 's#^\([^/]*\)/.*#\1#'`
+        dir=$(echo "$path1" | sed -e 's#^\([^/]*\)/.*#\1#')
         level=0
     fi
 
@@ -115,16 +115,18 @@ while read patch; do
         fi
     done
     if test -z "$dest"; then
-        echo "venvpatch: No sensible patch location found for: $patch" >&2
-        echo "venvpatch: Forgot to enable virtualenv?" >&2
+        cat >&2 <<EOF
+venvpatch: No sensible patch location found for '$dir' in $patch
+venvpatch: Forgot to enable virtualenv?
+EOF
         exit 1
     fi
 
     # Very well. Let's see what a dry-run does. And if --apply is
     # passed as arg2, let's rock.
     cd "$dest"
-    output=`patch -p$level -i$patch --dry-run $patchargs \
-            </dev/null 2>&1`
+    output=$(patch -p$level -i$patch --dry-run $patchargs \
+      </dev/null 2>&1)
     if test $? -eq 0; then
         if test "$apply" = "--apply"; then
             echo " [N] $patch_basename => $dest"
