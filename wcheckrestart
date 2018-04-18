@@ -1,5 +1,5 @@
 #!/bin/sh
-# wcheckrestart (part of ossobv/vcutil) // wdoekes/2014 // Public Domain
+# wcheckrestart (part of ossobv/vcutil) // wdoekes/2014,2018 // Public Domain
 #
 # Checks which services need to be restarted after an upgrade. Inspired
 # by:
@@ -24,7 +24,7 @@
 #
 #    # Pass options 'h' and '-o pid' to 'ps', to get the PIDs only.
 #    sudo wcheckrestart -v h -o pid  # | awk NF=NF RS= OFS=,
-# 
+#
 verbose=0
 options_to_ps=f
 if test "$*" = "-vv"; then
@@ -44,26 +44,40 @@ fi
 
 shown=""
 toshow=""
-for pid in `ps fhax -opid`; do  # we need 'f' for the right order
-    res=$(egrep '\.so(\..*)? \(deleted\)$' /proc/$pid/maps 2>/dev/null)
-    if test $? -eq 0; then
-        ppid=$(awk '{print $4}' /proc/$pid/stat)
-        shown="$shown $pid "
 
-        # If not verbose, and parentpid is not 1 (in case we've already
-        # shown /sbin/init) and we've already shown the parent, then
-        # don't show it.
-        test $verbose -eq 0 -a $ppid != 1 &&
-            echo "$shown" | grep -q " $ppid " &&
-            continue
+pids=$(find /proc -maxdepth 2 -name maps |
+       xargs grep -lE '\.so(\..*)? \(deleted\)$' 2>/dev/null |
+       sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 +#' | tr '\n' '|' |
+       sed -e 's/|$//')
+test -z "$pids" && exit 0
 
-        toshow="$toshow,$pid"
-        if test $verbose -ge 2; then
-            cmdline=$(sed -e 's/\x00/ /g' /proc/$pid/cmdline)
-            printf "PID $pid $cmdline\n"
-            echo "$res" | sed -e "s/^/    $pid /"
-            echo 
-        fi
+# call `ps fhax` to get sane sorting (parents first)
+for pids in $(ps fhax -opid,ppid | grep -E "$pids" |
+              sed -e 's/^ *//;s/ *$//;s/ \+/,/'); do
+    pid=${pids%,*}
+    ppid=${pids#*,}
+    shown="$shown $pid "
+
+    exe=$(readlink /proc/$pid/exe 2>/dev/null) || continue
+    # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=777691
+    # Ignore dbus; right now it cannot be restarted without rebooting the
+    # system. Don't tempt the user to try and find a way.
+    test "$exe" = "/usr/bin/dbus-daemon" && continue
+
+    # If not verbose, and parentpid is not 1 (in case we've already
+    # shown /sbin/init) and we've already shown the parent, then
+    # don't show it.
+    test $verbose -eq 0 && test $ppid != 1 &&
+        echo "$shown" | grep -q " $ppid " &&
+        continue
+
+    toshow="$toshow,$pid"
+    if test $verbose -ge 2; then
+        cmdline=$(tr '\0' ' ' </proc/$pid/cmdline)
+        echo "PID $pid $cmdline"
+        grep -E '\.so(\..*)? \(deleted\)$' /proc/$pid/maps 2>/dev/null |
+            sed -e "s/^/    $pid /"
+        echo
     fi
 done
 
