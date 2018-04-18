@@ -1,5 +1,5 @@
 #!/bin/sh
-# easycert (part of ossobv/vcutil) // wdoekes/2012-2017 // Public Domain
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2018 // Public Domain
 #
 # Wrapper around openssl to create basic KEY+CSR pairs for submittal to
 # a certificate authority.
@@ -136,7 +136,11 @@ get_remote_expiry() {
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
         echo "WARNING: Uses old SHA-1 hash" >&2
     fi
-    cn=$(echo "$certinfo" | sed -e '/Subject.*CN *= */!d;s/.*CN *= *\([^/]*\).*/\1/')
+    cn=$(echo "$certinfo" |
+         sed -e '/Subject.*CN *= */!d;s/.*CN *= *\([^/]*\).*/\1/')
+    altnames=$(echo "$certinfo" |
+               grep '^[[:blank:]]*X509v3 Subject Alternative Name:' -A1 |
+               tail -n1)
     date=$(echo "$certinfo" | sed -e '/^ *Not After :/!d;s/^[^:]*: *//')
     if test "$host" = "$cn"; then
         :
@@ -147,8 +151,10 @@ get_remote_expiry() {
     elif echo "$host" |
          grep -q "$(echo "$cn" | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/')"; then
         :
+    elif echo "$altnames" | grep -qE "[[:blank:]]DNS:$host(, | *\$)"; then
+        :
     else
-        echo -n "($host!=$cn) "
+        echo -n "($host NOT IN ("$cn $altnames")) "
     fi
     echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
 }
