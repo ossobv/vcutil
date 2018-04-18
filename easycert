@@ -136,7 +136,7 @@ get_remote_expiry() {
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
         echo "WARNING: Uses old SHA-1 hash" >&2
     fi
-    cn=$(echo "$certinfo" | sed -e '/Subject.*CN=/!d;s/.*CN=\([^/]*\).*/\1/')
+    cn=$(echo "$certinfo" | sed -e '/Subject.*CN *= */!d;s/.*CN *= *\([^/]*\).*/\1/')
     date=$(echo "$certinfo" | sed -e '/^ *Not After :/!d;s/^[^:]*: *//')
     if test "$host" = "$cn"; then
         :
@@ -145,10 +145,10 @@ get_remote_expiry() {
     elif test "$host" = "www.$cn"; then
         :
     elif echo "$host" |
-         grep -q $(echo $cn | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/'); then
+         grep -q "$(echo "$cn" | sed -e 's/\./\\./g;s/*/.*/;s/^/^/;s/$/$/')"; then
         :
     else
-        echo "($host!=$cn)"
+        echo -n "($host!=$cn) "
     fi
     echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
 }
