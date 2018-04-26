@@ -45,7 +45,8 @@ fi
 shown=""
 toshow=""
 
-pids=$(find /proc -maxdepth 2 -name maps |
+pids=$(find /proc -maxdepth 2 -name maps -path '/proc/[0-9]*/maps' \
+         2>/dev/null |
        xargs grep -lE '\.so(\..*)? \(deleted\)$' 2>/dev/null |
        sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 +#' | tr '\n' '|' |
        sed -e 's/|$//')
