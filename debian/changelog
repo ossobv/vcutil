@@ -1,3 +1,16 @@
+vcutil (1.9) stable; urgency=low
+
+  * Bug fixes:
+    - easycert: Cope with changed openssl x509 subject output.
+    - wcheckrestart: Don't show DBUS in the needs-restart listin.
+      See: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=777691
+
+  * Improvements:
+    - easycert: Basic support for X509v3 alternative DNS names.
+    - wcheckrestart: Speed up a run by more than 2x.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 26 Apr 2018 09:34:42 +0200
+
 vcutil (1.8) UNRELEASED; urgency=low
 
   * Bug fixes:

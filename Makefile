@@ -58,7 +58,8 @@ OTHER = \
 all: hashes make_has_all_files
 
 deb:
-	dpkg-buildpackage -us -uc -sa
+	# Make sure a valid email with PGP key is in the changelog
+	dpkg-buildpackage -sa
 
 install:
 	install -d $(DESTDIR)$(BINDIR)
