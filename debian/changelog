@@ -1,3 +1,10 @@
+vcutil (1.10) stable; urgency=low
+
+  * Bug fixes:
+    - wcheckrestart: Silence occasional find(1) warnings
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 10 May 2018 11:11:46 +0200
+
 vcutil (1.9) stable; urgency=low
 
   * Bug fixes:
