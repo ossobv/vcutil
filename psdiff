@@ -356,6 +356,13 @@ def main():
                             process.cmdline = (
                                 process.cmdline.split(' -sf ', 1)[0])
 
+                        # Java processes get unordered arguments...
+                        if process.cmdline.startswith((
+                                '/usr/bin/java', 'java')):
+                            args = process.cmdline.split(' ')
+                            process.cmdline = ' '.join(
+                                [args[0]] + sorted(args[1:]))
+
                     def include(self, process):
                         # atop(1) has fluctuating arguments. I don't care
                         # whether it runs.
