@@ -64,6 +64,7 @@ for pids in $(ps fhax -opid,ppid | grep -E "$pids" |
     # Ignore dbus; right now it cannot be restarted without rebooting the
     # system. Don't tempt the user to try and find a way.
     test "$exe" = "/usr/bin/dbus-daemon" && continue
+    test "$exe" = "/usr/bin/dbus-daemon (deleted)" && continue
 
     # If not verbose, and parentpid is not 1 (in case we've already
     # shown /sbin/init) and we've already shown the parent, then
