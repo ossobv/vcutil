@@ -1,3 +1,13 @@
+vcutil (1.11) stable; urgency=low
+
+  * Changes:
+    - psdiff: Add another common psdiff.conf example
+    - psdiff: Speed up psdiff by not using ndiff()
+    - udiff: Fix so it works with python3 as well
+    - wcheckrestart: Also ignore "/usr/bin/dbus-daemon (deleted)"
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 30 Oct 2018 23:02:56 +0100
+
 vcutil (1.10) stable; urgency=low
 
   * Bug fixes:
