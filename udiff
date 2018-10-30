@@ -27,13 +27,41 @@ class LineByLineReader(object):
         self.file = file
         self.max_lookahead = max_lookahead
         self.lineno = 0
-        self.buffer = [] # list of (lineno, line) tuples
+        self.buffer = []  # list of (lineno, line) tuples
+        self.bigbuffer = b''
 
     def _fill(self):
         '''Add another line to the internal buffer. Raises
         StopIteration on EOF.'''
-        self.lineno += 1
-        self.buffer.append((self.lineno, self.file.next()))
+        if self.bigbuffer is None:
+            raise StopIteration()
+
+        eof = False
+        while True:
+            more = self.file.read(8192)
+            if not more:
+                eof = True
+                break
+            if b'\n' in more:
+                self.bigbuffer += more
+                break
+            self.bigbuffer += more
+
+        items = self.bigbuffer.split(b'\n')
+        for item in items[0:-1]:
+            self.lineno += 1
+            self.buffer.append((self.lineno, item))
+
+        if eof:
+            if items[-1]:
+                # Missing LF at eof..
+                self.lineno += 1
+                self.buffer.append((self.lineno, items[-1]))
+            self.bigbuffer = None
+            if not self.buffer:
+                raise StopIteration()
+        else:
+            self.bigbuffer = items[-1]
 
     def _pop(self):
         '''Pops a line from the internal buffer.'''
@@ -57,20 +85,26 @@ class LineByLineReader(object):
     def next(self):
         '''Serve the next line or None if we're at EOF.'''
         if not self.buffer:
-            try: self._fill()
-            except StopIteration: return None
+            try:
+                self._fill()
+            except StopIteration:
+                return None
         return self._pop()
 
     def find(self, line):
         '''Returns amount of lines to skip if line is found or None.'''
-        for i, buf in enumerate(self.buffer):
-            if buf[1] == line:
-                return i
-        while len(self.buffer) < self.max_lookahead:
-            try: self._fill()
-            except StopIteration: return None
-            if self.buffer[-1][1] == line:
-                return len(self.buffer) - 1
+        i = 0
+        while True:
+            for i, buf in enumerate(self.buffer[i:], i):
+                if buf[1] == line:
+                    return i
+            if len(self.buffer) >= self.max_lookahead:
+                break
+            try:
+                self._fill()
+            except StopIteration:
+                break
+        return None
 
     def __repr__(self):
         return 'LineByLineReader(%s)' % (self.file.name,)
@@ -82,13 +116,12 @@ def filediff(file1, file2):
     reader1 = LineByLineReader(file1)
     reader2 = LineByLineReader(file2)
 
-    pre_context = [] # store context that we can print on diff
-    post_context_needed = 0 # how many lines of context we still need to print
-    mode = 'skip' # 'diff' 'context'
-    has_heading = False # any heading at all
+    # How many lines of context we still need to print:
+    post_context_needed = 0
+    mode = 'skip'  # 'skip', 'diff', 'context'
+    has_heading = False  # any heading at all
 
     context = []
-    buffer = []
 
     lineno1 = lineno2 = -1
     while reader1.has_next() and reader2.has_next():
@@ -103,7 +136,7 @@ def filediff(file1, file2):
             # If we need post-diff-context, yield that
             if mode == 'context':
                 if post_context_needed:
-                    yield ' %s' % (line1,)
+                    yield b' %s\n' % (line1,)
                     post_context_needed -= 1
                 else:
                     mode = 'skip'
@@ -113,15 +146,15 @@ def filediff(file1, file2):
                 while len(context) > max_context:
                     context.pop(0)
         # Lines are different.
-        else: 
+        else:
             # Dump sub-heading and context if not done yet
             if mode == 'skip':
                 if not has_heading or len(context) == max_context:
-                    yield '@@ -%s,? +%s,? @@\n' % (
+                    yield b'@@ -%d,? +%d,? @@\n' % (
                         lineno1 - len(context), lineno2 - len(context))
                     has_heading = True
                 while context:
-                    yield ' %s' % (context.pop(0),)
+                    yield b' %s\n' % (context.pop(0),)
             mode = 'diff'
             # Attempt to find a match a bit later on
             lines2 = reader2.find(line1)
@@ -130,23 +163,23 @@ def filediff(file1, file2):
                 # Okay.. we've found something here
                 if lines1 is not None and (
                         lines2 is None or lines1 < lines2):
-                    line, reader, lines, sign = line1, reader1, lines1, '-'
+                    line, reader, lines, sign = line1, reader1, lines1, b'-'
                     reader2.push_back((lineno2, line2))
                 elif lines2 is not None and (
                         lines1 is None or lines2 < lines1):
-                    line, reader, lines, sign = line2, reader2, lines2, '+'
+                    line, reader, lines, sign = line2, reader2, lines2, b'+'
                     reader1.push_back((lineno1, line1))
                 else:
                     # Both differences are "smallest", 1 goes first
-                    line, reader, lines, sign = line1, reader1, lines1, '-'
+                    line, reader, lines, sign = line1, reader1, lines1, b'-'
                     reader2.push_back((lineno2, line2))
-                yield '%s%s' % (sign, line)
+                yield b'%s%s\n' % (sign, line)
                 while lines:
-                    yield '%s%s' % (sign, reader.next()[1])
+                    yield b'%s%s\n' % (sign, reader.next()[1])
                     lines -= 1
             else:
-                yield '-%s' % (line1,)
-                yield '+%s' % (line2,)
+                yield b'-%s\n' % (line1,)
+                yield b'+%s\n' % (line2,)
 
     # Dump sub-heading and context if not done yet
     if mode == 'skip' and (reader1.has_next() or reader2.has_next()):
@@ -157,33 +190,33 @@ def filediff(file1, file2):
                 lineno1 = 0
             if lineno2 == -1 and reader2.has_next():
                 lineno2 = 0
-            yield '@@ -%s,? +%s,? @@\n' % (
+            yield b'@@ -%d,? +%d,? @@\n' % (
                 lineno1 - len(context) + 1, lineno2 - len(context) + 1)
             has_heading = True
         while context:
-            yield ' %s' % (context.pop(0),)
+            yield b' %s\n' % (context.pop(0),)
     while reader1.has_next():
-        yield '-%s' % (reader1.next()[1],)
+        yield b'-%s\n' % (reader1.next()[1],)
     while reader2.has_next():
-        yield '+%s' % (reader2.next()[1],)
+        yield b'+%s\n' % (reader2.next()[1],)
 
 
 def fixheadings(iterator):
     buf = []
     blank = left = right = 0
     for line in iterator:
-        if line.startswith('@@'):
+        if line.startswith(b'@@'):
             if buf:
                 yield (
-                    buf[0].replace('?', '%u' % (blank + left), 1)
-                    .replace('?', '%u' % (blank + right), 1))
+                    buf[0].replace(b'?', b'%u' % (blank + left), 1)
+                    .replace(b'?', b'%u' % (blank + right), 1))
                 for i in buf[1:]:
                     yield i
                 buf = []
                 blank = left = right = 0
-        elif line.startswith('-'):
+        elif line.startswith(b'-'):
             left += 1
-        elif line.startswith('+'):
+        elif line.startswith(b'+'):
             right += 1
         else:
             blank += 1
@@ -197,39 +230,40 @@ def fixheadings(iterator):
             for i in iterator:
                 yield i
             return
-            
+
     if buf:
         yield (
-            buf[0].replace('?', '%u' % (blank + left), 1)
-            .replace('?', '%u' % (blank + right), 1))
+            buf[0].replace(b'?', b'%u' % (blank + left), 1)
+            .replace(b'?', b'%u' % (blank + right), 1))
         for i in buf[1:]:
             yield i
 
 
 def diff(args, stdout, stderr):
     if len(args) != 2:
-        print >>stderr, 'diff: need two arguments'
+        stderr.write(b'diff: need two arguments\n')
         return 1
 
-    file1 = open(args[0])
-    file2 = open(args[1])
+    file1 = open(args[0], 'rb')
+    file2 = open(args[1], 'rb')
 
     generator = fixheadings(filediff(file1, file2))
 
     # Print header before first output
     for output in generator:
-        import datetime, os
+        import datetime
+        import os
         mtime, mdate, nsec = [None, None], [None, None], [None, None]
         for i in range(2):
             mtime[i] = os.stat(args[i]).st_mtime
             mdate[i] = datetime.datetime.fromtimestamp(mtime[i])
             nsec[i] = '%09d' % (int((mtime[i] - int(mtime[i])) * 1000000000),)
         fmt = '%Y-%m-%d %H:%M:%S'
-        tz = '+0000' # for another rainy day
-        stdout.write('--- %s\t%s.%s %s\n' % (
-            args[0], mdate[0].strftime(fmt), nsec[0], tz))
-        stdout.write('+++ %s\t%s.%s %s\n' % (
-            args[1], mdate[1].strftime(fmt), nsec[1], tz))
+        tz = '+0000'  # for another rainy day
+        stdout.write(('--- %s\t%s.%s %s\n' % (
+            args[0], mdate[0].strftime(fmt), nsec[0], tz)).encode('utf-8'))
+        stdout.write(('+++ %s\t%s.%s %s\n' % (
+            args[1], mdate[1].strftime(fmt), nsec[1], tz)).encode('utf-8'))
         stdout.write(output)
         break
     # Print other output
@@ -240,6 +274,9 @@ def diff(args, stdout, stderr):
 
 if __name__ == '__main__':
     import sys
-    ret = diff(sys.argv[1:], sys.stdout, sys.stderr)
+    if hasattr(sys.stdout, 'buffer'):
+        ret = diff(sys.argv[1:], sys.stdout.buffer, sys.stderr.buffer)
+    else:
+        ret = diff(sys.argv[1:], sys.stdout, sys.stderr)  # py2
     if ret != 0:
         sys.exit(ret)
