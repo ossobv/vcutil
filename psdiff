@@ -1,17 +1,74 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # psdiff (part of ossobv/vcutil) // wdoekes/2016-2018 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
 # with a monitoring suite like Zabbix.
 #
 import argparse
-import difflib
 import os
 import re
 import subprocess
 import sys
 import textwrap
 import time
+
+
+def udiff(alines, blines):
+    """
+    Replacement for difflib.ndiff that doesn't take exponential time.
+
+    The fancy ndiff is nice, but on some machines it takes almost a
+    minute for psdiff dumps of 200 lines. That's not acceptable. We'll
+    have to settle for something less pretty but faster.
+
+    See: https://bugs.python.org/issue6931
+
+    We'd prefer the vcutils::udiff tool over difflib.unified_diff
+    because it syncs on the next line that matches instead of grouping
+    removals and additions together.
+
+    vcutil::udiff::
+
+         begin
+        +4
+        -1
+        +5
+        -2
+        +6
+         end
+
+    difflib.unified_diff::
+
+         begin
+        -1
+        -2
+        +4
+        +5
+        +6
+         end
+
+    However, loading udiff optionally makes the output differ based on
+    the (non)existence of said tool, and loading it from python is
+    rather ugly. We'll settle for ugly-diff for now.
+    """
+    # # py2/py3 (importlib.util refused to load non-.py files)
+    # import imp
+    # try:
+    #     udifflib = imp.load_source('udiff', './udiff')
+    #     udifflib.filediff  # test existence
+    # except (AttributeError, IOError, ImportError):
+    import difflib
+    diff_func = (lambda a, b: difflib.unified_diff(a, b, lineterm=''))
+    # else:
+    #     diff_func = (lambda a, b: udifflib.filediff(a, b))
+
+    iter_ = iter(diff_func(alines, blines))
+    for line in iter_:
+        if line.startswith('@@ '):
+            break  # skip +++/---
+    for line in iter_:
+        if not line.startswith('@@ '):
+            yield '{} {}'.format(line[0], line[1:])
 
 
 class Process(object):
@@ -250,7 +307,7 @@ def diff(a, b):
 
     changes = []
     remap = {' ': 0, '-': -1, '+': 1}
-    for change in difflib.ndiff(a, b):
+    for change in udiff(a, b):
         if change[0] != '?':
             changes.append((remap[change[0]], change[1:]))
 
