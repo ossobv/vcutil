@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # psdiff (part of ossobv/vcutil) // wdoekes/2016-2018 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
