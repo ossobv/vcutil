@@ -168,5 +168,5 @@ if min_count <= MAX_DISPLAY or len(lists['']):
     for key in sorted(lists.keys()):
         if len(lists[key]) <= MAX_DISPLAY or key == '':
             print('  {}'.format(key or '(local only)'))
-            for package in lists[key]:
+            for package in sorted(lists[key], key=(lambda x: x.name)):
                 print('    - {}'.format(package.name))
