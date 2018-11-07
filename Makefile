@@ -6,6 +6,7 @@ BINDIR = $(PREFIX)/bin
 SYSCONFDIR = /etc
 
 BINS = \
+	apt-find-foreign \
 	asterisk-gitlog-find \
 	bson2json \
 	censored-for-email \

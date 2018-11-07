@@ -1,0 +1,172 @@
+#!/usr/bin/env python
+# apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018 // Public Domain
+"""
+Script to find Debian/Ubuntu packages from "foreign" archives.
+
+Outputs a list of apt source lists where the currently installed
+packages come from. For lists that have fewer than 100 items, it also
+lists the package names.
+
+Usage example:
+
+    apt-find-foreign
+
+Output example:
+
+    Lists with corresponding package counts:
+      269     (local only)
+      3075    http://ubuntuserver.com/ubuntu
+      2       http://custom-ppa.com/ubuntu
+    
+    Lists with very few packages (or local only):
+      (local only)
+        - libswresample-ffmpeg1
+        - libquvi-scripts
+        - qml-module-ubuntu-performancemetrics
+        ...
+      http://custom-ppa.com/ubuntu
+        - packagex
+        - packagey
+
+Because apt-cache policy has to do a lot of work, it takes more than 2 seconds
+to run on my desktop.
+"""
+from collections import defaultdict
+from io import BytesIO
+from subprocess import check_output
+from tempfile import TemporaryFile
+import sys
+
+MAX_DISPLAY = 100
+
+
+class Package(object):
+    def __init__(self, name, state, policy=None):
+        self.name = name
+        self.state = state
+	# By injecting the policy, we save huge amounts of time. Doing one
+	# fork()/exec() per package would be horrendously slow.
+        self.policy = policy
+
+    def get_policy(self):
+        """
+        Return apt-cache policy PKG_NAME output.
+
+        For example::
+
+            vcutil:
+              Installed: 1.11
+              Candidate: 1.11
+              Version table:
+             *** 1.11 500
+                  500 http://example.com/ubuntu bionic/osso amd64 Packages
+                  500 http://example.com/ubuntu bionic/osso i386 Packages
+                  100 /var/lib/dpkg/status
+               1.10 500
+                  500 http://example.com/ubuntu bionic/osso amd64 Packages
+                  500 http://example.com/ubuntu bionic/osso i386 Packages
+        """
+        if self.policy is None:
+            out = check_output(['apt-cache', 'policy', self.name])
+            out = out.decode('utf-8')
+            self.policy = out
+        return self.policy
+
+    def get_lists(self):
+        """
+        Return dpkg source lists from the policy.
+        
+        For example::
+        
+            ('http://example.com/ubuntu',)
+        """
+        if not hasattr(self, '_lists'):
+            out = self.get_policy().split('\n')
+            outiter = iter(out)
+            lists = []
+            for l in outiter:
+                if l.startswith(' *** '):
+                    for l2 in outiter:
+                        if not l2.startswith(' ' * 8):
+                            break
+                        lists.append(l2)
+            lists = list(sorted(set(i.split()[1] for i in lists)))
+
+            if lists and lists[0] == '/var/lib/dpkg/status':
+                lists.pop(0)
+            else:
+                # probably state is 'rc'?
+                assert self.state == 'rc', (self.name, lists)
+
+            self._lists = tuple(lists)
+        return self._lists
+
+    def __repr__(self):
+        return self.name
+
+
+def dpkg_l():
+    """
+    Return list of [(package_name, state), ...].
+    """
+    out = check_output(['dpkg', '-l'])
+    out = out.decode('utf-8')
+    out = out.split('\n')[1:]
+    out = [i for i in out if i and not i.startswith(tuple('|+'))]
+    out = [list(reversed(i.split()))[-2:] for i in out]  # only "name", "ii"
+    out = [(i[0].split(':', 1)[0], i[1]) for i in out]   # drop ":amd64"
+    return out
+
+
+def apt_cache_policy(package_names):
+    """
+    Return apt_cache_policy dict, one string per package.
+    """
+    with TemporaryFile(mode='w+b') as fp:
+        fp.write('\0'.join(package_names).encode('utf-8'))
+        fp.seek(0)
+        out = check_output(['xargs', '-0', 'apt-cache', 'policy'], stdin=fp)
+    out = out.decode('utf-8').strip()
+    out = out.split('\n')
+    buf = []
+    for line in out:
+        if not line.startswith(' '):
+            if buf:
+                blob = '\n'.join(buf)
+                name = blob.split(':', 1)[0]
+                yield (name, blob)
+                buf = []
+        buf.append(line)
+    if buf:
+        blob = '\n'.join(buf)
+        name = blob.split(':', 1)[0]
+        yield (name, blob)
+
+
+packages = dict(dpkg_l())
+policies = dict(apt_cache_policy(packages.keys()))
+lists = defaultdict(list)
+
+for pkg_name in packages.keys():
+    p = Package(pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
+    if p.get_lists():
+        for list_ in p.get_lists():
+            lists[list_].append(p)
+    else:
+        lists[''].append(p)
+
+
+print('Lists with corresponding package counts:')
+min_count = len(packages)
+for key in sorted(lists.keys()):
+    print('  {}\t{}'.format(len(lists[key]), key or '(local only)'))
+    min_count = min(len(lists[key]), min_count)
+
+if min_count <= MAX_DISPLAY or len(lists['']):
+    print('')
+    print('Lists with very few packages (or local only):')
+    for key in sorted(lists.keys()):
+        if len(lists[key]) <= MAX_DISPLAY or key == '':
+            print('  {}'.format(key or '(local only)'))
+            for package in lists[key]:
+                print('    - {}'.format(package.name))
