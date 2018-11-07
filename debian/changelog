@@ -1,3 +1,14 @@
+vcutil (1.12) stable; urgency=low
+
+  * Bug fixes:
+    - psdiff: Fix unintentional python3 usage.
+
+  * Improvements:
+    - apt-find-foreign: Add tool to enumerate apt/dpkg installed
+      packages and their origin.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 07 Nov 2018 16:31:36 +0100
+
 vcutil (1.11) stable; urgency=low
 
   * Changes:
