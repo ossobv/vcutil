@@ -6,6 +6,8 @@
 #
 # Also features a small test mode. And usable as CGI script.
 #
+# (BEWARE: Mac/BSD users: it requires gnu-getopt)
+#
 # Usage:
 #
 #     # Create two files:
