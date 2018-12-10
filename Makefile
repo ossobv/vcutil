@@ -19,7 +19,9 @@ BINS = \
 	gitbackhub \
 	git-hook-postcommit-coloremail \
 	gitlab-hook-postcommit-coloremail \
+	ifupdown2netplan \
 	indirect-scp \
+	interfaces2netplan \
 	linux-kernel-autoremove \
 	mysql2csv \
 	pdns-mysql-slave-prune \

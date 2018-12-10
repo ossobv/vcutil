@@ -1,0 +1,359 @@
+#!/usr/bin/env python
+# interfaces2netplan (part of ossobv/vcutil) // wdoekes/2018 // Public Domain
+#
+# Quick attempt to convert the simplest interfaces files (from ifupdown)
+# to netplan.io YAML syntax. If it has the slightest hint that it might miss
+# something, it will abort with some kind of error.
+#
+# 1. Enumerates all files in /etc/network/if-*.d and warns.
+# 2. Concatenates all files in /etc/network/interfaces{,.d/*} and attempts
+#    to convert the contents to a valid netplan.io YAML file.
+#
+# Example output:
+#
+#   network:
+#     version: 2
+#     renderer: networkd
+#     ethernets:
+#       enp3s0:
+#        addresses:
+#          - 10.100.1.38/24
+#          - 10.100.1.39/24
+#        gateway4: 10.100.1.1
+#
+# When content, write output to the yaml, like this:
+#
+#   interfaces2netplan > /etc/netplan/01-netcfg.yaml
+#
+# After a succesful 'netplan try' you should be able to reboot and then remove
+# the 'ifupdown' package.
+#
+from collections import OrderedDict
+import fnmatch
+import os
+import re
+import sys
+
+
+def _netmaskbits(netmask):
+    mask = [int(i) for i in netmask.split('.')]
+    mask = (mask[0] << 24 | mask[1] << 16 | mask[2] << 8 | mask[3])
+    bits = 32
+    while mask:
+        if ((mask >> 1) << 1) == mask:
+            bits -= 1
+            mask >>= 1
+        else:
+            break
+    mask <<= (32 - bits)
+    assert (0xffffffff << (32 - bits) & 0xffffffff) == mask
+    return bits
+
+
+def _stderr(data):
+    "Shortcut for print to stderr"
+    if os.isatty(sys.stderr.fileno()):
+        data = '\x1b[31;1m{}\x1b[0m'.format(data)
+    sys.stderr.write(data)
+    sys.stderr.flush()
+
+
+def _stdout(data):
+    "Shortcut for print to stdout"
+    sys.stdout.write(data)
+    sys.stdout.flush()
+
+
+def list_all_files(path):
+    "Return all file-type files in supplied path"
+    return sorted([
+        os.path.join(dir_, file_)
+        for dir_, dirs, files in os.walk(path)
+        for file_ in files])
+
+
+class NetworkFiles(object):
+    "Load up files in /etc/network and make sense of them"
+
+    def __init__(self):
+        self._interfaces = []
+        self._ifupdownd = []
+        self._unknown = []
+        self._yaml = None
+        self._populate(list_all_files('/etc/network'))
+
+    def _populate(self, files):
+        # Check that there is an interfaces file, and check whether we
+        # expect files in interfaces.d. Also, make sure it is added first.
+        self._interfaces.append('/etc/network/interfaces')
+        with open(self._interfaces[0], 'r') as fp:
+            lines = [i.strip() for i in fp.read().split('\n')]
+            lines = [i for i in lines if i.startswith((
+                'source ', 'source\t'))]
+            if len(lines) == 0:
+                # No 'source'? We see examples where the files are
+                # configured/used anyway..
+                interfaces_re = re.compile(
+                    r'^/etc/network/interfaces.d/[^./][^/]*$')
+            elif len(lines) == 1:
+                # Check the source, and convert to regex.
+                interfaces_re = re.compile(
+                    fnmatch.translate(lines[0].split(None, 1)[-1]))
+            else:
+                raise ValueError('Multiple source lines found? {!r}'.format(
+                    lines))
+
+        # Check all supplied files against our lists/regexes.
+        ifupdown_re = re.compile(
+            r'^/etc/network/if-(down|post-down|pre-up|up)[.]d/[^/]*$')
+        devnull = []
+        destinations = (
+            (self._ifupdownd, (lambda x: ifupdown_re.match(x))),
+            (devnull, (lambda x: x == '/etc/network/interfaces')),
+            (self._interfaces, (lambda x: interfaces_re.match(x))),
+        )
+        for file_ in files:
+            for destlist, matches in destinations:
+                if matches(file_):
+                    destlist.append(file_)
+                    break
+            else:
+                self._unknown.append(file_)
+
+    def _get_appended_interfaces(self):
+        long_file = []
+
+        for file_ in self._interfaces:
+            with open(file_, 'r') as fp:
+                data = fp.read()
+
+                # Remove the one source entry we expect. We're doing
+                # the sourcing here.
+                if file_ == '/etc/network/interfaces':
+                    data = '\n'.join([
+                        line for line in data.split('\n')
+                        if not line.strip().startswith((
+                            'source ', 'source\t'))])
+
+                long_file.append(data)
+
+        return '\n\n'.join(long_file)
+
+    def get_yaml(self):
+        if self._yaml is None:
+            long_file = self._get_appended_interfaces()
+            ifile = InterfacesFile(long_file)
+            self._yaml = ifile.to_netplan()
+        return self._yaml
+
+    def exitcode(self):
+        # Don't even continue of we cannot generate a nice YAML.
+        yaml = self.get_yaml()
+        assert yaml is not None
+
+        status = 0
+        if self._ifupdownd:
+            # Don't care about these "normal" if-up.d/if-down.d files.
+            # They're generally not crucial.
+            pass
+        if self._unknown:
+            # This can be worrisome, don't return 0/OK anymore.
+            status = 2
+
+        return status
+
+    def show(self):
+        yaml = self.get_yaml()
+        _stdout(yaml)
+
+    def warn(self):
+        if self._ifupdownd:
+            _stderr(
+                "Found some files we do not convert, check manually:\n"
+                "  {}\n\n".format('\n  '.join(self._ifupdownd)))
+        if self._unknown:
+            _stderr(
+                "Found some files we do not know about, check manually:\n"
+                "  {}\n\n".format('\n  '.join(self._unknown)))
+
+
+class InterfacesFile(object):
+    "Interfaces file parser"
+
+    def __init__(self, interfaces_file):
+        self._data = interfaces_file
+        self._sanitize()
+        self._parse()
+        self._join_inet_inet6()
+
+    def _sanitize(self):
+        data = self._data.replace('\r', '').split('\n')
+        newdata = []
+        space_re = re.compile(r'\s+')
+        for line in data:
+            line = line.rstrip()
+
+            # Blank line or only comment? Skip.
+            if not line or line.lstrip().startswith('#'):
+                continue
+
+            # "[[:blank:]]#.*"? Drop trailing comment. Keep if the '#' is
+            # not preceded by a space.
+            if '#' in line and line.split('#', 1)[0].endswith((' ', '\t')):
+                line = line.split('#', 1)[0].rstrip()
+
+            # Collapse multiple leading blanks into one.
+            if line.startswith((' ', '\t')):
+                line = ' {}'.format(line.lstrip())
+
+            # Collapse multiple blanks into one everywhere.
+            line = space_re.sub(' ', line)
+
+            newdata.append(line)
+        self._data = newdata
+
+    def _parse(self):
+        context = None
+        autos = set()
+        config = {}
+
+        for line in self._data:
+            if line.startswith('auto '):
+                values = line.split()  # auto lo eth0 eth1
+                for value in values[1:]:
+                    autos.add(value)
+
+            elif line.startswith('iface '):
+                values = line.split()  # iface eth0 inet{,6} static|...
+                context = (values[1], values[2])  # (lo|eth0, inet|inet6)
+                if context in config:
+                    raise ValueError('dupe {!r} context? {!r}'.format(
+                        context, line))
+                assert ':' not in values[1], line  # not eth0:0 aliases
+                assert values[2] in ('inet', 'inet6'), line
+                type_ = values[3]  # auto|static|dhcp|loopback
+                if context == ('lo', 'inet'):
+                    assert type_ == 'loopback', line
+                    config[context] = {}
+                elif type_ in 'static':
+                    config[context] = {}
+                elif type_ == 'dhcp' and values[2] == 'inet':
+                    config[context] = {'dhcp4': 'yes'}
+                elif type_ == 'auto' and values[2] == 'inet6':
+                    config[context] = {'dhcp6': 'yes'}
+                else:
+                    raise ValueError('unexpected {!r} type? {!r}'.format(
+                        type_, line))
+
+            elif line.startswith(' '):
+                self._parse_context(context[1], config[context], line)
+
+            else:
+                raise ValueError('unexpected line {!r}'.format(line))
+
+        config_keys = set([i[0] for i in config.keys()])
+        if config_keys != autos:
+            raise ValueError(
+                'not all interfaces are auto-on: {!r} != {!r}'.format(
+                    sorted(config_keys), sorted(autos)))
+
+        self._parsed = config
+
+    def _parse_context(self, proto, config, line):
+        cols = line.split()
+        cmd = cols.pop(0)
+        if cmd == 'address':
+            assert 'addresses' not in config, config
+            assert len(cols) == 1, line
+            config['addresses'] = [cols[0]]
+        elif cmd == 'netmask':
+            assert 'addresses' in config, config
+            assert '/' not in config['addresses'][0], config
+            assert len(cols) == 1, line
+            bits = _netmaskbits(cols[0])
+            config['addresses'][0] += '/{}'.format(bits)
+        elif cmd == 'gateway' and proto == 'inet':
+            assert 'gateway4' not in config, config
+            assert len(cols) == 1, line
+            config['gateway4'] = cols[0]
+        elif cmd == 'dns-nameservers':
+            if 'nameservers' not in config:
+                config['nameservers'] = {}
+            assert 'addresses' not in config['nameservers'], config
+            assert cols, line
+            config['nameservers']['addresses'] = cols
+        elif cmd == 'dns-search':
+            if 'nameservers' not in config:
+                config['nameservers'] = {}
+            assert 'search' not in config['nameservers'], config
+            assert cols, line
+            config['nameservers']['search'] = cols
+        else:
+            raise ValueError('unexpected line {!r}'.format(line))
+
+    def _join_inet_inet6(self):
+        ethernets = {}
+        for (iface, proto), values in self._parsed.items():
+            if iface not in ethernets:
+                ethernets[iface] = {}
+            for key, value in values.items():
+                if isinstance(value, list):
+                    if key not in ethernets[iface]:
+                        ethernets[iface][key] = []
+                    ethernets[iface][key].extend(value)
+                else:
+                    assert key not in ethernets[iface], (ethernets, iface, key)
+                    ethernets[iface][key] = value
+
+        # We should add it if we want extra addresses, but generally we don't.
+        assert 'lo' in ethernets, ethernets
+        assert ethernets['lo'] == {}
+        del ethernets['lo']
+
+        self._ethernets = ethernets
+
+    def _to_yaml(self, value, indent=''):
+        if isinstance(value, str):
+            return value
+
+        ret = []
+        if isinstance(value, dict):
+            key_value = value.items()
+            if not isinstance(value, OrderedDict):
+                key_value = sorted(key_value)
+            for key, value in key_value:
+                inside = self._to_yaml(value, indent + '  ')
+                if isinstance(inside, list):
+                    ret.append('{}{}:'.format(indent, key))
+                    ret.extend(inside)
+                else:
+                    ret.append('{}{}: {}'.format(indent, key, inside))
+        elif isinstance(value, list):
+            for v in value:
+                ret.append('{}- {}'.format(indent, v))
+        else:
+            assert False, value
+
+        return ret
+
+    def to_netplan(self):
+        ret = {
+            'network': OrderedDict([
+                ('version', '2'),
+                ('renderer', 'networkd'),
+                ('ethernets', self._ethernets),
+            ]),
+        }
+        return '\n'.join(self._to_yaml(ret)) + '\n'
+
+
+def main():
+    files = NetworkFiles()
+    files.warn()
+    files.show()
+    sys.exit(files.exitcode())
+
+
+if __name__ == '__main__':
+    main()
+# vim: set ts=8 sw=4 sts=4 et ai:
