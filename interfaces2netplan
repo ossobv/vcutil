@@ -37,6 +37,9 @@ import sys
 
 def _netmaskbits(netmask):
     mask = [int(i) for i in netmask.split('.')]
+    if len(mask) == 1:
+        return mask[0]
+
     mask = (mask[0] << 24 | mask[1] << 16 | mask[2] << 8 | mask[3])
     bits = 32
     while mask:
@@ -276,6 +279,10 @@ class InterfacesFile(object):
             assert 'gateway4' not in config, config
             assert len(cols) == 1, line
             config['gateway4'] = cols[0]
+        elif cmd == 'gateway' and proto == 'inet6':
+            assert 'gateway6' not in config, config
+            assert len(cols) == 1, line
+            config['gateway6'] = cols[0]
         elif cmd == 'dns-nameservers':
             if 'nameservers' not in config:
                 config['nameservers'] = {}
@@ -314,6 +321,9 @@ class InterfacesFile(object):
 
     def _to_yaml(self, value, indent=''):
         if isinstance(value, str):
+            if ':' in value:
+                assert '"' not in value, value
+                return '"{}"'.format(value)
             return value
 
         ret = []
@@ -330,7 +340,8 @@ class InterfacesFile(object):
                     ret.append('{}{}: {}'.format(indent, key, inside))
         elif isinstance(value, list):
             for v in value:
-                ret.append('{}- {}'.format(indent, v))
+                assert isinstance(v, str), v
+                ret.append('{}- {}'.format(indent, self._to_yaml(v)))
         else:
             assert False, value
 
