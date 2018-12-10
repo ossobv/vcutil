@@ -7,6 +7,6 @@
 # Usage:
 #
 #     cat some.patch | wdiffcount
-# 
+#
 for(<>){/^([+-])(?!\1\1)/&&++$d{$1eq"-"}};
 print "$d{''} - $d{1} = ".($d{""}-$d{1})."\n";

@@ -2,7 +2,7 @@
 #
 # Makefile with tests for udiff(1) by Walter Doekes 2011
 # http://wjd.nu/notes/2011#diff-memory-exhausted-udiff
-# 
+#
 # Usage:
 #
 #     make -f udiff.selftest

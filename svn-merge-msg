@@ -37,7 +37,7 @@
 # If PATH_OF_MERGE_SOURCE is not supplied, "live-" is stripped from
 # the current path. It assumed you're working in ~/src/live-project and
 # ~/src/project.
-#  
+#
 # See also:
 #
 #     svn-show-mergable (to use before `svn merge`)

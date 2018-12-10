@@ -1,3 +1,15 @@
+vcutil (1.13) stable; urgency=low
+
+  * Bug fixes:
+    - apt-find-foreign: Sort packages in list output.
+    - easycert: Document how to get things to work on BSD/OSX/Max.
+
+  * Improvements:
+    - interfaces2netplan: Add tool to convert the simplest
+      /etc/network/interfaces files to /etc/netplan/*.yaml.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Mon, 10 Dec 2018 17:49:02 +0100
+
 vcutil (1.12) stable; urgency=low
 
   * Bug fixes:
