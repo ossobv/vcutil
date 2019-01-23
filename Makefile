@@ -41,6 +41,7 @@ BINS = \
 	wcheckrestart \
 	wdiffcount \
 	wgrep \
+	wtimedecode \
 	wtimediff \
 	wtimestamp \
 	wtrunc \

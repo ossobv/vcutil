@@ -1,0 +1,29 @@
+#!/bin/sh
+# wtimedecode (part of ossobv/vcutil) // wdoekes/2018 // Public Domain
+# Reads 10-digit unix times on stdin and converts them to local time.
+#
+# Usage:
+#
+#     $ echo "[$(date +%s)] Some log message" | wtimedecode [--utc]
+#     [2018-12-06T14:32:20+0100 (1544103140)] Some log message
+#
+# The inverse can be done with date(1):
+#
+#     $ date --date '2018-12-06T11:22:33+0400' +%s | wtimedecode
+#     2018-12-06T08:22:33+0100 (1544080953)
+#
+#exec env LC_ALL=C perl -e '
+#use Time::localtime;$|++;sub func{my $s=shift;$us=shift;ctime($s)." ($s$us)";}
+#for(<>){s/\b(\d{10})(\.\d+)?/func($1,$2)/e;print}'
+exec env LC_ALL=C perl -we '
+use strict;use POSIX "strftime";
+my ($opt)=@ARGV;my ($tm,$z)=(\&CORE::localtime,"%z");
+($tm,$z)=(\&CORE::gmtime,"Z") if $opt and $opt eq "--utc";
+sub func{my ($s,$us)=@_;$us="" if not $us;
+strftime("%Y-%m-%dT%H:%M:%S".$z,$tm->($s))." ($s$us)";}
+$|++;my($prev,$cont,$in)=("",1,"");
+while(($cont&&($cont=sysread(STDIN,$in,4096)))||$prev){
+my @a=split /\n/s,$prev.$in,-1;$prev=$in="";$prev=pop @a if $cont;
+foreach (@a){$_.="\n";
+s/\b(\d{10})(\.\d+)?/func($1,$2)/e;
+print;}}' -- "$@"
