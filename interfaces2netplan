@@ -35,6 +35,13 @@ import re
 import sys
 
 
+class Line(object):
+    def __init__(self, line, lineno, filename):
+        self.line = line
+        self.lineno = lineno
+        self.filename = filename
+
+
 def _netmaskbits(netmask):
     mask = [int(i) for i in netmask.split('.')]
     if len(mask) == 1:
@@ -124,7 +131,7 @@ class NetworkFiles(object):
                 self._unknown.append(file_)
 
     def _get_appended_interfaces(self):
-        long_file = []
+        lines = []
 
         for file_ in self._interfaces:
             with open(file_, 'r') as fp:
@@ -134,18 +141,20 @@ class NetworkFiles(object):
                 # the sourcing here.
                 if file_ == '/etc/network/interfaces':
                     data = '\n'.join([
-                        line for line in data.split('\n')
-                        if not line.strip().startswith((
-                            'source ', 'source\t'))])
+                        ('' if line.strip().startswith((
+                            'source ', 'source\t')) else line)
+                        for line in data.split('\n')])
 
-                long_file.append(data)
+                lines.extend([
+                    Line(line, (idx + 1), file_)
+                    for idx, line in enumerate(data.split('\n'))])
 
-        return '\n\n'.join(long_file)
+        return lines
 
     def get_yaml(self):
         if self._yaml is None:
-            long_file = self._get_appended_interfaces()
-            ifile = InterfacesFile(long_file)
+            interfaces_lines = self._get_appended_interfaces()
+            ifile = InterfacesParser(interfaces_lines)
             self._yaml = ifile.to_netplan()
         return self._yaml
 
@@ -180,21 +189,20 @@ class NetworkFiles(object):
                 "  {}\n\n".format('\n  '.join(self._unknown)))
 
 
-class InterfacesFile(object):
+class InterfacesParser(object):
     "Interfaces file parser"
 
-    def __init__(self, interfaces_file):
-        self._data = interfaces_file
+    def __init__(self, interfaces_lines):
+        self._data = interfaces_lines
         self._sanitize()
         self._parse()
         self._join_inet_inet6()
 
     def _sanitize(self):
-        data = self._data.replace('\r', '').split('\n')
         newdata = []
         space_re = re.compile(r'\s+')
-        for line in data:
-            line = line.rstrip()
+        for lineobj in self._data:
+            line = lineobj.line.rstrip()
 
             # Blank line or only comment? Skip.
             if not line or line.lstrip().startswith('#'):
@@ -212,7 +220,9 @@ class InterfacesFile(object):
             # Collapse multiple blanks into one everywhere.
             line = space_re.sub(' ', line)
 
-            newdata.append(line)
+            lineobj.line = line
+            newdata.append(lineobj)
+
         self._data = newdata
 
     def _parse(self):
@@ -220,7 +230,8 @@ class InterfacesFile(object):
         autos = set()
         config = {}
 
-        for line in self._data:
+        for lineobj in self._data:
+            line = lineobj.line
             if line.startswith('auto '):
                 values = line.split()  # auto lo eth0 eth1
                 for value in values[1:]:
@@ -230,8 +241,8 @@ class InterfacesFile(object):
                 values = line.split()  # iface eth0 inet{,6} static|...
                 context = (values[1], values[2])  # (lo|eth0, inet|inet6)
                 if context in config:
-                    raise ValueError('dupe {!r} context? {!r}'.format(
-                        context, line))
+                    raise ValueError('dupe {!r} context? {!r} [{}:{}]'.format(
+                        context, line, lineobj.filename, lineobj.lineno))
                 assert ':' not in values[1], line  # not eth0:0 aliases
                 assert values[2] in ('inet', 'inet6'), line
                 type_ = values[3]  # auto|static|dhcp|loopback
@@ -245,14 +256,16 @@ class InterfacesFile(object):
                 elif type_ == 'auto' and values[2] == 'inet6':
                     config[context] = {'dhcp6': 'yes'}
                 else:
-                    raise ValueError('unexpected {!r} type? {!r}'.format(
-                        type_, line))
+                    raise ValueError(
+                        'unexpected {!r} type? {!r} [{}:{}]'.format(
+                            type_, line, lineobj.filename, lineobj.lineno))
 
             elif line.startswith(' '):
-                self._parse_context(context[1], config[context], line)
+                self._parse_context(context[1], config[context], lineobj)
 
             else:
-                raise ValueError('unexpected line {!r}'.format(line))
+                raise ValueError('unexpected line {!r} [{}:{}]'.format(
+                    line, lineobj.filename, lineobj.lineno))
 
         config_keys = set([i[0] for i in config.keys()])
         if config_keys != autos:
@@ -262,7 +275,8 @@ class InterfacesFile(object):
 
         self._parsed = config
 
-    def _parse_context(self, proto, config, line):
+    def _parse_context(self, proto, config, lineobj):
+        line = lineobj.line
         cols = line.split()
         cmd = cols.pop(0)
         if cmd == 'address':
@@ -296,7 +310,8 @@ class InterfacesFile(object):
             assert cols, line
             config['nameservers']['search'] = cols
         else:
-            raise ValueError('unexpected line {!r}'.format(line))
+            raise ValueError('unexpected line {!r} [{}:{}]'.format(
+                line, lineobj.filename, lineobj.lineno))
 
     def _join_inet_inet6(self):
         ethernets = {}
