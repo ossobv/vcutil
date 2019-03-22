@@ -17,6 +17,7 @@ BINS = \
 	filespeed \
 	gitbackhub \
 	git-hook-postcommit-coloremail \
+	git-reapply-patch \
 	gitlab-hook-postcommit-coloremail \
 	ifupdown2netplan \
 	indirect-scp \

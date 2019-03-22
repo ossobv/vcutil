@@ -1,0 +1,100 @@
+#!/bin/sh
+# git-reapply-patch (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Apply/patch a regular (--format=medium) git-show formatted patch,
+# using the Author, Date and Message found therein, adding a cherry-pick
+# message.
+#
+# Basic usage:
+#
+#     # If you have a changeset...
+#     git show 2ddef2d7 >cherry-picked.patch  # fetch some commit
+#
+#     # ... that you want committed/cherry-picked somewhere.
+#     git checkout -b other-branch 2ddef2d7^
+#
+#     # Then you take the git-show output, and apply it, with an
+#     # optional extra message:
+#     git-reapply-patch cherry-picked.patch "(this is an example)"
+#
+# This would create a changeset with the Date, Author and Message from
+# the patch file, and the following lines appended to the commit mesage:
+#
+#     (git-reapply-patch cherry-pick 2ddef2d7)
+#     (this is an example)
+#
+# A more advanced use case is when you want to rewrite some history and
+# you have an ordered list of git-show formatted patches that you want
+# to re-apply.
+#
+#     for patch_file in *.patch; do
+#         git-reapply-path $patch_file "(The Big Rewrite)" || break
+#         mv $patch_file ${patch_file}.done
+#     done
+#
+# If you run into conflicts, you can fix them manually by staging the
+# area appropriately, and then use "--only-commit". This will skip the
+# apply step, and only do the commit step with the Date, Author and
+# (amended) Message.
+#
+#     git-reapply-patch $patch_file "(The Big Rewrite)" --only-commit
+#     mv $patch_file ${patch_file}.done
+#
+patch_file=$1
+extra_commit_msg=$2
+manual_commit=$3
+if test -z "$manual_commit" -a "$extra_commit_msg" = --only-commit; then
+    manual_commit=$extra_commit_msg
+    extra_commit_msg=
+fi
+if test $# -gt 3 -o '!' -r "$patch_file" -o '!' '(' \
+        -z "$manual_commit" -o "$manual_commit" = --only-commit ')'; then
+    echo "Usage: $0 PATCH_FILE [EXTRA_MSG] [--only-commit]" >&2
+    exit 1
+fi
+
+head=$(sed -e '1,/^\(diff\|---\)/!d' "$patch_file")
+
+commit=$(echo "$head" | sed -ne 's/^commit[[:blank:]]\+\(.*\)/\1/p' | head -n1)
+author=$(echo "$head" | sed -ne 's/^Author:[[:blank:]]\+\(.*\)/\1/p' | head -n1)
+author_name=$(echo "$author" | sed -e 's/ <.*//')
+author_email=$(echo "$author" | sed -ne 's/.*<\(.*\)>.*/\1/p')
+date=$(echo "$head" | sed -ne 's/^Date:[[:blank:]]\+\(.*\)/\1/p' | head -n1)
+
+commit_msg=$(echo "$head" | sed -e '/^    \|^$/!d;s/^    //')
+commit_msg=$(
+    printf '\n\n%s\n\n(git-reapply-patch cherry-pick %s)\n%s' \
+      "$commit_msg" "$commit" "$extra_commit_msg" |
+    sed -e '1,/^[^[:blank:]]/{/^[[:blank:]]*$/d}')
+
+printf "author_name='%s'\n" "$author_name"
+printf "author_email='%s'\n" "$author_email"
+printf "date='%s'\n" "$date"
+printf "commit_msg='%s'\n" "$(echo "$commit_msg" | sed -e "s/'/'\\''/g")"
+echo
+
+# exit 3  # <-- uncomment to test output
+
+if test "$manual_commit" = --only-commit; then
+    if test -z "$(git status --porcelain | grep -v '^??')"; then
+        echo "Nothing to commit; did you do the manual staging?" 2>&1
+        exit 1
+    fi
+elif test -n "$(git status --porcelain | grep -v '^??')"; then
+    echo "Please clear the staging area first" >&2
+    exit 1
+elif ! git apply --index "$patch_file"; then
+    exit 1
+fi
+
+# Optional
+#GIT_COMMITTER_DATE=$date
+#GIT_COMMITTER_NAME=$author_name
+#GIT_COMMITTER_EMAIL=$author_email
+
+# Using --no-gpg-sign by default, perhaps because signing takes extra
+# manual confirmation. You may want to alter that.
+GIT_AUTHOR_DATE=$date \
+GIT_AUTHOR_NAME=$author_name \
+GIT_AUTHOR_EMAIL=$author_email \
+git commit --no-gpg-sign -m "$commit_msg" || exit $?
