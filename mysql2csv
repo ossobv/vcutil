@@ -38,6 +38,7 @@
 # - 2016-05-25: Add --extra-where parameter to limit the query results.
 # - 2019-04-02: Trap incorrect None conversions by MySQLdb: better crash
 #               than silently truncate/NULLify values.
+# - 2019-04-02: Handle YYYY-mm-dd HH:MM:SS[.qqq[qqq]] TIMESTAMP values.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -103,8 +104,36 @@ def _make_conversion_safe_tuple(orig_tuple):
     return k, _make_conversion_safe(v)
 
 
+def _make_timestamp_conversion(orig_conversion):
+    """
+    Create conversion function with fallback to original.
+    """
+    def _timestamp_conversion(s):
+        "Convert 'YYYY-mm-dd HH:MM:SS[.qqq[qqq]]' to datetime"
+        try:
+            ymd, hms = s.split(' ')
+            y, m, d = [int(i) for i in ymd.split('-')]
+            h, mm, s = hms.split(':')
+            if '.' in s:
+                s, us = s.split('.')
+                us = int(us[0:6].ljust(6, '0'))
+            else:
+                us = 0
+            h, mm, s = int(h), int(mm), int(s)
+            return datetime(
+                year=y, month=m, day=d, hour=h, minute=mm, second=s,
+                microsecond=us)
+        except Exception:
+            return orig_conversion(s)
+    return _timestamp_conversion
+
+
+# Update conversions to make them safe from None-truncation.
 CONVERSIONS = dict(
     _make_conversion_safe_tuple(it) for it in converters.conversions.items())
+# Add TIMESTAMP conversion that handles 'YYYY-mm-dd HH:MM:SS[.qqq[qqq]]'.
+CONVERSIONS[converters.FIELD_TYPE.TIMESTAMP] = _make_timestamp_conversion(
+    CONVERSIONS[converters.FIELD_TYPE.TIMESTAMP])
 
 
 def dump2csv_and_prune(db_connection, kwargs):
