@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2016 // Public Domain
+# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2019 // Public Domain
 #
 # This mysql2csv dump script is a convenient way to dump and/or prune
 # large tables. Instead of selecting all data at once, it takes chunks
@@ -36,6 +36,8 @@
 # - 2016-05-23: Prune during dump, using the same date filters.
 # - 2016-05-23: Fix problem with TIMESTAMP column and DST changes.
 # - 2016-05-25: Add --extra-where parameter to limit the query results.
+# - 2019-04-02: Trap incorrect None conversions by MySQLdb: better crash
+#               than silently truncate/NULLify values.
 #
 from __future__ import print_function
 import argparse  # pip install argparse on old pre-2.7 python
@@ -43,7 +45,7 @@ import getpass
 import sys
 import time
 
-from MySQLdb import connect
+from MySQLdb import connect, converters
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -56,6 +58,53 @@ except ImportError:  # python2-
 DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
 DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
+
+
+def _make_conversion_safe(orig_conversion):
+    """
+    Wrap orig_conversion with one that checks that the returned value is
+    not None.
+
+    We do NOT want this flaky behaviour::
+
+        def Date_or_None(s):
+            try: return date(*[ int(x) for x in s.split('-',2)])
+            except: return None
+
+    If the type conversion is not recognised by MySQLdb, dont't have it
+    convert to None. This is Python, not let-me-silently-downcast-this-PHP.
+    """
+    def _safe_conversion(s):
+        "Assert that None is never returned."
+        ret = orig_conversion(s)
+        if ret is None:
+            raise NotImplementedError(
+                'conversion from {!r} yielded None; bug in MySQLdb?'.format(s))
+        return ret
+    return _safe_conversion
+
+
+def _make_conversion_safe_tuple(orig_tuple):
+    """
+    Update conversion function with a safe-wrapped one.
+
+    Note that conversions *from* SQL to Python will have integer-keys.
+    We're only concerned with those.
+
+    The values can be either (a) a conversion function, or (b) a list of
+    tuples where the second element is the conversion function.
+    """
+    k, v = orig_tuple
+    if not isinstance(k, int):
+        return k, v
+    if isinstance(v, (list, tuple)):
+        new_list = [(i[0], _make_conversion_safe(i[1])) for i in v]
+        return k, new_list
+    return k, _make_conversion_safe(v)
+
+
+CONVERSIONS = dict(
+    _make_conversion_safe_tuple(it) for it in converters.conversions.items())
 
 
 def dump2csv_and_prune(db_connection, kwargs):
@@ -378,7 +427,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
             my_kwargs['db'], kwargs['table'], kwargs['date_column']))
 
     # Connect and do work.
-    conn = connect(**my_kwargs)
+    conn = connect(conv=CONVERSIONS, **my_kwargs)
     dump2csv_and_prune(conn, kwargs)
     conn.close()
 
