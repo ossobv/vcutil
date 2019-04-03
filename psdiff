@@ -233,9 +233,24 @@ class FilteredProcessFormatter(ProcessFormatter):
             # Drop it.
             process.cmdline = process.cmdline.split(' [', 1)[0]
 
+        elif process.cmdline.startswith('containerd-shim '):
+            # Docker 18+ instances have fluctuating arguments:
+            #   containerd-shim ... -workdir /var/...containerd/<ID> ...
+            args = process.cmdline.split()
+            try:
+                # -workdir [PATH]
+                workdir_pos = args.index('-workdir') + 1
+                # /var/lib/containerd/io.containerd.runtime.v1.linux/moby/<ID>
+                args[workdir_pos] = (
+                    args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
+            except IndexError as e:
+                pass
+            else:
+                process.cmdline = ' '.join(args)
+
         elif process.cmdline.startswith('docker-containerd-shim '):
-            # Docker instances have fluctuating arguments:
-            #   docker-containerd-shim ID /var/...containerd/ID docker-runc
+            # Docker 17- instances have fluctuating arguments:
+            #   docker-containerd-shim <ID> /var/...containerd/<ID> docker-runc
             args = process.cmdline.split()
             if len(args) == 4 and args[3] == 'docker-runc':
                 args[1] = '<ID>'
