@@ -1,5 +1,5 @@
 #!/bin/sh
-# linux-kernel-autoremove (part of ossobv/vcutil) // wdoekes/2016
+# linux-kernel-autoremove (part of ossobv/vcutil) // wdoekes/2016-2019
 #   // Public Domain
 #
 # Automatically remove old unused kernels on Debian and Ubuntu platforms.
@@ -21,14 +21,14 @@ list_older_packages_than_current_kernel() {
     # Take <prefix> (linux-image) and add current uname version, but
     # remove trailing stuff like "-generic".
     prefix="$1"  # e.g. "linux-image", "linux-headers"
-    current="$prefix-`uname --kernel-release | sed -e 's/\(.*[0-9]\).*/\1/'`"
+    current="$prefix-$(uname --kernel-release | sed -e 's/\(.*[0-9]\).*/\1/')"
 
-    all=`dpkg -l "$prefix-[0-9]*" | awk '/^ii/{print $2}' | sort -V`
-    lineno=`echo "$all" | grep -Fn "$current" | cut -f1 -d: | head -n1`
+    all=$(dpkg -l "$prefix-[0-9]*" | awk '/^ii/{print $2}' | sort -V)
+    lineno=$(echo "$all" | grep -Fn "$current" | cut -f1 -d: | head -n1)
 
     if test -z "$lineno"; then
         if test "$prefix" != "linux-headers" ||
-                test `dpkg -l "$prefix-*" | grep -c ^ii` -eq 0; then
+                test $(dpkg -l "$prefix-*" | grep -c ^ii) -eq 0; then
             # No headers installed at all.
             return
         else
@@ -39,7 +39,7 @@ list_older_packages_than_current_kernel() {
 
     lineno=$((lineno-1))  # don't include the match itself
     if test $lineno -gt 0; then
-        older=`echo "$all" | sed -e "1,${lineno}!d"`
+        older=$(echo "$all" | sed -e "1,${lineno}!d")
         if echo "$older" | grep -q "$current"; then
             echo "ERROR: Assertion failed. $current could be removed?" >&2
             exit 1
@@ -47,9 +47,9 @@ list_older_packages_than_current_kernel() {
         echo "$older"
     fi
 
-    latest=`echo "$all" | tail -n1 | sed -e 's/\(.*[0-9]\).*/\1/'`
-    lineno1=`echo "$all" | grep -Fn "$current" | cut -f1 -d: | tail -n1`
-    lineno2=`echo "$all" | grep -Fn "$latest" | cut -f1 -d: | head -n1`
+    latest=$(echo "$all" | tail -n1 | sed -e 's/\(.*[0-9]\).*/\1/')
+    lineno1=$(echo "$all" | grep -Fn "$current" | cut -f1 -d: | tail -n1)
+    lineno2=$(echo "$all" | grep -Fn "$latest" | cut -f1 -d: | head -n1)
     lineno1=$((lineno1+1))
     lineno2=$((lineno2-1))
     if test $lineno1 -le $lineno2; then
@@ -57,10 +57,11 @@ list_older_packages_than_current_kernel() {
     fi
 }
 
-packages=`
+packages=$(
     list_older_packages_than_current_kernel linux-headers
     list_older_packages_than_current_kernel linux-image
-`
+    list_older_packages_than_current_kernel linux-modules
+)
 if test "$1" = "-f"; then
     test -n "$packages" && apt-get -y remove --purge $packages
     true
