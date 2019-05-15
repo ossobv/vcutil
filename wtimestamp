@@ -22,8 +22,10 @@
 #    echo "`date +'%Y-%m-%d %H:%M:%S%z'`: $line"
 #  done
 #
-# Replaced by perl because of all the PID spawning overhead sometime is
+# Replaced by perl because of all the PID spawning overhead sometimes is
 # too much (e.g. when we're monitoring execve's).
+#
+# See also: tai64n <https://cr.yp.to/daemontools/tai64n.html>
 #
 use POSIX 'strftime';use Time::HiRes 'gettimeofday';
 $|++;my($prev,$cont,$in)=("",1,"");
