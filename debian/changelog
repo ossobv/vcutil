@@ -1,3 +1,25 @@
+vcutil (1.14) stable; urgency=low
+
+  * Removed:
+    - asterisk-gitlog-find: This was hardly useful to anyone.
+
+  * Added:
+    - git-reapply-patch: It reads 'git show' style output and re-applies
+      the patch with the appropriate author and date.
+    - wtimedecode: Decodes unixtimes from stdin and amends the line with a
+      readable timestamp.
+
+  * Bug fixes:
+    - mysql2csv: Abort early if python-mysqldb silently tries to downcast
+      values to NULL. Handle timestamp values ourselves instead.
+
+  * Improvements:
+    - interfaces2netplan: Improve exception handling and ipv6 support.
+    - linux-kernel-autoremove: Also search for linux-modules-*
+    - psdiff: Update adjust params for docker 18+
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 16 May 2019 11:42:40 +0200
+
 vcutil (1.13) stable; urgency=low
 
   * Bug fixes:
