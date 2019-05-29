@@ -1,0 +1,19 @@
+#!/bin/sh
+# kubectl-sh-bash (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Helper script to start bash(1) in a k8s pod with the right window size. Usage
+# through kubectl wrapper.
+#
+# Example:
+#
+#   kubectl-sh-bash -n NAMESPACE exec -it PODNAME
+#
+# Or, the kubectl-wrapper wrapped version:
+#
+#   kubectl -n NAMESPACE exec -it --sh-bash PODNAME
+#
+# That last version will enable tab-completion to work as usual.
+#
+LINES=$(stty -a | sed -ne 's/.*; rows \([0-9]\+\);.*/\1/p')
+COLUMNS=$(stty -a | sed -ne 's/.*; columns \([0-9]\+\);.*/\1/p')
+exec /usr/bin/kubectl "$@" -it -- sh -c "stty rows $LINES cols $COLUMNS && exec bash"

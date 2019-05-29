@@ -22,6 +22,9 @@ BINS = \
 	ifupdown2netplan \
 	indirect-scp \
 	interfaces2netplan \
+	kubectl-sh-bash \
+	kubectl-sh-secret \
+	kubectl-sh-wrapper \
 	linux-kernel-autoremove \
 	mysql2csv \
 	pdns-mysql-slave-prune \

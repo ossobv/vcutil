@@ -1,0 +1,39 @@
+#!/bin/bash
+# kubectl-sh-wrapper (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Wrapper to call custom kubectl shell wrapper scripts. By also calling it
+# kubectl, we get a certain amount of tab-completion support.
+#
+# IMPORTANT: To make this work, you'll need to manually symlink this.
+#
+#   ln -s /usr/bin/kubectl-sh-wrapper /usr/local/bin/kubectl
+#
+# And the real kubectl needs to be available as /usr/bin/kubectl.
+#
+# Provides access to:
+#   --sh-bash: calls kubectl-sh-bash, sets shell $ROWS/$COLUMNS, execs bash
+#   --sh-secret: calls kubectl-sh-secret, helps with opaque secrets
+#
+# Examples:
+#
+#   kubectl --help # regular behaviour
+#
+#   kubectl exec --sh-bash -it PODNAME  # goes through kubectl-sh-bash
+#
+test -z "${BASH_VERSION}" && echo "$0: requires bash" >&2 && exit 1
+
+cmd=/usr/bin/kubectl
+
+declare -a ARGS
+for var in "$@"; do
+    # Catch custom commands:
+    if [[ "$var" == --sh-bash ]]; then
+	cmd=kubectl-sh-bash
+    elif [[ "$var" == --sh-secret ]]; then
+        cmd=kubectl-sh-secret
+    else
+        ARGS[${#ARGS[@]}]="$var"
+    fi
+done
+
+exec "$cmd" "${ARGS[@]}"
