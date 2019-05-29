@@ -1,3 +1,15 @@
+vcutil (1.15) stable; urgency=low
+
+  * Added:
+    - kubectl-sh-wrapper: It's a wrapper for /usr/bin/kubectl. Allows us
+      to call the next two more easily. For this to work, you need to symlink
+      this to /usr/local/bin/kubectl. Now you'll get tab completion for the
+      script.
+    - kubectl-sh-bash: Set terminal size for the k8s shell.
+    - kubectl-sh-secret: Easyier editing of opaque secrets.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 29 May 2019 17:07:43 +0200
+
 vcutil (1.14) stable; urgency=low
 
   * Removed:
