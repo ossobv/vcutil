@@ -11,7 +11,7 @@
 # And the real kubectl needs to be available as /usr/bin/kubectl.
 #
 # Provides access to:
-#   --sh-bash: calls kubectl-sh-bash, sets shell $ROWS/$COLUMNS, execs bash
+#   --sh-bash: calls kubectl-sh-bash, sets shell $LINES/$COLUMNS, execs bash
 #   --sh-secret: calls kubectl-sh-secret, helps with opaque secrets
 #
 # Examples:
@@ -22,18 +22,39 @@
 #
 test -z "${BASH_VERSION}" && echo "$0: requires bash" >&2 && exit 1
 
-cmd=/usr/bin/kubectl
+# Get first kubectl command from $PATH that is not us; in a bash-y fashion
+# without spawning too many subprocesses. Note that we might call $KUBECTL in
+# the wrapper scripts directly.
+while IFS='' read -d $'\n' l; do
+    test "$l" != "${BASH_SOURCE[0]}" && KUBECTL=$l && break
+done < <(which -a kubectl)
 
+# Look through args and find --sh-* shell plugins.
+script=
 declare -a ARGS
 for var in "$@"; do
     # Catch custom commands:
     if [[ "$var" == --sh-bash ]]; then
-	cmd=kubectl-sh-bash
+	script=kubectl-sh-bash
     elif [[ "$var" == --sh-secret ]]; then
-        cmd=kubectl-sh-secret
+        script=kubectl-sh-secret
+    elif [[ "$var" == --sh-* ]]; then
+        echo "Usage: $0 [...] --sh-* [...]" >&2
+        echo "Where --sh-* is one of:" >&2
+        echo "  --sh-bash: sets LINES/COLUMNS for kubectl exec" >&2
+        echo "  --sh-secret: helps with opaque secret handling" >&2
+        exit 1
     else
         ARGS[${#ARGS[@]}]="$var"
     fi
 done
 
-exec "$cmd" "${ARGS[@]}"
+# Found a script? Source it; they're bash commands too.
+if test -n "$script"; then
+    set -- "${ARGS[@]}"  # update argv
+    source "$(command -v "$script")"
+    exit $?
+fi
+
+# Call the real kubectl.
+exec "$KUBECTL" "${ARGS[@]}"

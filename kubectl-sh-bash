@@ -14,6 +14,9 @@
 #
 # That last version will enable tab-completion to work as usual.
 #
-LINES=$(stty -a | sed -ne 's/.*; rows \([0-9]\+\);.*/\1/p')
-COLUMNS=$(stty -a | sed -ne 's/.*; columns \([0-9]\+\);.*/\1/p')
-exec /usr/bin/kubectl "$@" -it -- sh -c "stty rows $LINES cols $COLUMNS && exec bash"
+stty=$(stty -a)
+LINES=$(echo "$stty" | sed -ne 's/.*; rows \([0-9]\+\);.*/\1/p')
+COLUMNS=$(echo "$stty" | sed -ne 's/.*; columns \([0-9]\+\);.*/\1/p')
+test $# -eq 0 && echo "Usage: $0 [OPTIONS] exec PODNAME" && exit 1
+exec ${KUBECTL:-kubectl} "$@" -it -- \
+  sh -c "stty rows $LINES cols $COLUMNS && exec bash"
