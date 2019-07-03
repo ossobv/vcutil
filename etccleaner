@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+# etccleaner (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Cleans up stale files from /etc, if the domain names used in the
+# config are not valid (anymore).
+#
+# For now it works with:
+# - /etc/letsencrypt/renewal/*.conf: removes renewal file and live dir
+# - /etc/nginx/sites-available/*.conf: removes the file
+# - /etc/nginx/sites-enabled/*.conf: removes the symlink (or file)
+#
+# Example:
+#
+#     # ls -1 /etc/letsencrypt/renewal
+#     example.com.conf
+#     nonexistent.tld.conf
+#
+#     # etccleaner -n /etc/letsencrypt/renewal/*.conf
+#     Not touching 1 files that are OK
+#     Would clean: /etc/nginx/sites-available/nonexistent.tld.conf
+#
+#     # etccleaner -f /etc/letsencrypt/renewal/*.conf
+#     Not touching 1 files that are OK
+#     Cleaning: /etc/nginx/sites-available/nonexistent.tld.conf
+#
+import os
+import shutil
+import socket
+import sys
+
+# requires: pylresolv==0.2 (or maybe newer..)
+from pylresolv import ns_parse, ns_type, res_query
+
+
+class RegisterLeafClasses(type):
+    """
+    Metaclass that registers created leaf classes.
+
+    Example::
+
+        class Color(metaclass=RegisterLeafClasses):
+            pass
+
+        class Red(Color): pass
+        class Green(Color): pass
+        class Blue(Color): pass
+
+        for c in Color:
+            print(c)  # prints Red, Green, Bluea
+    """
+    def __init__(cls, name, bases, nmspc):
+        super().__init__(name, bases, nmspc)
+        try:
+            cls.__registry
+        except AttributeError:
+            cls.__registry = set()      # unordered set, for now
+        cls.__registry.add(cls)
+        cls.__registry -= set(bases)    # remove base classes
+
+    def __iter__(cls):
+        "Allows iterating over the class object, returning the leaf objects"
+        return iter(sorted(cls.__registry, key=(lambda x: x.__name__)))
+
+    def __str__(cls):
+        "Lists class name with registered subclasses if called on parent"
+        if cls in cls.__registry:
+            return cls.__name__
+        return '{}: {}'.format(
+            cls.__name__, ', '.join(sorted(sc.__name__ for sc in cls)))
+
+
+class ConfigFile(metaclass=RegisterLeafClasses):
+    """
+    Base ConfigFile class.
+    """
+    subclasses = []
+
+    @classmethod
+    def from_filename(cls, filename):
+        my_classes = []
+        abs_filename = os.path.abspath(filename)
+        for subclass in cls:
+            if subclass.is_my_file(abs_filename):
+                my_classes.append(subclass)
+        if len(my_classes) > 1:
+            raise AssertionError(
+                'Multiple file handlers found for {!r}: {!s}'.format(
+                    abs_filename, ', '.join(str(i) for i in my_classes)))
+        if not my_classes:
+            raise NotImplementedError(
+                'No file handlers found for {!r}'.format(abs_filename))
+        return my_classes[0](abs_filename)
+
+    @classmethod
+    def is_my_file(cls, filename):
+        "Subclasses should override this and return True/False"
+        raise NotImplementedError()
+
+    def __init__(self, filename):
+        self.filename = filename
+        self.basename = os.path.basename(filename)
+
+    def __str__(self):
+        return '{} ({})'.format(self.filename, self.__class__.__name__)
+
+    def clean(self):
+        "Subclasses should override this and do the clean action"
+        raise NotImplementedError()
+
+    def is_obsolete(self):
+        "Subclasses should override this and return True/False"
+        raise NotImplementedError()
+
+    def raise_parse_error(self, args):
+        raise NotImplementedError('{} parse error in {!r}: {}'.format(
+            self.__class__.__name__, self.filename, args))
+
+
+class NginxConfig(ConfigFile):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        try:
+            self._parse_file()
+        except Exception as e:
+            self.raise_parse_error(e.args)
+
+    def _parse_file(self):
+        hostnames = set()
+        with open(self.filename) as fp:
+            fp_iter = iter(fp)
+            for line in fp_iter:
+                line = ' '.join(line.strip().split())
+                if line.startswith('server_name '):
+                    assert line.endswith(';'), line
+                    line = line.rstrip(';')
+                    assert ';' not in line, line
+                    hostnames.add(*line.split()[1:])
+            if not hostnames:
+                self.raise_parse_error('no server_name found?')
+        self.hostnames = hostnames
+
+    def is_obsolete(self):
+        exist = [
+            # "_" is the nginx default hostname; don't touch
+            host in ('_',) or hostname_exists(host)
+            for host in self.hostnames]
+        if all(exist):
+            return False
+        if not any(exist):
+            return True
+        raise NotImplementedError(
+            'some exist, some do not: {!r} = {!r}'.format(
+                self.hostnames, exist))
+
+    def clean(self):
+        os.unlink(self.filename)
+
+
+class NginxAvailableConfig(NginxConfig):
+    @classmethod
+    def is_my_file(cls, filename):
+        if filename.startswith('/etc/nginx/sites-available/'):
+            return True
+        return False
+
+
+class NginxEnabledConfig(NginxConfig):
+    @classmethod
+    def is_my_file(cls, filename):
+        if filename.startswith('/etc/nginx/sites-enabled/'):
+            return True
+        return False
+
+
+class LetsencryptConfig(ConfigFile):
+    @classmethod
+    def is_my_file(cls, filename):
+        if (filename.startswith('/etc/letsencrypt/renewal/') and
+                filename.endswith('.conf')):
+            return True
+        return False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hostname = self.basename[0:-5]  # drop .conf ("main" hostname)
+        try:
+            self._parse_file()
+        except Exception as e:
+            self.raise_parse_error(e.args)
+
+    def _parse_file(self):
+        hostnames = []
+        with open(self.filename) as fp:
+            fp_iter = iter(fp)
+            for line in fp_iter:
+                if line.startswith('[[webroot_map]]'):
+                    break
+            else:
+                raise ValueError('missing [[webroot_map]]')
+            for line in fp_iter:
+                hostname, root = line.split(' = ', 1)
+                hostname = hostname.strip()
+                assert hostname
+                hostnames.append(hostname)
+        assert self.hostname in hostnames, (self.hostname, hostnames)
+        self.hostnames = hostnames
+
+    def clean(self):
+        assert self.filename == '/etc/letsencrypt/renewal/{}.conf'.format(
+            self.hostname)
+        live_path = '/etc/letsencrypt/live/{}'.format(self.hostname)
+
+        # Clean up letsencrypt (we leave the archive dir)
+        try:
+            shutil.rmtree(live_path)
+        except FileNotFoundError:
+            pass
+        os.unlink(self.filename)
+
+    def is_obsolete(self):
+        exist = [hostname_exists(host) for host in self.hostnames]
+        if all(exist):
+            return False
+        if not any(exist):
+            return True
+        raise NotImplementedError(
+            'some exist, some do not: {!r} = {!r}'.format(
+                self.hostnames, exist))
+
+
+class Cleaner:
+    def __init__(self):
+        self._to_keep = []
+        self._to_clean = []
+
+    def try_config(self, config):
+        print('\r\x1b[K{}'.format(config), end='')
+        if config.is_obsolete():
+            self._to_clean.append(config)
+        else:
+            self._to_keep.append(config)
+
+    def finish(self, dry_run):
+        print('\r\x1b[K', end='')
+        print('Not touching {} files that are OK'.format(len(self._to_keep)))
+        for config in self._to_clean:
+            if dry_run:
+                print('Would clean: {}'.format(config))
+            else:
+                print('Cleaning: {}'.format(config))
+                config.clean()
+
+
+def hostname_exists(hostname):
+    in_addr, ns_addrs = _hostname_exists(hostname)
+    if in_addr:
+        return True  # ns_addrs
+
+    # Check that the internet works.
+    in_addr, ns_addrs = _hostname_exists('google.com')
+    if not in_addr:
+        raise RuntimeError('no google.com nameservers; is internet broken?')
+
+    # Check domain a second time.
+    in_addr, ns_addrs = _hostname_exists(hostname)
+    if in_addr:
+        raise RuntimeError('flaky {!r} resolving; aborting'.format(hostname))
+    return False
+
+
+def _hostname_exists(hostname):
+    hostname = hostname.strip('.')
+    parts = hostname.split('.')
+    if parts[-2] == 'co':  # example.co.uk
+        master_domain = '.'.join(parts[-3:])
+    else:  # example.com
+        master_domain = '.'.join(parts[-2:])
+
+    try:
+        in_addr = socket.gethostbyname(hostname + '.')
+    except socket.gaierror as e:
+        if e.args[0] == -2:  # "Name or service not known"
+            in_addr = None
+        else:
+            raise
+    try:
+        answer = res_query(master_domain + '.', rr_type=ns_type.ns_t_ns)
+    except LookupError:
+        ns_addrs = None
+    else:
+        ns_addrs = ns_parse(answer, handler=ns_type.handle_t_ns)
+    assert bool(in_addr) == bool(ns_addrs), (hostname, in_addr, ns_addrs)
+    return in_addr, ns_addrs
+
+
+if __name__ == '__main__':
+    # find /etc/letsencrypt/renewal -type f | xargs etccleaner -n
+    # find /etc/nginx/sites-available -type f | xargs etccleaner -n
+    # find /etc/nginx/sites-enabled -type l | xargs etccleaner -n
+
+    if len(sys.argv) == 1 or any(i in ('-h', '--help') for i in sys.argv):
+        print('Usage: etccleaner [-n|-f] [FILES...]')
+        print('Available handlers:')
+        for cls in ConfigFile:
+            print('- {}'.format(cls))
+        sys.exit(1)
+
+    dry_run = sys.argv[1]
+    if dry_run not in ('-n', '-f'):
+        print('first arg must be -n (dry-run) or -f (force)', file=sys.stderr)
+        sys.exit(1)
+    dry_run = (dry_run == '-n')
+
+    cleaner = Cleaner()
+    for filename in sys.argv[2:]:
+        cleaner.try_config(ConfigFile.from_filename(filename))
+    cleaner.finish(dry_run=dry_run)
+
+# vim: set ts=8 sw=4 sts=4 et ai:

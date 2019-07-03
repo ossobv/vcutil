@@ -14,6 +14,7 @@ BINS = \
 	dbschemadiff \
 	difftac \
 	easycert \
+	etccleaner \
 	filespeed \
 	gitbackhub \
 	git-hook-postcommit-coloremail \
