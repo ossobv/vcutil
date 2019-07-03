@@ -1,3 +1,16 @@
+vcutil (1.16) stable; urgency=low
+
+  * Added:
+    - etccleaner: Cleans up stale files from old/expired domains in /etc.
+
+  * Improvements:
+    - linux-kernel-autoremove: Improvements to matching + always keep
+      two kernels.
+    - kubectl-sh-wrapper: Better finding of kubectl from path, less
+      overhead, add usage, colorized output.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 03 Jul 2019 15:59:21 +0200
+
 vcutil (1.15) stable; urgency=low
 
   * Added:
