@@ -12,7 +12,8 @@
 #
 
 getsize() {
-    stat -c%s -- "$@" 2>/dev/null | awk 'BEGIN{s=0}{s+=$1}END{print s}'
+    stat -c%s -- "$@" 2>/dev/null | sed -e 's/...$//' |  # drop K
+        awk 'BEGIN{s=0}{s+=$1}END{print s}'
 }
 gettime() {
     date +%s
@@ -22,7 +23,7 @@ s0=$(getsize "$@")
 t0=$(gettime)
 while :; do
     sleep 1
-    sd=$(($(getsize "$@") - s0))
+    sd=$(( ($(getsize "$@") - s0) * 1000 ))
     td=$(($(gettime) - t0))
     printf '\r\033[K%s kB/s' $((sd / td / 1024))
 done
