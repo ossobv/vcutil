@@ -1,5 +1,5 @@
 #!/bin/sh
-# filespeed (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+# filespeed (part of ossobv/vcutil) // wdoekes/2016-2019 // Public Domain
 #
 # Script to quickly check "download speed" of a file. It monitors the
 # sizes of the passed files every second and shows the average size
@@ -12,7 +12,7 @@
 #
 
 getsize() {
-    stat -c%s -- "$@" 2>/dev/null | sed -e 's/...$//' |  # drop K
+    stat -c%s -- "$@" | sed -e 's/...$//' |  # drop K
         awk 'BEGIN{s=0}{s+=$1}END{print s}'
 }
 gettime() {
@@ -23,7 +23,10 @@ s0=$(getsize "$@")
 t0=$(gettime)
 while :; do
     sleep 1
-    sd=$(( ($(getsize "$@") - s0) * 1000 ))
-    td=$(($(gettime) - t0))
-    printf '\r\033[K%s kB/s' $((sd / td / 1024))
+    size=$(getsize "$@")
+    if test $size -gt 0; then
+        sd=$(( ($(getsize "$@") - s0) * 1000 ))
+        td=$(($(gettime) - t0))
+        printf '\r\033[K%s kB/s' $((sd / td / 1024))
+    fi
 done
