@@ -441,6 +441,12 @@ def main():
                         if process.cmdline.startswith('/usr/bin/atop '):
                             return False
 
+                        # Don't monitor children of LXD/LXC containers.
+                        if process.has_parent(
+                                #include_self=True,  # hide the monitor too?
+                                cmdline__startswith='[lxc monitor] '):
+                            return False
+
                         return (
                             super(LocalFilteredProcessFormatter, self)
                             .include(process))
