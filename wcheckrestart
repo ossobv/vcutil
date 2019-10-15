@@ -45,8 +45,9 @@ fi
 shown=""
 toshow=""
 
-pids=$(find /proc -maxdepth 2 -name maps -path '/proc/[0-9]*/maps' \
-         2>/dev/null |
+# Find only UIDs < 100000 only, generally excluding lxc guests (see subuid(5))
+pids=$(find /proc -maxdepth 1 -name '[0-9]*' -uid '-100000' \
+         2>/dev/null | sed -e 's#$#/maps#' |
        xargs grep -lE '\.so(\..*)? \(deleted\)$' 2>/dev/null |
        sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 +#' | tr '\n' '|' |
        sed -e 's/|$//')
