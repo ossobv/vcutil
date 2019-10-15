@@ -1,3 +1,15 @@
+vcutil (1.17) stable; urgency=low
+
+  * Improvements:
+    - filespeed: Better handling when file isn't there
+    - interfaces2netplan: Add hint where to place the yaml
+    - kubectl-sh-secret: Auto-trim LFs from single-line secrets
+    - psdiff: Don't monitor children of LXC inits
+    - wcheckrestart: Exclude LXC guests from output (by checking uid>=100000)
+    - wgrep: Also search markdown files
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 15 Oct 2019 22:30:32 +0200
+
 vcutil (1.16) stable; urgency=low
 
   * Added:
