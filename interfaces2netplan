@@ -183,6 +183,13 @@ class NetworkFiles(object):
         yaml = self.get_yaml()
         _stdout(yaml)
 
+    def hint(self):
+        if os.isatty(sys.stdout.fileno()):
+            # If you're redirecting stdout, you don't need this hint anymore.
+            _stderr(
+                "Example usage:\n"
+                "  interfaces2netplan > /etc/netplan/01-netcfg.yaml\n\n")
+
     def warn(self):
         if self._ifupdownd:
             _stderr(
@@ -390,6 +397,7 @@ class InterfacesParser(object):
 
 def main():
     files = NetworkFiles()
+    files.hint()
     files.warn()
     files.show()
     sys.exit(files.exitcode())
