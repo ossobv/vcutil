@@ -78,7 +78,7 @@ enum_ser_certs() {
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs -0 sed -ne "
-        s/^$w*modparam(\"tls\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\1/p"
+        s/^$w*modparam(\"tls\(_mgm\)\?\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\2/p"
 }
 
 list_cert_expiry_days() {
