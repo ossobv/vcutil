@@ -1,9 +1,10 @@
 # vim: set ts=8 sw=4 sts=4 et ai tw=79:
-# WJD/2013
+# WJD/2013,2019
 # WSV = Whitespace Separated Values
 # TODO: add docs here
 # TODO: replace "extra0" column name with "_columnN" where N is the Nth
 # column. that makes more sense.
+from __future__ import print_function, unicode_literals
 import re
 import unittest
 
@@ -25,7 +26,7 @@ class WsvReader(object):
         )
         reader = WsvReader(file)
         for row in reader:
-            print row
+            print(row)
 
         # Yields this:
 
@@ -64,7 +65,7 @@ class WsvReader(object):
         self.read_header()
         return self
 
-    def next(self):
+    def __next__(self):
         columns = self.split_line(self.get_line())
 
         # Ensure that the header is long enough.
@@ -76,6 +77,7 @@ class WsvReader(object):
             i += 1
 
         return self.dict(zip(self.columnnames, columns))
+    next = __next__  # py2 compat
 
     def read_header(self):
         self.columnnames = self.split_line(self.get_line())
@@ -132,7 +134,7 @@ class TestCase(unittest.TestCase):
         reader = WsvReader(file)
 
         data = [i for i in reader]
-        self.assertEquals(data, [{'col1': 'data1', 'col2': 'data2'}])
+        self.assertEqual(data, [{'col1': 'data1', 'col2': 'data2'}])
 
         self.assertTrue(isinstance(data[0], dict))
         self.assertFalse(isinstance(data[0], OrderedDict))
@@ -146,7 +148,7 @@ class TestCase(unittest.TestCase):
         reader = WsvReader(file, dict=OrderedDict)
 
         data = [i for i in reader]
-        self.assertEquals(data, [{'col1': 'data1', 'col2': 'data2'}])
+        self.assertEqual(data, [{'col1': 'data1', 'col2': 'data2'}])
 
         self.assertTrue(isinstance(data[0], OrderedDict))
 
@@ -156,10 +158,10 @@ class TestCase(unittest.TestCase):
         reader = WsvReader(file)
 
         data = [i for i in reader]
-        self.assertEquals(data, [{'col1': 'data1', 'col2': 'data2'}])
+        self.assertEqual(data, [{'col1': 'data1', 'col2': 'data2'}])
 
         data2 = [i for i in reader]
-        self.assertEquals(data, data2)
+        self.assertEqual(data, data2)
 
     def test_illegal_seek(self):
         "It works for the first run over a non-seekable file."
@@ -167,7 +169,7 @@ class TestCase(unittest.TestCase):
         reader = WsvReader(file)
 
         data = [i for i in reader]
-        self.assertEquals(data, [{'col1': 'data1', 'col2': 'data2'}])
+        self.assertEqual(data, [{'col1': 'data1', 'col2': 'data2'}])
 
         try:
             data2 = [i for i in reader]
@@ -244,7 +246,10 @@ class TestCase(unittest.TestCase):
         )
 
     def get_file(self, string, seekable=True):
-        from StringIO import StringIO
+        try:
+            from io import StringIO
+        except ImportError:
+            from StringIO import StringIO
 
         if seekable:
             return StringIO(string)
@@ -259,7 +264,7 @@ class TestCase(unittest.TestCase):
         file = self.get_file(string)
         reader = WsvReader(file)
         data = [i for i in reader]
-        return self.assertEquals(data, dict_list)
+        return self.assertEqual(data, dict_list)
 
 
 if __name__ == '__main__':
@@ -278,7 +283,7 @@ if __name__ == '__main__':
     for file in files:
         reader = WsvReader(file, dict=OrderedDict)
         if len(files) > 1:
-            print '\n==> %s' % (file.name,)
+            print('\n==> %s' % (file.name,))
         for row in reader:
-            print row
+            print(row)
         file.close()

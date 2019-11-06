@@ -55,6 +55,7 @@ BINS = \
 	zabdig
 
 OTHER = \
+	.gitignore \
 	Makefile \
 	README.rst \
 	gitlab-hook-postcommit-coloremail.example \
@@ -65,8 +66,16 @@ OTHER = \
 	udiff.selftest \
 	wsvreader.py
 
-.PHONY: all deb hashes make_has_all_files
+.PHONY: all clean deb hashes make_has_all_files
 all: hashes make_has_all_files
+
+clean:
+	$(MAKE) -f udiff.selftest clean
+
+test:
+	python2 -m unittest wsvreader
+	python3 -m unittest wsvreader
+	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean
 
 deb:
 	# Make sure a valid email with PGP key is in the changelog

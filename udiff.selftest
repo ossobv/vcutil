@@ -15,7 +15,11 @@ EXTRA_MAKEFLAGS = -f udiff.selftest
 
 all: run_tests
 clean:
-	rm left.txt right.txt *.diff *.udiff
+	$(RM) left.txt right.txt \
+	    left-to-right.diff left-to-right.udiff \
+	    output-inv.diff output-inv.udiff \
+	    output.diff output.udiff \
+	    right-to-left.diff right-to-left.udiff
 
 left.txt:
 	@if [ "$(mode)" = 1 ]; then cat /dev/null > left.txt ; \
