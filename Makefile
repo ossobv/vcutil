@@ -34,11 +34,6 @@ BINS = \
 	psdiff \
 	pve-macaddr-security \
 	salt-highstate-pp \
-	svn-diff \
-	svn-hook-postcommit-coloremail \
-	svn-merge-msg \
-	svn-show-mergable \
-	svn-status \
 	tls-sniff-ciphers \
 	udiff \
 	uwsgi-list \
