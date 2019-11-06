@@ -42,6 +42,7 @@ BINS = \
 	tls-sniff-ciphers \
 	udiff \
 	uwsgi-list \
+	uwsgi-log \
 	uwsgi-kill \
 	venvpatch \
 	wcheckrestart \

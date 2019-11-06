@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+# uwsgi-log (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Quick and dirty uWSGI webserver log parser and analyzer. Supports a
+# tail function to dump periodic stats into a file to be read by e.g.
+# Zabbix monitoring.
+#
+# Example tail setup:
+#
+#     # cat >/etc/systemd/system/uwsgi-log-tail@.service <<EOF
+#     [Unit]
+#     Description=Write uWSGI log stats every minute
+#
+#     [Service]
+#     ExecStart=/usr/local/bin/uwsgi-tail.py /var/log/uwsgi/%i.log \
+#       /tmp/httpreq-%i.stat
+#     Restart=on-failure
+#
+#     [Install]
+#     WantedBy=multi-user.target
+#     EOF
+#
+#     # systemctl start uwsgi-log-tail@acme-web.service
+#
+# Example zabbix setup:
+#
+#     # Example call httpreq[acme-web,max]
+#     # Available keys: count, min, max, avg, med
+#     UserParameter=httpreq[*], awk '/^$2:/{print $$2}' /tmp/httpreq-$1.stat
+#
+# TODO:
+#
+# - Should we unlink the stats file when stopping? May be better for
+#   monitoring. (No data being more accurate than stale data.)
+# - Refactor write_summary_every_x, avoiding duplicate code (and break
+#   it up into smaller functions).
+#
+from stat import S_ISREG
+from time import sleep, time
+import os
+import re
+import sys
+
+# log-format = [pid: %(pid)|app: -|req: -/-] %(var.HTTP_X_REAL_IP) (%(user))
+#   {%(vars) vars in %(pktsize) bytes} [%(ctime)] %(method) %(uri) => generated
+#   %(rsize) bytes in %(msecs) msecs (%(proto) %(status)) %(headers) headers in
+#   %(hsize) bytes (%(switches) switches on core %(core)) (proxy=%(addr))
+
+EXAMPLE_LINES = ('''\
+[pid: 1312|app: 0|req: 108304/1211400] 10.70.22.29 () {48 vars in 726 bytes} \
+[Wed Sep 25 06:25:18 2019] \
+GET /api/v1/general/learnmore \
+=> generated 0 bytes in 121 msecs \
+(HTTP/1.0 401) 6 headers in 314 bytes (2 switches on core 0)''',)
+
+EXAMPLE_MATCHES = (
+    {'ip': '10.70.22.29', 'method': 'GET',
+     'request': '/api/v1/general/learnmore',
+     'bytes': '0', 'msecs': '121', 'httpstatus': 'HTTP/1.0 401'},
+)
+
+LINE_MATCHER = re.compile('''\
+^\\[[^]]*\\] (?P<ip>[0-9.]+) \\(-?\\) \\{[^}]*\\} \
+\\[[^]]*\\] \
+(?P<method>\\S+) (?P<request>\\S+) \
+=> generated (?P<bytes>\\d+) bytes in (?P<msecs>\\d+) msecs \
+\\((?P<httpstatus>HTTP[^ ]+ \\d+)\\)''')
+
+for line, match in zip(EXAMPLE_LINES, EXAMPLE_MATCHES):
+    found_match = LINE_MATCHER.match(line)
+    assert found_match, line
+    dict_match = found_match.groupdict()
+    assert dict_match == match, (line, dict_match)
+
+
+class Record:
+    def __init__(self, d):
+        self.ip = d['ip']
+        self.method = d['method']
+        self.request = d['request']
+        self.query_string = ''
+        if '?' in self.request:
+            self.request, self.query_string = self.request.split('?', 1)
+        self.bytes = int(d['bytes'])
+        self.msecs = int(d['msecs'])
+        self.http_ver, self.http_code = d['httpstatus'].split(' ')
+        self.http_code = int(self.http_code)
+
+    def __repr__(self):
+        return (
+            '<Record({o.method} {o.request} '
+            'status={o.http_code} time={o.msecs})>'
+            .format(o=self))
+
+
+class Timing:
+    def __init__(self, points):
+        if not points:
+            self.min = self.max = self.median = self.total = self.average = 0
+            return
+
+        points = list(sorted(points))
+        self.min = points[0]
+        self.max = points[-1]
+        if len(points) % 2 == 0:
+            self.median = sum(
+                points[(len(points) // 2):(len(points) // 2 + 2)]) // 2
+        else:
+            self.median = points[(len(points) // 2)]
+        self.total = sum(points)
+        self.average = self.total // len(points)
+
+
+class Records:
+    def __init__(self):
+        self._list = list()
+
+    @property
+    def msec(self):
+        if not hasattr(self, '_msec'):
+            self._msec = Timing([i.msecs for i in self._list])
+        return self._msec
+
+    def add(self, record):
+        self._list.append(record)
+
+    def __eq__(self, other):
+        return id(self) == id(other)
+
+    def __lt__(self, other):
+        if self == other:
+            return False
+        return len(self) < len(other)
+
+    def __len__(self):
+        return len(self._list)
+
+    def __str__(self):
+        return (
+             '{len}x {o.msec.median:.1f}med {o.msec.average:.1f}avg '
+             '{o.msec.min}min {o.msec.max}max'
+             .format(len=len(self), o=self))
+
+
+class Summary:
+    def __init__(self):
+        self.all = Records()
+        # self.by_method = defaultdict(Records)
+        # self.by_request = defaultdict(Records)
+        # self.by_hour?
+
+    def add(self, record):
+        self.all.add(record)
+
+
+def dont_rape_non_regular_file(filename):
+    """
+    Quick function to prevent someone passing /dev/stdout as argument.
+
+    That would make us destroy it, which is not a good idea.
+    """
+    try:
+        st = os.stat(filename)
+    except FileNotFoundError:
+        pass
+    else:
+        if not S_ISREG(st.st_mode):
+            raise ValueError('unexpected non-regular file {}'.format(filename))
+
+
+def write_summary_every_x(log_filename, summary_filename, time_seconds):
+    timeslice = time_seconds
+    minute = time() // timeslice
+    fp = open(log_filename)
+    statname = summary_filename
+    statname_tmp = statname + '.new'
+    dont_rape_non_regular_file(statname)
+    dont_rape_non_regular_file(statname_tmp)
+
+    summ = Summary()
+    try:
+        fp.seek(0, 2)  # seek_end
+
+        # Loop every timeslice.
+        while True:
+
+            # Loop the entire timeslice.
+            while True:
+                if minute != (time() // timeslice):
+                    break
+
+                for idx, line in enumerate(fp):
+                    # The log includes more than just the log lines, it
+                    # may also have backtraces.
+                    if not line.startswith('[pid: '):
+                        continue
+
+                    # Extract record and add to aggregator.
+                    try:
+                        r = Record(LINE_MATCHER.match(line).groupdict())
+                    except Exception:
+                        print('error on {idx}: {line}'.format(
+                            idx=(idx + 1), line=line), file=sys.stderr)
+                        raise
+                    summ.add(r)
+                sleep(1)
+
+            with open(statname_tmp, 'w') as out:
+                print(
+                    'time:\t{time}\nslice:\t{timeslice}\ncount:\t{count}\n'
+                    'min:\t{o.min}\nmax:\t{o.max}\n'
+                    'avg:\t{o.average}\nmed:\t{o.median}\n'.format(
+                        time=int(minute * timeslice), timeslice=timeslice,
+                        count=len(summ.all), o=summ.all.msec), file=out)
+            dont_rape_non_regular_file(statname)
+            os.rename(statname_tmp, statname)
+
+            # Get fresh records and check if file needs to be reopened.
+            summ = Summary()
+            minute = time() // timeslice
+            try:
+                open_stat = os.fstat(fp.fileno())
+                disk_stat = os.stat(fp.name)
+                if open_stat.st_ino != disk_stat.st_ino:
+                    raise OSError('renamed?')
+                if fp.tell() > open_stat.st_size:
+                    raise OSError('truncated?')
+            except OSError:
+                name = fp.name
+                fp.close()
+                while True:
+                    try:
+                        fp = open(name)
+                    except OSError:
+                        sleep(1)
+                    else:
+                        fp.seek(0, 2)  # seek_end
+                        break
+    finally:
+        fp.close()
+
+
+if sys.argv[1:2] == ['--tail']:
+    # Will write a summary of the request times found in the LOG_SOURCE
+    # to a stats file, named SUMMARY_DEST. For example:
+    #   uwsgi-log --tail /var/log/uwsgi/app/acme-web.log /tmp/acme-web.stat &
+    #   tail -F /tmp/acme-web.stat
+    assert len(sys.argv) == 4, (
+        'Usage: {} --tail LOG_SOURCE SUMMARY_DEST'.format(sys.argv[0]))
+    write_summary_every_x(sys.argv[2], sys.argv[3], 60)
+else:
+    raise ValueError('Usage: {} --tail LOG_SOURCE SUMMARY_DEST'.format(
+        sys.argv[0]))
