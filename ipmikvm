@@ -1,0 +1,61 @@
+#!/bin/sh
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# A wrapper to call the IPMIView KMV console without starting IPMIView
+# (and avoiding a bug that attempts to connect to port 0).
+#
+# Requirements: you'll need ipmiview installed in /opt/ipmiview.
+#
+# Usage:
+#
+#   $ ipmikvm
+#   Usage: ./ipmikvm [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS
+#
+#   $ ipmikvm 10.11.12.13 -P otherpassword
+#   (connects KVM console on IPMI device at 10.11.12.13)
+#
+# This has been tested with IPMIView 2.16.0+build190528.
+#
+set -eu
+ipmipath=/opt/ipmiview
+
+host=
+user=ADMIN
+pass=ADMIN
+port=5900
+vm=0  # ???
+
+# Use getopt(1) to reorder arguments
+eval set --"$(getopt -- 'hp:u:P:' "$@")"
+
+usage() {
+    test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
+    echo "Usage: $0 [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS"
+    exit ${1:-1}
+}
+
+while getopts 'hp:u:P:' OPTION; do
+    case "$OPTION" in
+    h) usage 0;;
+    p) port=$OPTARG;;
+    u) user=$OPTARG;;
+    P) pass=$OPTARG;;
+    ?) usage 1;;
+    esac
+done
+shift $((OPTIND - 1))
+
+test $# -ne 1 && usage
+host=${1:-}; shift
+test -z "$host" && usage
+
+# Yes. Passing usernames and passwords on the command line is insecure.
+# You can pass them through a file if you want:
+# printf 'ID: ADMIN\nPassword: ADMIN\nPort: 5900\nVm: 0\n' >IP.ADD.RE.SS.temp
+# But I don't think your desktop/laptop is going to be insecure enough
+# to warrant that. (And in that case, this script needs to get the user/pass
+# through a different means as well :P)
+
+echo "Connecting to $host..." >&2
+"$ipmipath/jre/bin/java" -Djava.library.path="$ipmipath" \
+    -jar "$ipmipath/iKVM.jar" "$host" "$user" "$pass" "$vm" "$port"
