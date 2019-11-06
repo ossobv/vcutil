@@ -259,7 +259,7 @@ def dont_rape_non_regular_file(filename):
     That would make us destroy it, which is not a good idea.
     """
     try:
-        st = os.stat(filename)
+        st = os.lstat(filename)
     except FileNotFoundError:
         pass
     else:
