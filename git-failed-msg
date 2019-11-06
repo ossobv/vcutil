@@ -1,0 +1,13 @@
+#!/bin/sh
+# git-failed-msg (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+#
+# Quickly get the COMMIT_EDITMSG from the current git repository.
+#
+# Useful when a commit failed, but you want to keep/reuse the commit
+# message you just wrote.
+#
+# Example usage:
+#
+#    $ git commit -m "$(git-failed-msg)"
+#
+exec sed -e '/^#/d' $(git rev-parse --show-toplevel)/.git/COMMIT_EDITMSG

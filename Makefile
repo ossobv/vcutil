@@ -17,6 +17,7 @@ BINS = \
 	etccleaner \
 	filespeed \
 	gitbackhub \
+	git-failed-msg \
 	git-hook-postcommit-coloremail \
 	git-reapply-patch \
 	gitlab-hook-postcommit-coloremail \
