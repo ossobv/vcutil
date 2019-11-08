@@ -1,7 +1,7 @@
 #!/bin/sh
 # ipmikvm (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
 #
-# A wrapper to call the IPMIView KMV console without starting IPMIView
+# A wrapper to call the IPMIView KVM console without starting IPMIView
 # (and avoiding a bug that attempts to connect to port 0).
 #
 # Requirements: you'll need ipmiview installed in /opt/ipmiview.
@@ -23,20 +23,22 @@ host=
 user=ADMIN
 pass=ADMIN
 port=5900
+tls=1
 vm=0  # ???
 
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hp:u:P:' "$@")"
+eval set --"$(getopt -- 'hkp:u:P:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
-    echo "Usage: $0 [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS"
+    echo "Usage: $0 [-k (nossl)] [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS"
     exit ${1:-1}
 }
 
-while getopts 'hp:u:P:' OPTION; do
+while getopts 'hkp:u:P:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
+    k) tls=0;;
     p) port=$OPTARG;;
     u) user=$OPTARG;;
     P) pass=$OPTARG;;
@@ -49,6 +51,36 @@ test $# -ne 1 && usage
 host=${1:-}; shift
 test -z "$host" && usage
 
+# Try ping first
+if ! ping -q -c1 -w2 "$host" >/dev/null; then
+    echo "No ping response from $host" >&2
+    exit 1
+fi
+
+# Check whether it speaks TLS, and auto-disable if not
+if test $tls -ne 0 &&
+        ! openssl s_client -connect "$host:$port" -quiet -state \
+          </dev/null 2>&1 | grep -q ^SSL.*read; then
+    echo "No TLS/SSL detected. Trying without instead" >&2
+    tls=0
+fi
+
+# TLS wrapping
+if test $tls -ne 0; then
+    remotehost=$host
+    remoteport=$port
+    host=127.0.0.1
+    port=$((30000 + ($$ % 10000)))  # use this-pid as "random"
+    echo "Spawning TLS/SSL socat $host:$port -> $remotehost:$remoteport..." >&2
+    # spawn socat
+    crtpath="$ipmipath/BMCSecurity" # "/opt/ipmiview/BMCSecurity/client.crt"
+    crtopt="commonname=IPMI,cafile=$crtpath/server.crt"
+    crtopt="$crtopt,cert=$crtpath/client.crt,key=$crtpath/client.key"
+    socat "TCP4-LISTEN:$port" "OPENSSL:$remotehost:$remoteport,$crtopt" &
+    tlspid=$!
+    # socat doesn't connect until we connect, so we don't need to sleep
+fi
+
 # Yes. Passing usernames and passwords on the command line is insecure.
 # You can pass them through a file if you want:
 # printf 'ID: ADMIN\nPassword: ADMIN\nPort: 5900\nVm: 0\n' >IP.ADD.RE.SS.temp
@@ -56,6 +88,18 @@ test -z "$host" && usage
 # to warrant that. (And in that case, this script needs to get the user/pass
 # through a different means as well :P)
 
-echo "Connecting to $host..." >&2
+echo "Attempting iKVM connection to $host:$port..." >&2
+ret=0
 "$ipmipath/jre/bin/java" -Djava.library.path="$ipmipath" \
-    -jar "$ipmipath/iKVM.jar" "$host" "$user" "$pass" "$vm" "$port"
+    -jar "$ipmipath/iKVM.jar" "$host" "$user" "$pass" "$vm" "$port" || ret=$?
+echo "(iKVM exit code $ret)" >&2
+
+# TLS, clean up socat
+if test $tls -ne 0; then
+    if kill $tlspid 2>/dev/null; then
+        sleep 1
+        kill -0 $tlspid 2>/dev/null && kill -9 $tlspid
+    fi
+fi
+
+exit $ret
