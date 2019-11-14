@@ -61,20 +61,21 @@ O=OSSO B.V./CN=osso.nl/\""
 }
 
 run_test() {
-    show_certchain "$@"
-    echo "Expires in $(get_expiry "$@") days"
-}
-
-show_certchain() {
     echo "The list below should be logically ordered,"
     echo "and end with a self-signed root certificate."
     echo "(Although the last one is optional and only "
     echo "overhead.)"
     echo
+
     if test $# -eq 1; then
         show_local_certchain "$@"
+        echo "Expires in $(get_local_expiry "$@") days"
     else
-        show_remote_certchain "$@"
+        host="$1"
+        port="$2"
+        input=$(openssl_connect "$host" "$port" -showcerts </dev/null 2>&0)
+        echo "$input" | show_remote_certchain "$@" || exit $?
+        echo "Expires in $(echo "$input" | get_remote_expiry "$@") days"
     fi
 }
 
@@ -104,21 +105,15 @@ show_local_certchain() {
 show_remote_certchain() {
     host="$1"
     port="$2"
-    output="$(openssl_connect $host $port </dev/null 2>&0 |
-        sed -e '/^Certificate chain/,/^---/!d')"
+    input=$(cat)
+    output=$(echo "$input" | sed -e '
+        /^-----BEGIN/,/^-----END/d
+        /^Certificate chain/,/^---/!d')
     if test -z "$output"; then
-        openssl_connect $host $port </dev/null
-        exit 1
+        openssl_connect "$host" "$port" </dev/null
+        exit $?
     fi
     echo "$output"
-}
-
-get_expiry() {
-    if test $# -eq 1; then
-        get_local_expiry "$@"
-    else
-        get_remote_expiry "$@"
-    fi
 }
 
 get_local_expiry() {
@@ -131,8 +126,7 @@ get_local_expiry() {
 get_remote_expiry() {
     host="$1"
     port="$2"
-    certinfo=$(openssl_connect $host $port -showcerts </dev/null 2>/dev/null |
-               openssl x509 -text)
+    certinfo=$(openssl x509 -text)
     sigalgo=$(echo "$certinfo" |
               sed -n 's/^ *Signature Algorithm: \([^ ]*\).*/\1/p' | head -n1)
     if test "$sigalgo" = "sha1WithRSAEncryption"; then
