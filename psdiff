@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# psdiff (part of ossobv/vcutil) // wdoekes/2016-2018 // Public Domain
+# psdiff (part of ossobv/vcutil) // wdoekes/2016-2019 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
 # with a monitoring suite like Zabbix.
@@ -308,6 +308,11 @@ class FilteredProcessFormatter(ProcessFormatter):
                 return False
             else:
                 self._include_once.add(key)
+
+        # These ones may come and go. Don't care if they exist.
+        elif (process.user == 'uuidd' and
+                process.cmdline == '/usr/sbin/uuidd --socket-activation'):
+            return False
 
         return super(FilteredProcessFormatter, self).include(process)
 
