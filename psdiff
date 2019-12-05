@@ -243,7 +243,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 # /var/lib/containerd/io.containerd.runtime.v1.linux/moby/<ID>
                 args[workdir_pos] = (
                     args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
-            except IndexError as e:
+            except IndexError:
                 pass
             else:
                 process.cmdline = ' '.join(args)
@@ -363,23 +363,75 @@ def ps_faxu():
     return root
 
 
+def eval_psdiff_d(dirname):
+    sources = [
+        os.path.join(dirname, f) for f in os.listdir(dirname)
+        if not f.startswith('.') and f.endswith('.py')]
+
+    sources.sort()
+    mixins = []
+    for source_file in sources:
+        try:
+            with open(source_file, 'r') as fh:
+                source = fh.read()
+            # You really don't need FilteredProcessFormatter or
+            # ProcessFormatter or eval_psdiff_conf or any of that.
+            # If you're going to do really fancy stuff, use custom
+            # psdiff.conf and go from there.
+            io = {}
+            exec(source, io)
+            mixins.append(io['ProcessFormatterMixin'])  # one Mixin per file
+        except Exception:
+            import traceback
+            raise ValueError(
+                'exec error reading {!r}\n\n    {}'.format(
+                    source_file,
+                    '\n    '.join(traceback.format_exc().split('\n'))))
+
+    return {'LocalProcessFormatterMixins': mixins}
+
+
+def eval_psdiff_conf(filename):
+    with open(filename, 'r') as fh:
+        source = fh.read()
+    # Ooohh.. eval/exec. Supply FilteredProcessFormatter and
+    # ProcessFormatter so they can be used as superclass.
+    # And pass eval_psdiff_d so you can use a custom
+    # psdiff.conf and _also_ load psdiff.d files.
+    io = {
+        'FilteredProcessFormatter': FilteredProcessFormatter,
+        'ProcessFormatter': ProcessFormatter,
+        'eval_psdiff_conf': eval_psdiff_conf,
+        'eval_psdiff_d': eval_psdiff_d,
+    }
+    exec(source, io)
+    return {
+        'LocalFilteredProcessFormatter': io['LocalFilteredProcessFormatter']}
+
+
 def get_formatter_class():
     for path in ('/usr/local/etc/psdiff.conf', '/etc/psdiff.conf'):
         # First check, and then open without exception handling. That way we
         # see if anything is wrong with permissions and such.
         if os.path.exists(path):
-            with open(path, 'r') as fh:
-                source = fh.read()
-            # Ooohh.. eval/exec. Supply FilteredProcessFormatter and
-            # ProcessFormatter so they can be used as superclass.
-            io = {
-                'FilteredProcessFormatter': FilteredProcessFormatter,
-                'ProcessFormatter': ProcessFormatter,
-            }
-            exec(source, io)
-            return io['LocalFilteredProcessFormatter']
+            return eval_psdiff_conf(path)['LocalFilteredProcessFormatter']
 
-    # Nothing found? Return the plain version.
+    # No psdiff.conf? Check for psdiff.d.
+    for path in ('/usr/local/etc/psdiff.d', '/etc/psdiff.d'):
+        if os.path.exists(path):
+            # Mere existence of the path is enough for us to use that: if you
+            # create an empty /usr/local/etc/psdiff.d, then /etc/psdiff.d will
+            # NOT be used.
+            # Don't forget the 'object' in ProcessFormatterMixin(object) for
+            # python2.
+            mixins = eval_psdiff_d(path)['LocalProcessFormatterMixins']
+            class_ = type(
+                'LocalFilteredProcessFormatter',
+                tuple(mixins + [FilteredProcessFormatter]),
+                {})
+            return class_
+
+    # Nothing found? Return the plain unaltered version.
     return FilteredProcessFormatter
 
 
@@ -412,8 +464,9 @@ def main():
             process monitoring. You will still want to add daemon-specific
             monitoring through other means.
 
-            Adjustments
-            -----------
+
+            Adjustments through psdiff.conf
+            -------------------------------
 
             On startup, an attempt is made to import /usr/local/etc/psdiff.conf
             or /etc/psdiff.conf (a python file) where it looks for a class
@@ -457,6 +510,34 @@ def main():
                             .include(process))
 
                 # vim: set syn=python:
+
+
+            Adjustments through psdiff.d
+            ----------------------------
+
+            If psdiff.conf is not found, but a psdiff.d directory is, then all
+            .py files will be loaded for ProcessFilteredMixin classes and used
+            to create a big LocalFilteredProcessFormatter class through
+            multiple inheritance.
+
+            For example /etc/psdiff.d/kvm.py:
+
+                class ProcessFormatterMixin(object):
+                    def adjust(self, process):
+                        super(ProcessFormatterMixin, self).adjust(process)
+
+                        # For kvm, show only "/usr/bin/kvm -id X -name Y".
+                        if process.cmdline.startswith('/usr/bin/kvm '):
+                            p = process.cmdline.split()
+                            new = [p[0]]
+                            [new.extend(p[i:i+2])
+                             for i, j in enumerate(p)
+                             if j.startswith(('-id', '-name'))]
+                            process.cmdline = ' '.join(new)
+
+            Method resolution order (MRO) is alphabetical, with the
+            FilteredProcessFormatter base last.
+
 
             Zabbix example
             --------------
