@@ -1,3 +1,24 @@
+vcutil (1.18) stable; urgency=low
+
+  * Removed:
+    - svn-*: Remove old svn helpers; we don't use them ever anymore
+
+  * Added:
+    - git-failed-msg: Add git-failed-message that cats .git/COMMIT_EDITMSG
+    - ipmikvm: Add wrapper around IPMIView for easier kvm (iKVM) console
+      connection
+    - uwsgi-log: Add tool to do basic statistical analysis of uwsgi log files;
+      also includes --tail functionality that aggregates values for e.g.
+      Zabbix monitoring
+
+  * Improvements:
+    - easycert: Cope with round-robin certificate serving; show only one cert
+    - psdiff: Add uuidd that auto-spawns to ignored items
+    - psdiff: Allow /etc/psdiff.d/*.py mixins instead of one big psdiff.conf
+    - wsvreader: Update py3 compatibility
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 05 Dec 2019 12:26:19 +0100
+
 vcutil (1.17) stable; urgency=low
 
   * Improvements:
