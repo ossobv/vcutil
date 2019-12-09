@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2019 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
@@ -24,6 +24,9 @@
 # If you have multiple zabbix servers you wish to speak to, add
 # additional sections. Use zabdig -g SECTION to select a different
 # section/organisation than the first.
+#
+# If you have zabbix-proxies that identify as 127.0.0.1, you can add a
+# DNS name (while keeping use-IP), and the DNS will be shown instead.
 #
 # See zabdig --help for more info.
 #
@@ -81,7 +84,14 @@ class ZHost(object):
         for interface in self._hostinfo['interfaces']:
             if int(interface['type']) == 1:
                 if int(interface['useip']):
-                    ret.append(interface['ip'])
+                    # For zabbix proxies, we see the lo IP only.. super
+                    # annoying when trying to find where it is. Hope
+                    # that someone (ab)used the DNS field for more info.
+                    if (interface['dns'] and
+                            interface['ip'] == '127.0.0.1'):
+                        ret.append(interface['dns'])
+                    else:
+                        ret.append(interface['ip'])
                 else:
                     ret.append(interface['dns'])
         return list(sorted(set(ret)))
