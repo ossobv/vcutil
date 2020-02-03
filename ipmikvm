@@ -1,5 +1,5 @@
 #!/bin/sh
-# ipmikvm (part of ossobv/vcutil) // wdoekes/2019 // Public Domain
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2020 // Public Domain
 #
 # A wrapper to call the IPMIView KVM console without starting IPMIView
 # (and avoiding a bug that attempts to connect to port 0).
@@ -10,6 +10,7 @@
 #
 #   $ ipmikvm
 #   Usage: ./ipmikvm [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS
+#   Options: [-k (nossl)] [-2 (2-step user/pass fetch)]
 #
 #   $ ipmikvm 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
@@ -23,25 +24,28 @@ host=
 user=ADMIN
 pass=ADMIN
 port=5900
+step2=
 tls=1
 vm=0  # ???
 
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hkp:u:P:' "$@")"
+eval set --"$(getopt -- 'hk2p:u:P:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
-    echo "Usage: $0 [-k (nossl)] [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS"
+    echo "Usage: $0 [-u ADMIN] [-P ADMIN] [-p 5900] IP.ADD.RE.SS"
+    echo "Options: [-k (nossl)] [-2 (2-step user/pass fetch)]"
     exit ${1:-1}
 }
 
-while getopts 'hkp:u:P:' OPTION; do
+while getopts 'hk2p:u:P:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
     k) tls=0;;
     p) port=$OPTARG;;
     u) user=$OPTARG;;
     P) pass=$OPTARG;;
+    2) step2=1;;
     ?) usage 1;;
     esac
 done
@@ -55,6 +59,36 @@ test -z "$host" && usage
 if ! ping -q -c1 -w2 "$host" >/dev/null; then
     echo "No ping response from $host" >&2
     exit 1
+fi
+
+# SuperMicro 2-step auth request (get user+pass from jnlp download)
+if test -n "$step2"; then
+    set +e
+    fail=1
+    url="https://$host"
+    temp=$(mktemp)
+    if curl --fail -sk --cookie-jar "$temp" -XPOST "$url/cgi/login.cgi" \
+          --data "name=$(echo -n "$user"|base64 -w0|sed -e's/=/%3D/g;s/+/%2B/g'
+          )&pwd=$(echo -n "$pass"|base64 -w0|sed -e's/=/%3D/g;s/+/%2B/g'
+          )&check=00" -o/dev/null; then
+        out=$(curl --fail -sk --cookie "$temp" \
+            "$url/cgi/url_redirect.cgi?url_name=man_ikvm&url_type=jwsk")
+        if test $? -eq 0; then
+            user_pass=$(
+              echo "$out" | grep -FA2 "<argument>$host</argument>" |
+                sed -e '1d;s/^[[:blank:]]*<argument>//;s/<\/argument>.*//' |
+                tr '\n' ' ' | sed -e 's/ *$//')
+            user=${user_pass% *}
+            pass=${user_pass#* }
+            fail=
+        fi
+    fi
+    rm "$temp"
+    if test -n "$fail" || test -z "$user" || test -z "$pass"; then
+        echo "Problem getting password from web interface" >&2
+        exit 1
+    fi
+    set -e
 fi
 
 # Check whether it speaks TLS, and auto-disable if not
