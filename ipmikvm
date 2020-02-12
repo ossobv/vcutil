@@ -4,7 +4,10 @@
 # A wrapper to call the IPMIView KVM console without starting IPMIView
 # (and avoiding a bug that attempts to connect to port 0).
 #
-# Requirements: you'll need ipmiview installed in /opt/ipmiview.
+# Requirements:
+# - ipmiview installed in /opt/ipmiview
+# - curl (for 2-step user/pass)
+# - socat (for TLS-tunnel)
 #
 # Usage:
 #
@@ -15,7 +18,10 @@
 #   $ ipmikvm 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
 #
-# This has been tested with IPMIView 2.16.0+build190528.
+# This has been tested with IPMIView 2.16.0+build190528 (and
+# specifically, the tw.com.aten.ikvm.KVMMain 1.69+r14 (or 1.69.20)).
+#
+# See also: ipmikvm-tls2020
 #
 set -eu
 ipmipath=/opt/ipmiview
@@ -67,10 +73,10 @@ if test -n "$step2"; then
     fail=1
     url="https://$host"
     temp=$(mktemp)
+    b64_user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+    b64_pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
     if curl --fail -sk --cookie-jar "$temp" -XPOST "$url/cgi/login.cgi" \
-          --data "name=$(echo -n "$user"|base64 -w0|sed -e's/=/%3D/g;s/+/%2B/g'
-          )&pwd=$(echo -n "$pass"|base64 -w0|sed -e's/=/%3D/g;s/+/%2B/g'
-          )&check=00" -o/dev/null; then
+          --data "name=$b64_user&pwd=$b64_pass&check=00" -o/dev/null; then
         out=$(curl --fail -sk --cookie "$temp" \
             "$url/cgi/url_redirect.cgi?url_name=man_ikvm&url_type=jwsk")
         if test $? -eq 0; then
