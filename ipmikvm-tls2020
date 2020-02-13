@@ -14,7 +14,12 @@
 #   $ ipmikvm-tls2020 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
 #
-# This has been tested with iKVM__V1.69.39.0x0.
+# This has been tested with:
+# - iKVM__V1.69.19.0x0
+# - iKVM__V1.69.22.0x0
+# - iKVM__V1.69.24.0x0
+# - iKVM__V1.69.25.0x0
+# - iKVM__V1.69.39.0x0
 #
 # See also: ipmikvm
 #
@@ -58,50 +63,75 @@ get_launch_jnlp() {
     fail=1
     url="https://$management_ip"
     temp=$(mktemp)
-    b64_user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
-    b64_pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
-    if curl --fail -sk --cookie-jar "$temp" -XPOST "$url/cgi/login.cgi" \
-          --data "name=$b64_user&pwd=$b64_pass&check=00" -o/dev/null; then
-        launch_jnlp=$(curl --fail -sk --cookie "$temp" \
-            "$url/cgi/url_redirect.cgi?url_name=man_ikvm&url_type=jwsk")
-        test $? -eq 0 && fail=
+    data=$(curl --fail -Lks --cookie-jar "$temp" "$url")
+    if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
+        echo "unexpected login page: $data" >&2
+        data=
+    elif echo "$data" | grep -q '=.*btoa'; then
+        user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+        pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+    fi
+    data=$(test -n "$data" &&
+      curl --fail -Lks --cookie "$temp" --cookie-jar "$temp" \
+        -XPOST "$url/cgi/login.cgi" --data "name=$user&pwd=$pass&check=00")
+    if test $? -ne 0 || ! echo "$data" | grep -qF 'url_name=mainmenu'; then
+        echo "unexpected post-login page: $data" >&2
+    elif test -n "$user"; then
+        for url_name in man_ikvm ikvm; do
+            data=$(curl --fail -Lks --cookie "$temp" \
+                -H "Referer: $url/cgi/url_redirect.cgi?url_name=man_ikvm" \
+                "$url/cgi/url_redirect.cgi?url_name=$url_name&url_type=jwsk")
+            test $? -ne 0 && echo "$data" | grep -q '^<jnlp spec=' && break
+        done
+        if ! echo "$data" | grep -q '^<jnlp spec='; then
+            echo "unexpected jnlp page: $data" >&2
+            data=
+        fi
     fi
     rm "$temp"
-    test -z "$fail" && echo "$launch_jnlp"
+    test -n "$data" && echo "$data"
 }
 # SYNOPSIS: get_launch_jnlp 10.x.x.x USERNAME PASSWORD
 
-get_username() {
+get_ikvm_jar() {
     launch_jnlp="$1"
-    echo "$launch_jnlp" | sed -e '/<argument>/!d' |
-      sed -e '12!d;s#.*<argument>\([^<]*\)</argument>#\1#'
-}
-# SYNOPSIS: get_username JNLP_DATA
+    app_cache_dir="$2"
 
-get_password() {
-    launch_jnlp="$1"
-    echo "$launch_jnlp" | sed -e '/<argument>/!d' |
-      sed -e '13!d;s#.*<argument>\([^<]*\)</argument>#\1#'
+    jar=$(get_jar "$launch_jnlp")
+    if test -z "$jar"; then
+        echo "cannot find jar name in jnlp: $launch_jnlp" >&2
+    fi
+    jar_base=$(basename "$jar") # iKVM__V1.69.31.0x0.jar
+    jar_base=${jar_base%.jar}   # iKVM__V1.69.31.0x0
+    app_cache_dir="$app_cache_dir/$jar_base"
+    test -d "$app_cache_dir" || mkdir -p "$app_cache_dir" || exit 1
+    if ! test -f "$app_cache_dir/$jar"; then
+        install_ikvm_application "$launch_jnlp" "$app_cache_dir" >&2 || exit 1
+        test -f "$app_cache_dir/$jar" || exit 1
+    fi
+    echo "$app_cache_dir/$jar"
 }
-# SYNOPSIS: get_password JNLP_DATA
+# SYNOPSIS: get_ikvm_jar JNLP_DATA APP_CACHE_DIR
+
+get_jar() {
+    echo "$1" | sed -e '
+      /<jar /!d
+      s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
+      s#.* href="\([^"]*\).jar".*#\1.jar#'
+}
+# SYNOPSIS: get_jar JNLP_DATA
+
+get_arguments() {
+    echo "$1" |
+      sed -e '/<argument>/!d;s#.*<argument>\([^<]*\)</argument>.*#\1#' |
+      sed -e 's/^$/./g'  # empty args would be skipped..
+}
+# SYNOPSIS: get_arguments JNLP_DATA  # returns LF-separated args
 
 exec_ikvm_tls2020() {
-    jar="$1"
-    management_ip="$2"
-    user="$3"
-    pass="$4"
-    # If you look at the (decompiled) source, you'll notice that the
-    # two local ports (65534 65535) get replaced, and the two remote ports
-    # are set to default (5900 623). We'll set them here in case an updated
-    # jar file fixes it.
-    # Additionally, if you set use_tls (argument 18) to 0, the code
-    # path simply ends. So we cannot use this one to connect to older
-    # plain iKVM interfaces.
+    jar="$1"; shift
     exec java -Djava.library.path="$(dirname "$jar")" \
-      -cp "$jar" tw.com.aten.ikvm.KVMMain \
-      0 1 2 3 4 5 6 7 8 9 \
-      "$management_ip" "$user" "$pass" null 65534 65535 0 0 1 5900 \
-      623 1
+      -cp "$jar" tw.com.aten.ikvm.KVMMain "$@"
 }
 # SYNOPSIS: exec_ikvm_tls2020 10.x.x.x KVM_USERNAME KVM_PASSWORD
 
@@ -112,18 +142,24 @@ install_ikvm_application() {
     set -e
     codebase=$(
       echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//')
-    jar=$(
-      echo "$launch_jnlp" | sed -e '/<jar /!d;s/.* href="//;s/".*//')
+    jar=$(get_jar "$launch_jnlp")
     linuxlibs=$(
-      echo "$launch_jnlp" |
-      sed -e '/<nativelib /!d;/linux.*x86_64/!d;s/.* href="//;s/".*//' |
-      sort -u)
+      echo "$launch_jnlp" | sed -e '
+        /<nativelib.*linux.*x86_64/!d
+        s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
+        s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
     set -x
     mkdir -p "$destdir"
     cd "$destdir"
     for x in $jar $linuxlibs; do
-        curl -o $x.pack.gz "$codebase$x.pack.gz"
-        unpack200 $x.pack.gz $x
+        if curl -ko "$x.pack.gz" "$codebase$x.pack.gz"; then
+            unpack200 "$x.pack.gz" "$x"
+        elif curl -ko "$x" "$codebase$x"; then
+            :
+        else
+            echo "$launch_jnlp"
+            false
+        fi
     done
     unzip -o liblinux*.jar
     rm -rf META-INF
@@ -136,15 +172,7 @@ install_ikvm_application() {
 JNLP=$(get_launch_jnlp "$IP" "$USER" "$PASS")
 test -z "$JNLP" && echo "Failed to get launch.jnlp" >&2 && exit 1
 
-JAR=$(find $APP_CACHE_DIR -name 'iKVM*.jar' | sort | tail -n1)
-if ! test -f "$JAR"; then
-    install_ikvm_application "$JNLP" "$APP_CACHE_DIR"
-    JAR=$(find $APP_CACHE_DIR -name 'iKVM*.jar' | sort | tail -n1)
-    if ! ls -l "$JAR"; then
-        echo "Install failure" >&2
-        exit 1
-    fi
-fi
+JAR=$(get_ikvm_jar "$JNLP" "$APP_CACHE_DIR")
+test -z "$JAR" && echo "Failed to get iKVM*.jar" >&2 && exit 1
 
-exec_ikvm_tls2020 "$JAR" "$IP" \
-    "$(get_username "$JNLP")" "$(get_password "$JNLP")"
+exec_ikvm_tls2020 "$JAR" $(get_arguments "$JNLP")
