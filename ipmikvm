@@ -32,7 +32,7 @@ USER=ADMIN
 PASS=ADMIN
 
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hk2p:u:P:' "$@")"
+eval set --"$(getopt -- 'hu:P:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
