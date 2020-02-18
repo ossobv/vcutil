@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2017
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2020
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -57,7 +57,7 @@ enum_nginx_certs() {
          /etc/nginx/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
     xargs -0 sed -ne '
-        s/^[[:blank:]]*ssl_certificate[[:blank:]]\+\([^[:blank:]]*\).*;/\1/p'
+        s/^[[:blank:]]*ssl_certificate[[:blank:]]\+\([^[:blank:]]*\).*;.*/\1/p'
 }
 
 enum_postfix_certs() {
