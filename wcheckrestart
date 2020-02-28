@@ -1,5 +1,6 @@
 #!/bin/sh
-# wcheckrestart (part of ossobv/vcutil) // wdoekes/2014,2018 // Public Domain
+# wcheckrestart (part of ossobv/vcutil) // wdoekes/2014,2018,2020
+#   // Public Domain
 #
 # Checks which services need to be restarted after an upgrade. Inspired
 # by:
@@ -45,11 +46,15 @@ fi
 shown=""
 toshow=""
 
-# Find only UIDs < 100000 only, generally excluding lxc guests (see subuid(5))
-pids=$(find /proc -maxdepth 1 -name '[0-9]*' -uid '-100000' \
-         2>/dev/null | sed -e 's#$#/maps#' |
-       xargs grep -lE '\.so(\..*)? \(deleted\)$' 2>/dev/null |
-       sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 +#' | tr '\n' '|' |
+# Create a regex of PIDs '^ *123 |^ *456 ' based on all processes that have
+# "(deleted)" so files, according to /proc/PID/maps.
+# (Some java processes create a temporary dynamic library as /tmp/jffi*.so
+# and delete it after load. We exclude those.)
+pids=$(find /proc -maxdepth 2 -name maps -path '/proc/[0-9]*/maps' \
+         2>/dev/null |
+       xargs grep -E '\.so(\..*)? \(deleted\)$' /dev/null 2>/dev/null |
+       grep -v '[[:blank:]]/tmp/jffi' |
+       sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 #' | uniq | tr '\n' '|' |
        sed -e 's/|$//')
 test -z "$pids" && exit 0
 

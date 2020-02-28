@@ -1,6 +1,6 @@
 #!/bin/sh
-# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017 //
-#   Public Domain
+# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017
+#   // Public Domain
 #
 # Reads PowerDNS MySQL backend SLAVE data for stale domains and prunes
 # those.
