@@ -48,12 +48,12 @@ toshow=""
 
 # Create a regex of PIDs '^ *123 |^ *456 ' based on all processes that have
 # "(deleted)" so files, according to /proc/PID/maps.
-# (Some java processes create a temporary dynamic library as /tmp/jffi*.so
+# (Some java processes create a temporary dynamic library as /tmp/*.so
 # and delete it after load. We exclude those.)
 pids=$(find /proc -maxdepth 2 -name maps -path '/proc/[0-9]*/maps' \
          2>/dev/null |
        xargs grep -E '\.so(\..*)? \(deleted\)$' /dev/null 2>/dev/null |
-       grep -v '[[:blank:]]/tmp/jffi' |
+       grep -v '[[:blank:]]/tmp/' |
        sed -e 's#/proc/\([0-9]*\)/.*$#^ *\1 #' | uniq | tr '\n' '|' |
        sed -e 's/|$//')
 test -z "$pids" && exit 0
