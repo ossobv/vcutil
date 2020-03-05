@@ -1,0 +1,45 @@
+#!/bin/sh
+# sh-c (part of ossobv/vcutil) // wdoekes/2020 // Public Domain
+#
+# Helper to allow more complex shebangs to be executed.
+#
+# When executing a script, the shebang value is split into a program and
+# a single argument. For example: /usr/bin/env (program) + python (argument).
+# This script is a shortcut for "sh -c '<argument>'", so you can write a
+# small shell script as the second argument.
+#
+# For example, you could do py3-or-py2.py:
+#
+#     #!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
+#     import sys
+#     print(sys.argv)
+#     print(sys.version)
+#
+# Which would amount to calling this helper:
+#
+#     sh-c 'exec "$(which python3 python false|head -n1)" "$0" "$@"' \
+#       py3-or-py2.py ARGS..
+#
+# Which would result in:
+#
+#     sh -c 'exec "$(which python3 python false|head -n1)" "$0" "$@"' \
+#       py3-or-py2.py ARGS..
+#
+# Yielding one of these, depending on whether python3 existed:
+#
+#     ['py3-or-py2.py', 'ARGS..']
+#     3.6.9 (default, Nov  7 2019, 10:44:02) 
+#     [GCC 8.3.0]
+#
+#     ['py3-or-py2.py', 'ARGS..']
+#     2.7.17 (default, Nov  7 2019, 10:07:09) 
+#     [GCC 7.4.0]
+#
+# BUGS/CAVEATS:
+#
+# - You cannot use '/usr/bin/env sh-c', so this MUST be in /usr/bin/.
+#
+# - The fact that we need this helper. If /bin/sh accepted -cSCRIPT
+#   as a single argument, we wouldn't even need this.
+#
+exec /bin/sh -c "$@"
