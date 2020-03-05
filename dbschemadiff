@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
 # dbschemadiff (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
 #
 # Compares MySQL database schemas. On MySQL ndbcluster databases, you

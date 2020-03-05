@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
 # apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018 // Public Domain
 """
 Script to find Debian/Ubuntu packages from "foreign" archives.
@@ -44,8 +44,8 @@ class Package(object):
     def __init__(self, name, state, policy=None):
         self.name = name
         self.state = state
-	# By injecting the policy, we save huge amounts of time. Doing one
-	# fork()/exec() per package would be horrendously slow.
+        # By injecting the policy, we save huge amounts of time. Doing one
+        # fork()/exec() per package would be horrendously slow.
         self.policy = policy
 
     def get_policy(self):

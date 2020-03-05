@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
 # psdiff (part of ossobv/vcutil) // wdoekes/2016-2019 // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction

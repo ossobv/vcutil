@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
 # vim: set ts=8 sw=4 sts=4 et ai:
 #
 # udiff.py: find minor differences in large files

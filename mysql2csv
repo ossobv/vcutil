@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
 # mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2019 // Public Domain
 #
 # This mysql2csv dump script is a convenient way to dump and/or prune
@@ -52,6 +52,8 @@ from decimal import Decimal
 
 try:
     from configparser import RawConfigParser
+    long = int
+    unicode = str
 except ImportError:  # python2-
     from ConfigParser import RawConfigParser
 
