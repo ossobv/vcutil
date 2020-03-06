@@ -233,7 +233,9 @@ class FilteredProcessFormatter(ProcessFormatter):
             # Drop it.
             process.cmdline = process.cmdline.split(' [', 1)[0]
 
-        elif process.cmdline.startswith('containerd-shim '):
+        elif process.cmdline.startswith((
+                'containerd-shim ',
+                'docker-containerd-shim ')):
             # Docker 18+ instances have fluctuating arguments:
             #   containerd-shim ... -workdir /var/...containerd/<ID> ...
             args = process.cmdline.split()
