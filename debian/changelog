@@ -1,3 +1,23 @@
+vcutil (1.19) stable; urgency=low
+
+  * Added:
+    - sh-c: Helper script so we can start python2/3 scripts on machines that
+      only have a python3 binary.
+
+  * Improvements:
+    - cert-expiry-finder: Bugfix in nginx.conf parsing.
+    - filespeed: Dereference symlinks, allowing you to peek into deleted files
+      as well.
+    - ipmikvm: Does not require ipmiview anymore. Loads Java from the ipmi
+      website instead. Should work with most SuperMicro IPMI versions now.
+    - wcheckrestart: Ignore deleted sofiles in /tmp/. Java uses these.
+    - zabdig: Prefer IP-addresses that are not 127.0.0.1 in the listing. This
+      allows you to add a second IP or DNS name to zabbix proxies, so you can
+      do `ssh $(zabdig zabbix-proxy-x)` even when the agents main IP is
+      localhost.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 06 Mar 2019 10:05:39 +0100
+
 vcutil (1.18) stable; urgency=low
 
   * Removed:
