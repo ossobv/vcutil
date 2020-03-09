@@ -48,7 +48,8 @@ enum_haproxy_certs() {
     find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null | xargs -0 sed -e '
         /^[[:blank:]]*bind[[:blank:]].*[[:blank:]]ssl\($\|[[:blank:]]\)/!d
         s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
-    sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//'
+    sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//' | while read f; do
+      test -d "$f" && find "$f" -maxdepth 1 -type f || echo "$f"; done
 }
 
 enum_nginx_certs() {
