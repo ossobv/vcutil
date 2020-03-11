@@ -7,6 +7,7 @@ SYSCONFDIR = /etc
 
 BINS = \
 	apt-find-foreign \
+	argecho \
 	bson2json \
 	censored-for-email \
 	cert-expiry-check \

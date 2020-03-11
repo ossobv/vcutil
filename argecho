@@ -1,0 +1,56 @@
+#!/bin/sh -eu
+# argecho (part of ossobv/vcutil) // wdoekes/2020 // Public Domain
+#
+# Quick and dirty argument echo. Helps when developing shell scripts, or
+# when explaining shell quoting.
+#
+# Example situation:
+#
+#   curl='curl https://somewhere/api'
+#   key=error_count
+#   $curl -H 'Accept: application/json' | jq '.["'$key'"]'
+#
+# In the above example, it may be hard to tell where the single and
+# double quotes should go.
+#
+# If you (backslash) escape the pipe between 'curl' and 'jq' and prepend
+# the statement with 'argecho', you get this:
+#
+#   argecho $curl -H 'Accept: application/json' \| jq '.["'$key'"]'
+#
+# That outputs:
+#
+#   # nArgs: 7
+#   # Warning: unescaped a pipe. Please remove escape when done with argecho.
+#   'curl' 'https://somewhere/api' '-H' 'Accept: application/json' |
+#     'jq' '.["error_count"]'
+#
+# And that output is safe to paste in your shell directly, so you can
+# test if it works as expected.
+#
+# (Be sure to remove the backslash before the pipe when removing argecho.)
+
+quoted() {
+    # Stupid but effective shell quoting.
+    # - Surround arguments with single quotes '...'.
+    # - Escape single quotes by breaking out and adding backslash single quote.
+    if test "$1" = "|"; then
+        echo "# Warning: unescaped a pipe. \
+Please remove escape when done with argecho." >&2
+        printf '|\n '
+    else
+        printf '%s' "$1" | sed -e "s/'/'\\\\''/g;s/^/'/;s/$/'/"
+    fi
+}
+
+echo "# nArgs: $#" >&2
+if test $# -gt 0; then
+    (
+        printf '%s' "$(quoted "$1")"
+        shift
+        for arg in "$@"; do
+            printf '%s' " $(quoted "$arg")"
+        done
+        echo
+    ) | tac | tac  # buffer all output, to avoid stderr on the same line
+fi
