@@ -1,5 +1,5 @@
 #!/usr/bin/sh-c exec "$(which python3 python false|head -n1)" "$0" "$@"
-# interfaces2netplan (part of ossobv/vcutil) // wdoekes/2018-2019
+# interfaces2netplan (part of ossobv/vcutil) // wdoekes/2018-2020
 #   // Public Domain
 #
 # Quick attempt to convert the simplest interfaces files (from ifupdown)
@@ -332,6 +332,21 @@ class InterfacesParser(object):
             assert 'search' not in config['nameservers'], config
             assert cols, 'expected one or more dns-search arguments'
             config['nameservers']['search'] = cols
+        elif (len(cols) == 8 and cols[0] in ('route', '/sbin/route') and
+                ((cmd == 'up' and cols[1] == 'add') or
+                 (cmd == 'down' and cols[1] == 'del')) and
+                cols[2] == '-net' and cols[4] == 'netmask' and
+                cols[6] == 'gw'):
+            # up route add -net NET netmask MASK gw GW
+            # down route del -net NET netmask MASK gw GW
+            if 'routes' not in config:
+                config['routes'] = []
+            route = {'to': '{}/{}'.format(cols[3], _netmaskbits(cols[5])),
+                     'via': cols[7]}
+            if cmd == 'up':
+                config['routes'].append(route)
+            elif cmd == 'down':
+                assert route in config['routes'], config['routes']
         else:
             raise ValueError('cmd {!r} unknown/unimplemented'.format(cmd))
 
@@ -377,8 +392,18 @@ class InterfacesParser(object):
                     ret.append('{}{}: {}'.format(indent, key, inside))
         elif isinstance(value, list):
             for v in value:
-                assert isinstance(v, str), v
-                ret.append('{}- {}'.format(indent, self._to_yaml(v)))
+                if (isinstance(v, dict) and
+                        all(isinstance(k, str) for k in v.keys()) and
+                        all(isinstance(v2, str) for v2 in v.values())):
+                    kv = list(sorted(v.items()))
+                    assert kv, 'empty dict unexpected'
+                    for idx, (key, value) in enumerate(kv):
+                        ret.append('{}{}{}: {}'.format(
+                            indent, ('- ' if idx == 0 else '  '),
+                            self._to_yaml(key), self._to_yaml(value)))
+                else:
+                    assert isinstance(v, str), v
+                    ret.append('{}- {}'.format(indent, self._to_yaml(v)))
         else:
             assert False, value
 
