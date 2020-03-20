@@ -1,0 +1,276 @@
+#!/bin/sh
+# efibootmirrorsetup (part of ossobv/vcutil) // wdoekes/2020 // Public Domain
+#
+# Setup helper script to set EFI up on software-raid mirrored disks, and
+# keep them in sync. If one disk fails or is removed, you will
+# automatically boot from the other disk as if nothing happened.
+#
+# (The software raid (e.g. zfsonroot) generally handles the mirroring on
+# the larger partitions, but not mirror the EFI partition.)
+#
+# Run this when:
+# - you're using a software mirrored disk (with room reserved for EFI)
+# - EFI has been set up on at least one of the disks
+#
+# Supply /dev/disk and /dev/otherdisk.
+#
+# It will do the following, if it hasn't been done yet:
+# - ensure there is a FAT32 fs on the other disks EFI partition
+# - ask if it can update fstab for you (you'll get to see a diff)
+# - mount the EFI partitions on /boot/efi and /boot/efi2
+# - ask if it may add/update zz-grub-install-efibootmirrorsetup in the
+#   /etc/kernel/postinst.d/ update hooks
+# - run that hook, inserting both partitions into the EFI boot order
+#
+# NOTE: If the partition IDs are equal on the different disks (maybe you
+# cloned the disks), it will prompt you to manually fix that.
+#
+# The script is idempotent, so running it multiple times should be safe.
+#
+# When everything has run, you can look at the output of efibootmgr -v. It
+# should contain:
+#
+#   BootOrder: 0007,0006,... <-- your two partitions at the front
+#
+# And then lines, including two of these (the numbers will be different):
+#
+#   Boot0007* <DISK_MODEL_NAME> \
+#     HD(<N>,GPT,<PARTUUID>,0x800,0x100000)/File(\EFI\UBUNTU\SHIMX64.EFI)
+#
+# The DISK_MODEL_NAME and PARTUUID speak for themselves (see blkid). The
+# N is the Nth partition on the disk (2 for sda2). The File() path may
+# be different, for starters depending on whether secure boot is
+# enabled or not.
+#
+# This script has been tested on Ubuntu bionic (March 2020).
+
+set -eu
+export LC_ALL=C
+
+check_args() {
+    if test $# -ne 2; then
+        echo "Usage: efibootmirrorsetup /dev/DISK /dev/OTHER_DISK" >&2
+        exit 1
+    fi
+}
+
+check_two_disk_args() {
+    disk0="${1:-}"
+    disk1="${2:-}"
+    if ! test -b "$disk0" || ! test -b "$disk1"; then
+        ls -l "$disk0" "$disk1" || true >&2
+        echo "Expected two block devices: /dev/DISK /dev/OTHER_DISK" >&2
+        exit 1
+    fi
+    disk0=$(basename "$disk0")
+    diskbyid0=$(disk_by_id $disk0)
+    disk1=$(basename "$disk1")
+    diskbyid1=$(disk_by_id $disk1)
+    if test -z "$diskbyid0" || test "$diskbyid0" = "$diskbyid1"; then
+        echo "Disk by id is empty or equal?" >&2
+        exit 1
+    elif test "$(basename $diskbyid0)" '>' "$(basename $diskbyid1)"; then
+        # swap disk order
+        disk_=$disk0; disk0=$disk1; disk1=$disk_
+        diskbyid_=$diskbyid0; diskbyid0=$diskbyid1; diskbyid1=$diskbyid_
+    fi
+    partitions0=$(sed -e '
+        / '"$disk0"'[0-9]\+$/!d
+        s/.*[[:blank:]]\([0-9]\+\)[[:blank:]]\+'"$disk0"'\([0-9]\+\)$/\2 \1/' \
+        /proc/partitions | sort -n)
+    partitions1=$(sed -e '
+        / '"$disk1"'[0-9]\+$/!d
+        s/.*[[:blank:]]\([0-9]\+\)[[:blank:]]\+'"$disk1"'\([0-9]\+\)$/\2 \1/' \
+        /proc/partitions | sort -n)
+    if test -z "$partitions0" || test "$partitions0" != "$partitions1"; then
+        echo "Partition mismatch, expected equality:" >&2
+        echo "$disk0: $partitions0" >&2
+        echo "$disk1: $partitions1" >&2
+        exit 1
+    fi
+    partitions="$partitions0"
+}
+
+locate_efi_partitions() {
+    for disk in $disk0 $disk1; do
+        for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
+            vals=$(blkid -t LABEL=EFI -o export "/dev/$disk$partnum") ||
+                continue
+            if echo "$vals" | grep -q '^LABEL=EFI$' &&
+                    echo "$vals" | grep -q '^TYPE=vfat$'; then
+                echo "$disk $partnum $(
+                    echo "$vals" | sed -ne 's/^PARTUUID=//p')"
+            fi
+        done
+    done
+}
+
+disk_by_id() {
+    tmp=
+    for x in /dev/disk/by-id/*; do
+        if test "$(readlink "$x")" = "../../$1"; then
+            tmp=$x
+            break
+        fi
+    done
+    test -z "$tmp" && echo "No disk-by-id for $1" >&2 && exit 1
+    echo "$tmp"
+}
+
+check_two_efi_partitions() {
+    located="$(locate_efi_partitions)"
+    located_n=$(echo "$located" | wc -l)
+    echo "Found $located_n EFI partition(s):"
+    echo "$located" | sed -e 's#\([^ ]*\) \([^ ]*\) #- /dev/\1\2 PARTUUID=#'
+    echo
+    if test -z "$located" || test $located_n = 0; then
+        echo "No EFI partitions found. Aborting" >&2
+        exit 1
+    elif test $located_n -gt 2; then
+        echo "Did not expect more than 2 VFAT partitions. Abort" >&2
+        exit 1
+    elif test $located_n -gt 1 &&
+            test $(echo "$located"|cut -d' ' -f1|sort -u| wc -l) -eq 1; then
+        echo "Did not expect more VFAT partitions on same disk. Abort" >&2
+        exit 1
+    fi
+
+    if test $located_n -eq 1; then
+        founddisk=$(echo "$located" | cut -d' ' -f1)
+        foundpart=$(echo "$located" | cut -d' ' -f2)
+        if test $founddisk = $disk0; then
+            otherdisk=$disk1
+        elif test $founddisk = $disk1; then
+            otherdisk=$disk0
+        else
+            echo "Unexpected founddisk $founddisk" >&2
+            exit 1
+        fi
+
+        destpart=/dev/$otherdisk$foundpart
+        echo -n "Shall I format the EFI partition for you on $destpart (y/n)? "
+        read yn
+        if test "$yn" != y; then
+            echo "Aborted" >&2
+            exit 1
+        fi
+        mkfs -t vfat -F 32 -n EFI $destpart
+
+        located="$(locate_efi_partitions)"
+        located_n=$(echo "$located" | wc -l)
+        test "$located_n" -eq 2
+    fi
+
+    located0=$(echo "$located" | grep "^$disk0" )
+    located1=$(echo "$located" | grep "^$disk1" )
+    part0=$(echo "$located0" | cut -d' ' -f2)
+    part1=$(echo "$located1" | cut -d' ' -f2)
+    uuid0=$(echo "$located0" | cut -d' ' -f3)
+    uuid1=$(echo "$located1" | cut -d' ' -f3)
+    test -n "$part0" && test "$part0" = "$part1"
+    if test -z "$uuid0" || test "$uuid0" = "$uuid1"; then
+        echo "Empty or duplicate PARTUUID=" >&2
+        echo "Please fix with fdisk: p x i/u r w" >&2
+        echo "See blkid(1). Use uuidgen(1) to get fresh UUIDs" >&2
+        exit 1
+    fi
+}
+
+check_and_fix_fstab() {
+    temp=$(mktemp)
+    mkdir -p /boot/efi /boot/efi2
+
+    cat >>"$temp" <<EOF
+# EFI: $diskbyid0-part$part0 ($disk0$part0)
+PARTUUID=$uuid0 /boot/efi vfat nofail,x-systemd.device-timeout=1 0 1
+# EFI: $diskbyid1-part$part1 ($disk1$part1)
+PARTUUID=$uuid1 /boot/efi2 vfat nofail,x-systemd.device-timeout=1 0 1
+EOF
+    cat /etc/fstab | sed -e '
+        /^# EFI:/d
+        / \/boot\/efi[0-9]* /d
+    ' >>"$temp"
+
+    if ! cmp -s /etc/fstab "$temp"; then
+        diff -u /etc/fstab "$temp" || true
+        echo
+        echo -n "Shall I update fstab for you (y/n)? "
+        read yn
+        if test "$yn" != y; then
+            echo "Aborted" >&2
+            rm "$temp"
+            exit 1
+        fi
+        cat "$temp" >/etc/fstab
+        rm "$temp"
+    fi
+
+    umount /boot/efi || true
+    umount /boot/efi2 || true
+    mount /boot/efi
+    mount /boot/efi2
+}
+
+make_grub_postinstall() {
+    temp=$(mktemp)
+    dst=/etc/kernel/postinst.d/zz-grub-install-efibootmirrorsetup
+    cat >"$temp" <<EOF
+#!/bin/sh
+# Do not use grub-install --bootloader-id because it breaks the hardcoded path
+# in grub.efi to EFI\\\\ubuntu\\\\grub.cfg
+disk0=$diskbyid0
+disk1=$diskbyid1
+grub-install --efi-directory /boot/efi \$disk0
+grub-install --efi-directory /boot/efi2 \$disk1
+binpath=\$(efibootmgr -v | sed -e '/ ubuntu[[:blank:]]/!d;s/.*File(//;s/)\$//')
+if test -z "\$binpath"; then
+    binpath='\\EFI\\ubuntu\\shimx64.efi'
+    printf '\\nWARNING: did not find ubuntu file path in EFI\\n\\n\
+Using: %s\\n' \\
+        "\$binpath" >&2
+fi
+
+# Remove labels that we'll create. Remove the just-created 'ubuntu'.
+for label in ubuntu \$(basename \$disk0) \$(basename \$disk1); do
+    for num in \$(efibootmgr |
+            sed -e '/ '\$label'\$/!d;s/^Boot\\(....\\).*/\\1/'); do
+        efibootmgr -q -B -b \$num
+    done
+done
+
+part=$part0  # partition $part0 == $part1
+for disk in \$disk0 \$disk1; do
+    label=\$(basename "\$disk")
+    efibootmgr -q -c -d \$disk -p \$part -w -L "\$label" -l "\$binpath"
+done
+EOF
+    if ! cmp -s "$dst" "$temp"; then
+        diff --text -Nu "$dst" "$temp" || true
+        echo
+        echo -n "Shall I update $dst for you? (y/n) "
+        read yn
+        if test "$yn" != y; then
+            echo "Aborted" >&2
+            rm "$temp"
+            exit 1
+        fi
+        cat "$temp" >"$dst"
+        chmod 755 "$dst"
+        rm "$temp"
+    fi
+}
+
+run_grub_postinstall() {
+    echo "Running: /etc/kernel/postinst.d/zz-grub-install-efibootmirrorsetup"
+    echo
+    /etc/kernel/postinst.d/zz-grub-install-efibootmirrorsetup
+    echo
+    echo OK
+}
+
+check_args "$@"
+check_two_disk_args "$@"
+check_two_efi_partitions "$(locate_efi_partitions)"
+check_and_fix_fstab
+make_grub_postinstall
+run_grub_postinstall

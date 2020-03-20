@@ -15,6 +15,7 @@ BINS = \
 	dbschemadiff \
 	difftac \
 	easycert \
+	efibootmirrorsetup \
 	etccleaner \
 	filespeed \
 	gitbackhub \
