@@ -245,7 +245,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 # /var/lib/containerd/io.containerd.runtime.v1.linux/moby/<ID>
                 args[workdir_pos] = (
                     args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
-            except IndexError:
+            except ValueError:
                 pass
             else:
                 process.cmdline = ' '.join(args)
