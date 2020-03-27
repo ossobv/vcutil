@@ -1,3 +1,15 @@
+vcutil (1.20) stable; urgency=low
+
+  * Added:
+    - argecho: Test app to explains/clarify/test shell argument quoting
+    - efibootmirrorsetup: Setup mirror EFI on (otherwise) mirrored disks
+
+  * Improvements:
+    - cert-expiry-finder: Haproxy allows directories as certs as well
+    - interfaces2netplan: Parse standard 'up route add -net XXX' statements
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 27 Mar 2020 11:58:31 +0100
+
 vcutil (1.19) stable; urgency=low
 
   * Added:
@@ -16,7 +28,7 @@ vcutil (1.19) stable; urgency=low
       do `ssh $(zabdig zabbix-proxy-x)` even when the agents main IP is
       localhost.
 
- -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 06 Mar 2019 10:05:39 +0100
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 06 Mar 2020 10:05:39 +0100
 
 vcutil (1.18) stable; urgency=low
 
