@@ -246,17 +246,14 @@ class FilteredProcessFormatter(ProcessFormatter):
                 args[workdir_pos] = (
                     args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
             except ValueError:
-                pass
+                # Docker 17- instances have fluctuating arguments:
+                #   docker-containerd-shim <ID> /var/...containerd/<ID> docker-runc
+                args = process.cmdline.split()
+                if len(args) == 4 and args[3] == 'docker-runc':
+                    args[1] = '<ID>'
+                    args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
+                    process.cmdline = ' '.join(args)
             else:
-                process.cmdline = ' '.join(args)
-
-        elif process.cmdline.startswith('docker-containerd-shim '):
-            # Docker 17- instances have fluctuating arguments:
-            #   docker-containerd-shim <ID> /var/...containerd/<ID> docker-runc
-            args = process.cmdline.split()
-            if len(args) == 4 and args[3] == 'docker-runc':
-                args[1] = '<ID>'
-                args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
                 process.cmdline = ' '.join(args)
 
     def include(self, process):
