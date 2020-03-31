@@ -13,6 +13,7 @@
 #
 #    sudo wcheckrestart [-v] [options_to_ps]
 #    sudo wcheckrestart -vv
+#    sudo wcheckrestart -sd | sudo xargs systemctl restart
 #
 # Examples:
 #
@@ -28,7 +29,9 @@
 #
 verbose=0
 options_to_ps=f
-if test "$*" = "-vv"; then
+if test "$*" = "-sd"; then
+    verbose=-1
+elif test "$*" = "-vv"; then
     verbose=2
 elif test "$1" = "-v"; then
     verbose=1
@@ -73,9 +76,9 @@ for pids in $(ps fhax -opid,ppid | grep -E "$pids" |
     test "$exe" = "/usr/bin/dbus-daemon (deleted)" && continue
 
     # If not verbose, and parentpid is not 1 (in case we've already
-    # shown /sbin/init) and we've already shown the parent, then
+    # shown /sbin/init) and we've already added the parent, then
     # don't show it.
-    test $verbose -eq 0 && test $ppid != 1 &&
+    test $verbose -le 0 && test $ppid != 1 &&
         echo "$shown" | grep -q " $ppid " &&
         continue
 
@@ -89,8 +92,14 @@ for pids in $(ps fhax -opid,ppid | grep -E "$pids" |
     fi
 done
 
-if test $verbose -le 1 -a -n "$toshow"; then
-    ps $options_to_ps -p $(echo "$toshow" | sed -e 's/^.//')
+if test -n "$toshow"; then
+    if test $verbose -eq -1; then
+        # "* some.service - Some Service"
+        LC_ALL=C systemctl status $(echo "$toshow" | sed -e 's/^.//;s/,/ /g') |
+            sed '/^[*] .* - .*/!d;s/^[^ ] //;s/ - .*//;/[.]scope$/d' | sort -u
+    elif test $verbose -le 1; then
+        ps $options_to_ps -p $(echo "$toshow" | sed -e 's/^.//')
+    fi
 fi
 
 # vim: set ts=8 sw=4 sts=4 et:
