@@ -79,7 +79,7 @@ for pids in $(ps fhax -opid,ppid | grep -E "$pids" |
     # shown /sbin/init) and we've already added the parent, then
     # don't show it.
     test $verbose -le 0 && test $ppid != 1 &&
-        echo "$shown" | grep -q " $ppid " &&
+        test "$shown" != "${shown% $ppid *}" &&
         continue
 
     toshow="$toshow,$pid"
