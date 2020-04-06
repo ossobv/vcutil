@@ -15,6 +15,10 @@
 #
 #     cert-expiry-check
 #
+# In some (cron) environments, we might not find all tools (like postconf!).
+# Amend the PATH so we're more likely to.
+PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 global_t0=`date +%s`  # cache the "now" value
 
 enum_all_certs() {
