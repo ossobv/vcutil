@@ -91,7 +91,16 @@ check_two_disk_args() {
     partitions="$partitions0"
 }
 
+lines() {
+    if test -z "$1"; then
+        echo 0
+    else
+        echo "$1" | wc -l
+    fi
+}
+
 locate_efi_partitions() {
+    found=0
     for disk in $disk0 $disk1; do
         for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
             vals=$(blkid -t LABEL=EFI -o export "/dev/$disk$partnum") ||
@@ -100,9 +109,24 @@ locate_efi_partitions() {
                     echo "$vals" | grep -q '^TYPE=vfat$'; then
                 echo "$disk $partnum $(
                     echo "$vals" | sed -ne 's/^PARTUUID=//p')"
+                found=$((found+1))
             fi
         done
     done
+    if test $found -eq 0; then
+        for disk in $disk0 $disk1; do
+            for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
+                vals=$(blkid -o export "/dev/$disk$partnum") ||
+                    continue
+                if echo "$vals" | grep -q '^TYPE=vfat$'; then
+                    echo "\
+WARNING: Found TYPE=vfat partition /dev/$disk$partnum without 'EFI' label.
+  If that is an EFI partition, perhaps use fatlabel(1) to set it.
+" >&2
+                fi
+            done
+        done
+    fi
 }
 
 disk_by_id() {
@@ -119,7 +143,7 @@ disk_by_id() {
 
 check_two_efi_partitions() {
     located="$(locate_efi_partitions)"
-    located_n=$(echo "$located" | wc -l)
+    located_n=$(lines "$located")
     echo "Found $located_n EFI partition(s):"
     echo "$located" | sed -e 's#\([^ ]*\) \([^ ]*\) #- /dev/\1\2 PARTUUID=#'
     echo
@@ -157,7 +181,7 @@ check_two_efi_partitions() {
         mkfs -t vfat -F 32 -n EFI $destpart
 
         located="$(locate_efi_partitions)"
-        located_n=$(echo "$located" | wc -l)
+        located_n=$(lines "$located")
         test "$located_n" -eq 2
     fi
 
@@ -270,7 +294,7 @@ run_grub_postinstall() {
 
 check_args "$@"
 check_two_disk_args "$@"
-check_two_efi_partitions "$(locate_efi_partitions)"
+check_two_efi_partitions
 check_and_fix_fstab
 make_grub_postinstall
 run_grub_postinstall
