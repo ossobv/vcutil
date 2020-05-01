@@ -4,7 +4,7 @@
 # A wrapper to call the SuperMicro iKVM console bypassing Java browser
 # plugins.
 #
-# Requirements: base64, curl, java
+# Requirements: java, unzip, curl (and: awk, base64, grep, sed)
 #
 # Usage:
 #
@@ -14,6 +14,12 @@
 #   $ ipmikvm 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
 #
+# Config file ~/.config/ipmikvm/dict:
+#
+#   * * ADMIN ADMIN
+#   * * ADMIN OTHERPASS
+#   alias 1.2.3.4 ADMIN ADMIN
+#
 # This has been tested with:
 # - iKVM__V1.69.19.0x0
 # - iKVM__V1.69.22.0x0
@@ -21,15 +27,17 @@
 # - iKVM__V1.69.25.0x0
 # - iKVM__V1.69.39.0x0
 #
-# See also: ipmikvm
+# See also: ipmiview
 #
 test -z "$HOME" && echo 'missing $HOME' && exit 1
 set -u
 APP_CACHE_DIR="$HOME/.local/lib/ipmikvm"
 
 IP=
-USER=ADMIN
-PASS=ADMIN
+USER=
+PASS=
+USERS='ADMIN '
+PASSES='ADMIN '
 
 # Use getopt(1) to reorder arguments
 eval set --"$(getopt -- 'hu:P:' "$@")"
@@ -37,6 +45,11 @@ eval set --"$(getopt -- 'hu:P:' "$@")"
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
     echo "Usage: $0 [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS"
+    echo
+    echo "Usernames, passwords and machine aliases may be specified in"
+    echo "~/.config/ipmikvm/dict - as ALIAS ADDRESS USER PASS - one per"
+    echo "line. When ALIAS and ADDRESS are *, the USER and PASS will be"
+    echo "tried consecutively for (otherwise) unmatched aliases/addresses."
     exit ${1:-1}
 }
 
@@ -54,52 +67,85 @@ test $# -ne 1 && usage
 IP=${1:-}; shift
 test -z "$IP" && usage
 
+# Try the aliases/password file.
+DICT="$HOME/.config/ipmikvm/dict"
+if test -s "$DICT"; then
+    # Alias match
+    LINES=$(awk "/^ *[^#]/{if(NF>=4&&(\$1==\"$IP\"||\$2==\"$IP\")){
+        print \$0;exit}}" "$DICT")
+    if test -n "$LINES"; then
+        IP=$(echo "$LINES" | awk '{print $2}')
+        test -z "$USER" && USER=$(echo "$LINES" | awk '{print $3}')
+        test -z "$PASS" && PASS=$(echo "$LINES" | awk '{print $4}')
+    elif test -z "$USER" && test -z "$PASS"; then
+        # No user/pass supplied. Then get all the * * matches.
+        USERS=$(awk '/^ *[^#]/{if(NF>=4&&$1=="*"&&$2=="*"){
+            printf "%s ", $3}}' "$DICT")
+        PASSES=$(awk '/^ *[^#]/{if(NF>=4&&$1=="*"&&$2=="*"){
+            printf "%s ", $4}}' "$DICT")
+    fi
+fi
+test -n "$USER" && USERS="$USER "; USER=
+test -n "$PASS" && PASSES="$PASS "; PASS=
+
+#echo "$USERS\$ // $PASSES\$"; exit 5
+
 
 get_launch_jnlp() {
     management_ip="$1"
-    user="$2"
-    pass="$3"
+    users="$2"
+    passes="$3"
 
-    fail=1
     url="https://$management_ip"
     temp=$(mktemp)
-    data=$(curl --fail -Lks --cookie-jar "$temp" "$url")
-    if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
-        echo "unexpected login page: $data" >&2
-        rm "$temp"
-        false
-        return
-    fi
-    if echo "$data" | grep -q '=.*btoa'; then
-        user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
-        pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
-    fi
-    data=$(test -n "$data" &&
-      curl --fail -Lks --cookie "$temp" --cookie-jar "$temp" \
-        -XPOST "$url/cgi/login.cgi" --data "name=$user&pwd=$pass&check=00")
-    ret=$?
-    fail_heur=0
-    if test $ret -eq 0; then
-        ok_heur=$(echo "$data" | grep -cF 'url_redirect.cgi?url_name=mainmenu')
-        fail_heur=$(echo "$data" | grep -ciE \
-            "url_redirect[.]cgi[?]url_name=login_alert|alert[(]|\
-<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;URL=/\">")
-        if test $ok_heur -gt 0 && test $fail_heur -gt 0; then
-            echo "login page looks like success AND failure: $data" 2>&1
-            rm "$temp"
-            exit 1
-        fi
-        if test $fail_heur -gt 0; then
-            ret=1
-        fi
-    fi
 
-    if test $ret -ne 0; then
+    until test -z "$users"; do
+        user=${users%% *}; users=${users#* }
+        pass=${passes%% *}; passes=${passes#* }
+        echo "attempting login on '$management_ip' with user $user" >&2
+
+        data=$(curl --fail -LksS --cookie-jar "$temp" "$url")
+        if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
+            echo "unexpected login page on address '$management_ip': $data" >&2
+            data=
+            false
+            break
+        fi
+        use_base64=$(echo "$data" | grep -q '=.*btoa' && echo 1)
+
+        if test -n "$use_base64"; then
+            user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+            pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+        fi
+        data=$(test -n "$data" &&
+          curl --fail -LksS --cookie "$temp" --cookie-jar "$temp" \
+            -XPOST "$url/cgi/login.cgi" --data "name=$user&pwd=$pass&check=00")
+        ret=$?
+        fail_heur=0
+        if test $ret -eq 0; then
+            ok_heur=$(echo "$data" |
+                grep -cF 'url_redirect.cgi?url_name=mainmenu')
+            fail_heur=$(echo "$data" | grep -ciE \
+                "url_redirect[.]cgi[?]url_name=login_alert|alert[(]|\
+<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;URL=/\">")
+            if test $ok_heur -gt 0 && test $fail_heur -gt 0; then
+                echo "login page looks like success AND failure: $data" 2>&1
+                rm "$temp"
+                exit 1
+            fi
+            if test $fail_heur -gt 0; then
+                ret=1
+            fi
+        fi
+        test $ret -eq 0 && break
         echo "login failure ($fail_heur markers on page)" >&2
         data=
-    elif test -n "$user"; then
+        false
+    done
+
+    if test -n "$data"; then
         for url_name in man_ikvm ikvm; do
-            data=$(curl --fail -Lks --cookie "$temp" \
+            data=$(curl --fail -LksS --cookie "$temp" \
                 -H "Referer: $url/cgi/url_redirect.cgi?url_name=man_ikvm" \
                 "$url/cgi/url_redirect.cgi?url_name=$url_name&url_type=jwsk")
             test $? -ne 0 && echo "$data" | grep -q '^<jnlp spec=' && break
@@ -190,7 +236,7 @@ install_ikvm_application() {
 # SYNOPSIS: install_ikvm_application JNLP_DATA DESTDIR
 
 
-JNLP=$(get_launch_jnlp "$IP" "$USER" "$PASS")
+JNLP=$(get_launch_jnlp "$IP" "$USERS" "$PASSES")
 test -z "$JNLP" && echo "Failed to get launch.jnlp" >&2 && exit 1
 
 JAR=$(get_ikvm_jar "$JNLP" "$APP_CACHE_DIR")
