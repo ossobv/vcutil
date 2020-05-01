@@ -66,16 +66,37 @@ get_launch_jnlp() {
     data=$(curl --fail -Lks --cookie-jar "$temp" "$url")
     if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
         echo "unexpected login page: $data" >&2
-        data=
-    elif echo "$data" | grep -q '=.*btoa'; then
+        rm "$temp"
+        false
+        return
+    fi
+    if echo "$data" | grep -q '=.*btoa'; then
         user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
         pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
     fi
     data=$(test -n "$data" &&
       curl --fail -Lks --cookie "$temp" --cookie-jar "$temp" \
         -XPOST "$url/cgi/login.cgi" --data "name=$user&pwd=$pass&check=00")
-    if test $? -ne 0 || ! echo "$data" | grep -qF 'url_name=mainmenu'; then
-        echo "unexpected post-login page: $data" >&2
+    ret=$?
+    fail_heur=0
+    if test $ret -eq 0; then
+        ok_heur=$(echo "$data" | grep -cF 'url_redirect.cgi?url_name=mainmenu')
+        fail_heur=$(echo "$data" | grep -ciE \
+            "url_redirect[.]cgi[?]url_name=login_alert|alert[(]|\
+<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;URL=/\">")
+        if test $ok_heur -gt 0 && test $fail_heur -gt 0; then
+            echo "login page looks like success AND failure: $data" 2>&1
+            rm "$temp"
+            exit 1
+        fi
+        if test $fail_heur -gt 0; then
+            ret=1
+        fi
+    fi
+
+    if test $ret -ne 0; then
+        echo "login failure ($fail_heur markers on page)" >&2
+        data=
     elif test -n "$user"; then
         for url_name in man_ikvm ikvm; do
             data=$(curl --fail -Lks --cookie "$temp" \
