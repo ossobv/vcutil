@@ -241,10 +241,10 @@ def get_from_secret_storage(section):
 
     with closing(secretstorage.dbus_init()) as conn:
         coll = secretstorage.get_default_collection(conn)
-        # FIXME: args.section
+        # FIXME: section? or DEFAULT?
         attrs = {'application': 'zabdig'}
-        if args.section:
-            attrs['section'] = args.section
+        if section:
+            attrs['section'] = section
         res = [i for i in coll.search_items(attrs)]
         # FIXME: add 'or True' to overwrite previous passwords
         if not res:   # or True:
@@ -270,63 +270,68 @@ def get_from_secret_storage(section):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-g', '--section', dest='section',
-                        help='Use SECTION from ~/.zabbixrc for defaults')
-    parser.add_argument('-a', '--api', dest='api',
-                        help='Zabbix json_rpc API URL, for example: '
-                             'https://zabbix.example.nl/api_jsonrpc.php')
-    parser.add_argument('-u', '--user', dest='user',
-                        help='API username')
-    parser.add_argument('-p', '--password', dest='password',
-                        help='API password')
-    parser.add_argument('search', nargs='?',
-                        help='Hostname to search for')
+    def main():
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-g', '--section', dest='section',
+                            help='Use SECTION from ~/.zabbixrc for defaults')
+        parser.add_argument('-a', '--api', dest='api',
+                            help='Zabbix json_rpc API URL, for example: '
+                                 'https://zabbix.example.nl/api_jsonrpc.php')
+        parser.add_argument('-u', '--user', dest='user',
+                            help='API username')
+        parser.add_argument('-p', '--password', dest='password',
+                            help='API password')
+        parser.add_argument('search', nargs='?',
+                            help='Hostname to search for')
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    lconf = LocalConfig()
-    if args.section:
+        lconf = LocalConfig()
+        if args.section:
+            try:
+                lconf.select_section(args.section)
+            except ZConfigError:
+                print('no such section found in config file', file=sys.stderr)
+                sys.exit(1)
+
+        api = args.api or lconf.get('api')
+        user = args.user or lconf.get('user')
+        password = args.password or lconf.get('password')
+
+        # Ooh.. quick hacks!
+        if not user or not password:
+            (user, password) = get_from_secret_storage(args.section)
+
         try:
-            lconf.select_section(args.section)
-        except ZConfigError:
-            print('no such section found in config file', file=sys.stderr)
+            zint = ZInterface(api, user, password)
+        except ZConfigError as e:
+            print(
+                'login failed: {}; see zabdig --help'.format(e),
+                file=sys.stderr)
             sys.exit(1)
 
-    api = args.api or lconf.get('api')
-    user = args.user or lconf.get('user')
-    password = args.password or lconf.get('password')
+        try:
+            hosts = list(zint.get_hosts(args.search))
+        except ZInterfaceError as e:
+            print('fetch failed: {}'.format(e), file=sys.stderr)
+            sys.exit(1)
 
-    # Ooh.. quick hacks!
-    if not user or not password:
-        (user, password) = get_from_secret_storage(args.section)
+        exact_hosts = [host for host in hosts if str(host) == args.search]
 
-    try:
-        zint = ZInterface(api, user, password)
-    except ZConfigError as e:
-        print('login failed: {}; see zabdig --help'.format(e), file=sys.stderr)
-        sys.exit(1)
+        if len(exact_hosts) == 1:  # or len(hosts) == 1:
+            host = exact_hosts[0]  # exact match
+            print(host.get_zabbix_addr_first())
 
-    try:
-        hosts = list(zint.get_hosts(args.search))
-    except ZInterfaceError as e:
-        print('fetch failed: {}'.format(e), file=sys.stderr)
-        sys.exit(1)
+        elif len(hosts):
+            for host in sorted(hosts):
+                print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
+                    name=host,
+                    addr=host.get_zabbix_addr(),
+                    optional_proxy=(
+                        host.proxy and ' ({!s})'.format(host.proxy) or '')))
 
-    exact_hosts = [host for host in hosts if str(host) == args.search]
+        else:
+            print('nothing found', file=sys.stderr)
+            sys.exit(1)
 
-    if len(exact_hosts) == 1:  # or len(hosts) == 1:
-        host = exact_hosts[0]  # exact match
-        print(host.get_zabbix_addr_first())
-
-    elif len(hosts):
-        for host in sorted(hosts):
-            print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
-                name=host,
-                addr=host.get_zabbix_addr(),
-                optional_proxy=(
-                    host.proxy and ' ({!s})'.format(host.proxy) or '')))
-
-    else:
-        print('nothing found', file=sys.stderr)
-        sys.exit(1)
+    main()
