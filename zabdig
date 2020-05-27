@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017-2019 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2020 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
@@ -20,6 +20,9 @@
 #     api=https://zabbix-server.example.com/api_jsonrpc.php
 #     user=myusername
 #     password=mypassword
+#
+# (If you leave out user/password it will try to get it from your Secret
+# Storage API (keyring).)
 #
 # If you have multiple zabbix servers you wish to speak to, add
 # additional sections. Use zabdig -g SECTION to select a different
@@ -230,6 +233,42 @@ class LocalConfig(object):
         return self.config[self.section].get(key, None)
 
 
+def get_from_secret_storage(section):
+    "Requires python3-secretstorage for Freedesktop Secret Service API"
+    import secretstorage
+    from base64 import b64decode, b64encode
+    from contextlib import closing
+
+    with closing(secretstorage.dbus_init()) as conn:
+        coll = secretstorage.get_default_collection(conn)
+        # FIXME: args.section
+        attrs = {'application': 'zabdig'}
+        if args.section:
+            attrs['section'] = args.section
+        res = [i for i in coll.search_items(attrs)]
+        # FIXME: add 'or True' to overwrite previous passwords
+        if not res:   # or True:
+            import getpass
+
+            print('No password stored; add one?')
+            print('username: ', end='')
+            username = input().strip()
+            print('password: ', end='')
+            password = getpass.getpass()
+            user_pass = b64encode(
+                '{}:{}'.format(username, password).encode('utf-8'))
+            coll.create_item(
+                'zabdig user/pass', attributes=attrs,
+                replace=True, secret=user_pass)
+            res = [i for i in coll.search_items(attrs)]
+
+        assert len(res) == 1, res
+        res[0].ensure_not_locked()
+        user_pass = res[0].get_secret()
+        user, password = b64decode(user_pass).decode('utf-8').split(':', 1)
+        return (user, password)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-g', '--section', dest='section',
@@ -254,11 +293,16 @@ if __name__ == '__main__':
             print('no such section found in config file', file=sys.stderr)
             sys.exit(1)
 
+    api = args.api or lconf.get('api')
+    user = args.user or lconf.get('user')
+    password = args.password or lconf.get('password')
+
+    # Ooh.. quick hacks!
+    if not user or not password:
+        (user, password) = get_from_secret_storage(args.section)
+
     try:
-        zint = ZInterface(
-            args.api or lconf.get('api'),
-            args.user or lconf.get('user'),
-            args.password or lconf.get('password'))
+        zint = ZInterface(api, user, password)
     except ZConfigError as e:
         print('login failed: {}; see zabdig --help'.format(e), file=sys.stderr)
         sys.exit(1)
