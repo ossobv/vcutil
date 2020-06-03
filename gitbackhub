@@ -193,8 +193,9 @@ class Repository(object):
             elif line.startswith('   '):
                 changeset.updates += 1
             # Deleted stuff:
-            #  x [deleted]         (none)     -> origin/test-fetch
-            elif line.startswith(' x '):
+            #  - [deleted]         (none)     -> origin/test-fetch
+            #  x [deleted]         (none)     -> origin/test-fetch  [OLD]
+            elif line.startswith((' - ', ' x ')):
                 if any(wip_word in line for wip_word in WIP_WORDS):
                     changeset.deletes_wip += 1
                 else:
