@@ -39,7 +39,7 @@ from urllib.request import HTTPError, urlopen
 
 SAFE_REPO_NAME_RE = compile(
     r'^[A-Za-z0-9_][A-Za-z0-9_.-]*$')
-WIP_WORDS = ('wip', 'feat', 'fix')
+WIP_WORDS = ('wip', 'feat', 'fix', 'dependabot')
 
 
 class DestructiveChanges(ValueError):
@@ -173,6 +173,11 @@ class Repository(object):
 
         output = str(output, 'utf-8').strip()
         for lineno, line in enumerate(output.split('\n')):
+            # - [deleted]         (none)     -> origin/dependabot/npm...
+            line_after_arrow = ''
+            if '-> ' in line:
+                line_after_arrow = line.split('-> ', 1)[1]
+
             # Fetching origin
             # remote: Counting objects: 3, done.
             # remote: Compressing objects: 100% (3/3), done.
@@ -196,14 +201,14 @@ class Repository(object):
             #  - [deleted]         (none)     -> origin/test-fetch
             #  x [deleted]         (none)     -> origin/test-fetch  [OLD]
             elif line.startswith((' - ', ' x ')):
-                if any(wip_word in line for wip_word in WIP_WORDS):
+                if any(wip_word in line_after_arrow for wip_word in WIP_WORDS):
                     changeset.deletes_wip += 1
                 else:
                     changeset.deletes += 1
             # Changed stuff:
             #  + af324cd...1d3a96e test-fetch -> test-fetch (forced update)
             elif line.startswith(' + '):
-                if any(wip_word in line for wip_word in WIP_WORDS):
+                if any(wip_word in line_after_arrow for wip_word in WIP_WORDS):
                     changeset.changes_wip += 1
                 else:
                     changeset.changes += 1
