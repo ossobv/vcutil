@@ -108,8 +108,19 @@ get_launch_jnlp() {
         if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
             echo "unexpected login page on address '$management_ip': $data" >&2
             data=
-            false
-            break
+            if test "${url#https:}" != "$url"; then
+                url="http:${url#https:}"
+                echo "retrying without ssl on $url" >&2
+                data=$(curl --fail -LksS --cookie-jar "$temp" "$url")
+                if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
+                    echo "sad times" >&2
+                    data=
+                fi
+            fi
+            if test -z "$data"; then
+                false
+                break
+            fi
         fi
         use_base64=$(echo "$data" | grep -q '=.*btoa' && echo 1)
 
