@@ -1,3 +1,18 @@
+vcutil (1.21) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Fix postfix issue
+    - efibootmirrorsetup: Fix cases where EFI partitions don't have a label
+    - gitbackhub: Fixes for newer git
+    - ipmikvm: Add ~/.config/ipmikvm/dict to store hosts and passwords
+    - ipmikvm: Fall back to http when https fails because Ubuntu/Focal openssl
+      refuses to do (old) TLSv1
+    - psdiff: Docker matching fix
+    - wcheckrestart: Add -sd option so you can auto-restart
+    - zabdig: Store passwords in Freedesktop.org Secret Service
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 16 Jun 2020 11:29:30 +0200
+
 vcutil (1.20) stable; urgency=low
 
   * Added:
