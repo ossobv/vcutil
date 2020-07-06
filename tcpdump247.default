@@ -13,13 +13,16 @@ mkdir -p /var/spool/tcpdump
 # a bash(1) list of argument strings. these will be expanded, so make
 # sure you enclose single arguments with extra quotes. e.g.:
 # "-i eth0 '(udp and port 5060)'"
+# Add "-U" to "-w" if you expect little traffic. That way, tcpdump will
+# not buffer before writing the pcaps. (tcpdump sadly does not have a HUP/USR1
+# to force-flush.)
 ARGS_LIST=(
     # SIP traffic split up on UDP and TCP
     "-i $IFACE -pnns0 -w /var/spool/tcpdump/udp5060.pcap. -W 100 -C 20 '(udp and port 5060) or (ip[6:2] & 0x1fff != 0)'"
     "-i $IFACE -pnns0 -w /var/spool/tcpdump/tcp5060.pcap. -W 100 -C 20 tcp and port 5060"
     # MySQL traffic, but only if (non-ACK) flags are set
     # Used to diagnose who disconnects when
-    "-i $IFACE -pnns0 -w /var/spool/tcpdump/3306synfinrst.pcap. -W 10 -C 10 'tcp and port 3306 and (tcp[13] & 0x47) != 0'"
+    "-i $IFACE -pnns0 -Uw /var/spool/tcpdump/3306synfinrst.pcap. -W 10 -C 10 'tcp and port 3306 and (tcp[13] & 0x47) != 0'"
 )
 
 fi # --skipped above if not enabled--
