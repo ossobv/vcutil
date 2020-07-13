@@ -292,6 +292,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 '/usr/sbin/dovecot',
                 '/usr/sbin/gocollect',              # sysv/systemd
                 '/usr/sbin/vsftpd',
+                '/usr/sbin/zabbix_agent2',
                 '/usr/sbin/zabbix_agentd')):
             return False
 
