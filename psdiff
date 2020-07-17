@@ -272,7 +272,7 @@ class FilteredProcessFormatter(ProcessFormatter):
         # Children of these commands are generally not daemons, skip
         # them:
         elif process.has_parent(include_self=True, cmdline__startswith=(
-                'sshd:', 'CRON', 'SCREEN',
+                'CRON', 'SCREEN',
                 '/USR/SBIN/CRON',  # older cron
                 '/usr/sbin/CRON',  # newer cron
                 # Is a daemon, but spawns children of init for extra work.
@@ -284,13 +284,16 @@ class FilteredProcessFormatter(ProcessFormatter):
         # We want to monitor these daemons, but not their
         # (grand)children, as they come and go:
         elif process.has_parent(include_self=False, cmdline__startswith=(
+                'sshd: /usr/sbin/sshd ',
                 'gocollect',                        # ubuntu (upstart)
+                '/lib/systemd/systemd-udevd',
                 '/usr/lib/postfix/master',          # debian/ubuntu
                 '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
                 '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
                 '/usr/sbin/dovecot',
                 '/usr/sbin/gocollect',              # sysv/systemd
+                '/usr/sbin/sshd ',
                 '/usr/sbin/vsftpd',
                 '/usr/sbin/zabbix_agent2',
                 '/usr/sbin/zabbix_agentd')):
