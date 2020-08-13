@@ -221,15 +221,26 @@ install_ikvm_application() {
     codebase=$(
       echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//')
     jar=$(get_jar "$launch_jnlp")
-    linuxlibs=$(
-      echo "$launch_jnlp" | sed -e '
-        /<nativelib.*linux.*x86_64/!d
-        s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
-        s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
+    case "$(uname -s)" in
+        Linux)
+            nativelibs=$(
+              echo "$launch_jnlp" | sed -e '
+                /<nativelib.*linux.*x86_64/!d
+                s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
+                s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
+            ;;
+        Darwin)
+            nativelibs=$(
+              echo "$launch_jnlp" | sed -e '
+                /<nativelib.*libmac.*x86_64/!d
+                s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
+                s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
+            ;;
+    esac
     set -x
     mkdir -p "$destdir"
     cd "$destdir"
-    for x in $jar $linuxlibs; do
+    for x in $jar $nativelibs; do
         if curl -ko "$x.pack.gz" "$codebase$x.pack.gz"; then
             unpack200 "$x.pack.gz" "$x"
         elif curl -ko "$x" "$codebase$x"; then
@@ -239,7 +250,7 @@ install_ikvm_application() {
             false
         fi
     done
-    unzip -o liblinux*.jar
+    unzip -o lib*.jar
     rm -rf META-INF
     set +x
     set +e
