@@ -103,10 +103,14 @@ locate_efi_partitions() {
     found=0
     for disk in $disk0 $disk1; do
         for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
-            vals=$(blkid -t LABEL=EFI -o export "/dev/$disk$partnum") ||
+            vals=$(
+                blkid -t LABEL=EFI -o export "/dev/$disk$partnum" ||
+                blkid -t PARTLABEL='EFI System Partition' -o export \
+                    "/dev/$disk$partnum") ||
                 continue
-            if echo "$vals" | grep -q '^LABEL=EFI$' &&
-                    echo "$vals" | grep -q '^TYPE=vfat$'; then
+            if echo "$vals" |
+                  grep -qE '^LABEL=EFI$|^PARTLABEL=EFI\\ System\\ Partition$' &&
+                echo "$vals" | grep -q '^TYPE=vfat$'; then
                 echo "$disk $partnum $(
                     echo "$vals" | sed -ne 's/^PARTUUID=//p')"
                 found=$((found+1))
@@ -120,7 +124,8 @@ locate_efi_partitions() {
                     continue
                 if echo "$vals" | grep -q '^TYPE=vfat$'; then
                     echo "\
-WARNING: Found TYPE=vfat partition /dev/$disk$partnum without 'EFI' label.
+WARNING: Found TYPE=vfat partition /dev/$disk$partnum without 'EFI' LABEL
+or 'EFI System Partition' PARTLABEL.
   If that is an EFI partition, perhaps use fatlabel(1) to set it.
 " >&2
                 fi
