@@ -222,21 +222,15 @@ install_ikvm_application() {
       echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//')
     jar=$(get_jar "$launch_jnlp")
     case "$(uname -s)" in
-        Linux)
-            nativelibs=$(
-              echo "$launch_jnlp" | sed -e '
-                /<nativelib.*linux.*x86_64/!d
-                s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
-                s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
-            ;;
-        Darwin)
-            nativelibs=$(
-              echo "$launch_jnlp" | sed -e '
-                /<nativelib.*libmac.*x86_64/!d
-                s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
-                s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
-            ;;
+        Linux) libprefix=liblinux;;
+        Darwin) libprefix=libmac;;
+        *) echo "Unknown platform: $(uname -s)" >&2; exit 1;;
     esac
+    nativelibs=$(
+      echo "$launch_jnlp" | sed -e '
+        /<nativelib.*'$libprefix'.*x86_64/!d
+        s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
+        s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
     set -x
     mkdir -p "$destdir"
     cd "$destdir"
@@ -250,7 +244,7 @@ install_ikvm_application() {
             false
         fi
     done
-    unzip -o lib*.jar
+    unzip -o $libprefix*.jar
     rm -rf META-INF
     set +x
     set +e
