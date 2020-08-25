@@ -620,6 +620,9 @@ def main():
               "by restarts and short lived children"))
     actions.add_parser('dump', help='show current state')
     write_action = actions.add_parser('write', help='save current state')
+    write_action.add_argument(
+        '--verbose', '-v', action='store_true',
+        help='show which changes are written')
 
     args = parser.parse_args(args=get_argv()[1:])
 
@@ -655,6 +658,9 @@ def process(args, old_output, formatter_class):
         if old_output != new_output:
             write(new_output, has_old=bool(old_output))
             print('Wrote to {}'.format(DBNAME))
+            if args.verbose:
+                changes = diff(old_output, new_output)
+                show_diff(changes)
         else:
             print('No changes to {}'.format(DBNAME))
 
