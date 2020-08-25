@@ -68,32 +68,37 @@ run_test() {
     echo
 
     if test $# -eq 1; then
-        show_local_certchain "$@"
-        echo "Expires in $(get_local_expiry "$@") days"
+        cat "$1" | show_certchain || exit $?
+        echo "Expires in $(cat "$1" | get_expiry_days) days"
     else
         host="$1"
         port="$2"
         input=$(openssl_connect "$host" "$port" -showcerts </dev/null 2>&0)
         echo "$input" | show_remote_certchain "$@" || exit $?
-        echo "Expires in $(echo "$input" | get_remote_expiry "$@") days"
+        echo "Expires in $(echo "$input" | get_expiry_days) days"
+        echo "$input" | get_subject_match "$@" || exit $?
     fi
 }
 
-show_local_certchain() {
-    file="$1"
+show_certchain() {
     n=0
     res=$(
-    sed -e '/^-----BEGIN CERTIFICATE/,/-----END CERTIFICATE/{s/$/|/g}' \
-        <"$file" | tr -d '\r\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
+    sed -e '/^-----BEGIN CERTIFICATE/,/-----END CERTIFICATE/{s/$/|/g}' |
+        tr -d '\r\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
     while read cert; do
         out=$(echo "$cert" | tr '|' '\n' |
-              openssl x509 -noout -subject -issuer)
+            openssl x509 -noout -subject -issuer -hash -issuer_hash)
         if test $? -ne 0; then
             echo 'Read failure' >&2
             exit 1
         fi
+        subject=$(echo "$out" | sed -e '1!d;s/^subject= *//')
+        issuer=$(echo "$out" | sed -e '2!d;s/^issuer= *//')
+        shash=$(echo "$out" | sed -ne3p)
+        ihash=$(echo "$out" | sed -ne4p)
         test $n -eq 0 && echo 'Certificate chain'
-        echo "$out" | sed -e "s/^subject= / $n s:/;s/^issuer= /   i:/"
+        echo " $n s: [$shash] $subject"
+        echo "   i: [$ihash] $issuer"
         n=$((n+1))
     done
     )
@@ -106,9 +111,8 @@ show_remote_certchain() {
     host="$1"
     port="$2"
     input=$(cat)
-    output=$(echo "$input" | sed -e '
-        /^-----BEGIN/,/^-----END/d
-        /^Certificate chain/,/^---/!d')
+    output=$(echo "$input" | sed -e '/^-----BEGIN/,/^-----END/!d' |
+        show_certchain)
     if test -z "$output"; then
         openssl_connect "$host" "$port" </dev/null
         exit $?
@@ -116,14 +120,12 @@ show_remote_certchain() {
     echo "$output"
 }
 
-get_local_expiry() {
-    file="$1"
-    date=$(openssl x509 -dates -noout <"$file" |
-           sed -e '/^notAfter=/!d;s/^[^=]*=//')
+get_expiry_days() {
+    date=$(openssl x509 -dates -noout | sed -e '/^notAfter=/!d;s/^[^=]*=//')
     echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
 }
 
-get_remote_expiry() {
+get_subject_match() {
     host="$1"
     port="$2"
     certinfo=$(openssl x509 -text)
@@ -150,9 +152,8 @@ get_remote_expiry() {
     elif echo "$altnames" | grep -qE "[[:blank:]]DNS:$host(, | *\$)"; then
         :
     else
-        echo -n "($host NOT IN ("$cn $altnames")) "
+        echo "($host NOT IN ("$cn $altnames")) "
     fi
-    echo $(( ( $(date -d "$date" +%s) - $(date +%s) ) / 86400 ))  # days
 }
 
 run_generate() {
