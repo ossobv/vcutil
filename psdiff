@@ -623,6 +623,11 @@ def main():
     write_action.add_argument(
         '--verbose', '-v', action='store_true',
         help='show which changes are written')
+    manual_action = actions.add_parser('manual', help='do manual writes')
+    manual_action.add_argument(
+        'manual', choices=('add', 'remove'), help='manually add/remove')
+    manual_action.add_argument('user', help='process owner')
+    manual_action.add_argument('cmdline', help='process cmdline')
 
     args = parser.parse_args(args=get_argv()[1:])
 
@@ -663,6 +668,38 @@ def process(args, old_output, formatter_class):
                 show_diff(changes)
         else:
             print('No changes to {}'.format(DBNAME))
+
+    elif args.action == 'manual':
+        if not old_output:
+            raise ValueError('add/remove only works for existing db')
+
+        # For now, only accept children of init (i.e. depth 4)
+        indent = u'    '  # root -> INIT -> (process)
+        diff_line = DBLINE.format(
+            indent=indent, cmdline=args.cmdline, user=args.user)
+
+        if args.manual == 'add':
+            new_lines = []
+            for line in old_output.split(u'\n'):
+                if (diff_line and (line == '' or (
+                        line.startswith(indent)
+                        and line[len(indent)] != ' '
+                        and diff_line < line))):
+                    new_lines.append(diff_line)
+                    diff_line = None
+                new_lines.append(line)
+            new_output = u'\n'.join(new_lines)
+        else:  # args.manual == 'remove'
+            assert args.manual == 'remove', args
+            new_output = u'\n'.join(
+                i for i in old_output.split(u'\n') if i != diff_line)
+
+        if old_output == new_output:
+            raise ValueError('no change!')
+        write(new_output, has_old=True)
+        print('Wrote to {}'.format(DBNAME))
+        changes = diff(old_output, new_output)
+        show_diff(changes)
 
     else:
         assert args.action.startswith('show'), args
