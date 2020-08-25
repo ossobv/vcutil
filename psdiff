@@ -481,6 +481,23 @@ def write(output, has_old=False):
     os.rename(new_name, DBNAME)
 
 
+def get_argv():
+    "Fix up argv"
+    argv = sys.argv[:]
+
+    # No argument: default to show
+    if len(argv) == 1:
+        argv.append('show')
+
+    # show-missing or show-extra: convert to show --missing|--extra
+    if argv[1] == 'show-missing':
+        argv[1:2] = ['show', '--missing']
+    elif argv[1] == 'show-extra':
+        argv[1:2] = ['show', '--extra']
+
+    return argv
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='psdiff',
@@ -591,19 +608,20 @@ def main():
                 {Template Role Daemons:psdiff.missing.nodata(30m)}=1
             '''))
 
-    parser.add_argument(
-        'action', nargs='?', default='show',
-        help="which action to perform; defaults to `show'",
-        choices=('show', 'show-extra', 'show-missing', 'dump', 'write'))
-    parser.add_argument(
+    actions = parser.add_subparsers(dest='action', help='subcommand help')
+    show_action = actions.add_parser('show', help='show current diff')
+    show_action.add_argument(
+        '--missing', action='store_true', help='show missing (only)')
+    show_action.add_argument(
+        '--extra', action='store_true', help='show extra (only)')
+    show_action.add_argument(
         '--retry', action='store_true',
-        help=("retry `show' and friends up to 2 seconds; avoids false "
-              "positives caused by restarts and short lived children"))
-    args = parser.parse_args()
+        help=("retry up to 2 seconds; avoids false positives caused "
+              "by restarts and short lived children"))
+    actions.add_parser('dump', help='show current state')
+    write_action = actions.add_parser('write', help='save current state')
 
-    if (args.retry and
-            args.action not in ('show', 'show-extra', 'show-missing')):
-        parser.error("--retry works with the `show' and related actions only")
+    args = parser.parse_args(args=get_argv()[1:])
 
     # First load up config.
     formatter_class = get_formatter_class()
@@ -643,6 +661,10 @@ def process(args, old_output, formatter_class):
     else:
         assert args.action.startswith('show'), args
 
+        # If neither missing nor extra is set, then we want to see both.
+        if not args.missing and not args.extra:
+            args.missing = args.extra = True
+
         # If args.retry, then try fetching a changeset for 5 times
         # before concluding that something really has changed.
         for sleeptime in (0.1, 0.3, 0.6, 1.0, 0):
@@ -661,10 +683,10 @@ def process(args, old_output, formatter_class):
                 break
 
             # Do the changes apply to us?
-            if args.action == 'show-missing' and not any(
+            if args.missing and not any(
                     which < 0 for which, line in changes):
                 break
-            if args.action == 'show-extra' and not any(
+            if args.extra and not any(
                     which > 0 for which, line in changes):
                 break
 
@@ -672,9 +694,7 @@ def process(args, old_output, formatter_class):
             time.sleep(sleeptime)
 
         # Show changes, if any.
-        has_diff = show_diff(
-            changes, missing=(args.action == 'show-missing'),
-            extra=(args.action == 'show-extra'))
+        has_diff = show_diff(changes, missing=args.missing, extra=args.extra)
         status = (0, 1)[has_diff]
 
         sys.exit(status)  # possibly non-zero exit
