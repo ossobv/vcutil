@@ -1,3 +1,16 @@
+vcutil (1.22) stable; urgency=low
+
+  * Improvements:
+    - easycert: Show certificate hashes in test output
+    - efibootmirrorsetup: Accept Focal setup where PARTLABEL is set
+    - psdiff: Add preliminary manual db add/remove commands
+    - psdiff: Add 'write --verbose' (or -v) to show what was changed
+    - psdiff: Change show-missing/show-extra to show --missing|--extra
+    - psdiff: Fixes to process defaults (sshd changed on Focal, as did udevd)
+    - tcpdump247: Document how to disable tcpdump pcap buffering
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 25 Aug 2020 15:25:56 +0200
+
 vcutil (1.21) stable; urgency=low
 
   * Improvements:
