@@ -13,6 +13,10 @@ import textwrap
 import time
 
 
+DBNAME = '/var/lib/psdiff.db'
+DBLINE = u'{indent}{cmdline}  {{user={user}}}'
+
+
 def udiff(alines, blines):
     """
     Replacement for difflib.ndiff that doesn't take exponential time.
@@ -130,8 +134,9 @@ class Process(object):
         return self.root.process_map[pid]
 
     def to_string(self, indent=0):
-        return u'{0}{1}  {{user={2}}}'.format(
-            indent * '  ', self.cmdline.rstrip(), self.user)
+        return DBLINE.format(
+            indent=(indent * u'  '), cmdline=self.cmdline.rstrip(),
+            user=self.user)
 
     def sort(self):
         # Sort the children and convert the set into a list.
@@ -247,7 +252,8 @@ class FilteredProcessFormatter(ProcessFormatter):
                     args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
             except ValueError:
                 # Docker 17- instances have fluctuating arguments:
-                #   docker-containerd-shim <ID> /var/...containerd/<ID> docker-runc
+                #   docker-containerd-shim <ID> /var/...containerd/<ID> \
+                #     docker-runc
                 args = process.cmdline.split()
                 if len(args) == 4 and args[3] == 'docker-runc':
                     args[1] = '<ID>'
@@ -448,6 +454,33 @@ def get_new_output(formatter_class):
     return formatter.__str__()  # returns unicode(!) on py2
 
 
+def show_diff(changes, missing=True, extra=True):
+    has_diff = False
+    for which, line in changes:
+        if which and isinstance('', bytes):  # py2
+            line = line.encode('utf-8', 'replace')
+        if which < 0 and missing:
+            print('-{0}'.format(line))
+            has_diff = True
+        elif which > 0 and extra:
+            print('+{0}'.format(line))
+            has_diff = True
+    return has_diff
+
+
+def write(output, has_old=False):
+    if isinstance('', bytes):  # py2
+        output = output.encode('utf-8', 'replace')
+
+    new_name = '{}.new'.format(DBNAME.rsplit('.', 1)[0])
+    old_name = '{}.old'.format(DBNAME.rsplit('.', 1)[0])
+    with open(new_name, 'w') as fh:
+        fh.write(output)
+    if has_old:
+        os.rename(DBNAME, old_name)
+    os.rename(new_name, DBNAME)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='psdiff',
@@ -577,7 +610,7 @@ def main():
 
     # Then load up old db.
     try:
-        with open('/var/lib/psdiff.db', 'r') as fh:
+        with open(DBNAME, 'r') as fh:
             old_output = fh.read()
         if isinstance('', bytes):  # py2
             old_output = old_output.decode('utf-8', 'replace')
@@ -602,16 +635,10 @@ def process(args, old_output, formatter_class):
     elif args.action == 'write':
         new_output = get_new_output(formatter_class)
         if old_output != new_output:
-            with open('/var/lib/psdiff.new', 'w') as fh:
-                if isinstance('', bytes):  # py2
-                    new_output = new_output.encode('utf-8', 'replace')
-                fh.write(new_output)
-            if old_output:
-                os.rename('/var/lib/psdiff.db', '/var/lib/psdiff.old')
-            os.rename('/var/lib/psdiff.new', '/var/lib/psdiff.db')
-            print('Wrote to /var/lib/psdiff.db')
+            write(new_output, has_old=bool(old_output))
+            print('Wrote to {}'.format(DBNAME))
         else:
-            print('No changes to /var/lib/psdiff.db')
+            print('No changes to {}'.format(DBNAME))
 
     else:
         assert args.action.startswith('show'), args
@@ -645,20 +672,14 @@ def process(args, old_output, formatter_class):
             time.sleep(sleeptime)
 
         # Show changes, if any.
-        status = 0
-        for which, line in changes:
-            if which and isinstance('', bytes):  # py2
-                line = line.encode('utf-8', 'replace')
-            if which < 0 and args.action in ('show', 'show-missing'):
-                print('-{0}'.format(line))
-                status = 1
-            elif which > 0 and args.action in ('show', 'show-extra'):
-                print('+{0}'.format(line))
-                status = 1
+        has_diff = show_diff(
+            changes, missing=(args.action == 'show-missing'),
+            extra=(args.action == 'show-extra'))
+        status = (0, 1)[has_diff]
 
         sys.exit(status)  # possibly non-zero exit
 
 
 if __name__ == '__main__':
     main()
-# vim: set ts=8 sw=4 sts=4 et ai syn=python:
+# vim: set ts=8 sw=4 sts=4 et ai indentexpr= syn=python:
