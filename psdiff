@@ -278,7 +278,7 @@ class FilteredProcessFormatter(ProcessFormatter):
         # Children of these commands are generally not daemons, skip
         # them:
         elif process.has_parent(include_self=True, cmdline__startswith=(
-                'CRON', 'SCREEN',
+                'CRON', 'SCREEN', '-tmux',
                 '/USR/SBIN/CRON',  # older cron
                 '/usr/sbin/CRON',  # newer cron
                 # Is a daemon, but spawns children of init for extra work.
