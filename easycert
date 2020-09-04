@@ -1,5 +1,5 @@
 #!/bin/sh
-# easycert (part of ossobv/vcutil) // wdoekes/2012-2018 // Public Domain
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2020 // Public Domain
 #
 # Wrapper around openssl to create basic KEY+CSR pairs for submittal to
 # a certificate authority.
@@ -87,18 +87,31 @@ show_certchain() {
         tr -d '\r\n' | sed -e 's/-----END CERTIFICATE-----|/&\n/g' |
     while read cert; do
         out=$(echo "$cert" | tr '|' '\n' |
-            openssl x509 -noout -subject -issuer -hash -issuer_hash)
+            openssl x509 -noout -subject -issuer -subject_hash -issuer_hash \
+              -ext subjectKeyIdentifier,authorityKeyIdentifier)  # ) vimfix
         if test $? -ne 0; then
             echo 'Read failure' >&2
             exit 1
         fi
-        subject=$(echo "$out" | sed -e '1!d;s/^subject= *//')
+        subj=$(echo "$out" | sed -e '1!d;s/^subject= *//')
         issuer=$(echo "$out" | sed -e '2!d;s/^issuer= *//')
-        shash=$(echo "$out" | sed -ne3p)
-        ihash=$(echo "$out" | sed -ne4p)
+        # The subject-hash and issuer-hash are nothing more than a hash of the
+        # certificate subject. This is not unique enough.
+        shash=$(echo "$out" | sed -ne3p)  # just a hash of the CN
+        ihash=$(echo "$out" | sed -ne4p)  # just a hash of the issuer CN
+        # The Subject and Authority key identifiers are unique enough,
+        # but that's an extension, so it's not necessarily provided.
+        # When creating a CSR, you want the subjectKeyIdentifier[=hash]
+        # and authorityKeyIdentifier[=keyid:always].
+        # For ansible 'openssl_csr' you'd add both (without [=...])
+        # to the extended_key_usage list.
+        sid=$(echo "$out" | grep '^X509v3 Subject Key Identifier' -A1 |
+              sed -ne '2s/ *\(.*\)/\1/p')
+        iid=$(echo "$out" | grep '^X509v3 Authority Key Identifier' -A1 |
+              sed -ne '2s/ *keyid:\(.*\)/\1/p')
         test $n -eq 0 && echo 'Certificate chain'
-        echo " $n s: [$shash] $subject"
-        echo "   i: [$ihash] $issuer"
+        echo " $n s: {${sid:-x509v3-subject-key-not-provided}} [$shash] $subj"
+        echo "   i: {${iid:-x509v3-issuer-key--not-provided}} [$ihash] $issuer"
         n=$((n+1))
     done
     )
