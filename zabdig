@@ -59,11 +59,25 @@ class ZDataError(ZInterfaceError):
     pass
 
 
-class ZHost(object):
-    def __init__(self, hostinfo, proxies):
+class ZBaseHost(object):
+    def __init__(self, hostinfo):
         self._hostinfo = hostinfo
-
         self.name = hostinfo['name']
+
+    def get_name(self):
+        return (
+            self.name or  # "visible name"
+            self._hostinfo['host'] or
+            '<ZHost({})>'.format(self._hostinfo['hostid']))
+
+    def __str__(self):
+        return self.get_name()
+
+
+class ZHost(ZBaseHost):
+    def __init__(self, hostinfo, proxies):
+        super(ZHost, self).__init__(hostinfo)
+
         if proxies and hostinfo['proxy_hostid'] != '0':
             self.proxy = proxies[hostinfo['proxy_hostid']]
         else:
@@ -105,14 +119,22 @@ class ZHost(object):
         return list(sorted(set(ret)))
 
     def get_exit_ip4(self):
-        # We populate the host_router inventory with the IPv4 exit-ip.
         return self._hostinfo.get('inventory', {}).get('host_router', None)
 
+    def is_available(self):
+        assert self._hostinfo['available'] in ('0', '1', '2'), self._hostinfo
+        return self._hostinfo['available'] == '1'  # 0=unseen, 2=down
+
+    def is_enabled(self):
+        assert self._hostinfo['status'] in ('0', '1'), self._hostinfo
+        return self._hostinfo['status'] == '0'  # 1 is Disabled
+
     def __str__(self):
-        return (
-            self.name or  # "visible name"
-            self._hostinfo['host'] or
-            '<ZHost({})>'.format(self._hostinfo['hostid']))
+        if not self.is_enabled():
+            return '{}--OFF'.format(self.get_name())
+        elif not self.is_available():
+            return '{}--DOWN'.format(self.get_name())
+        return self.get_name()
 
     def __eq__(self, other):
         return self._hostinfo['hostid'] == other._hostinfo['hostid']
@@ -192,7 +214,9 @@ class ZInterface(object):
 
         hosts = self._zabbix_call(
             'host.get',
-            {'output': ['name', 'host', 'interfaces', 'proxy_hostid'],
+            {'output': [
+                'name', 'host', 'interfaces', 'proxy_hostid',
+                'status', 'available'],
              # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
              #            'status'],
              'selectInventory': ['host_router'],  # or 'extend' for _all_
@@ -217,7 +241,7 @@ class ZInterface(object):
                 {'output': ['name', 'host']})
 
             self._get_proxies = dict(
-                (proxy['proxyid'], ZHost(proxy, None))
+                (proxy['proxyid'], ZBaseHost(proxy))
                 for proxy in proxies)
         return self._get_proxies
 
@@ -280,7 +304,10 @@ def get_from_secret_storage(section):
 
 
 def show_host(host):
-    print('[{}]'.format(host))
+    print('[{}]'.format(host.get_name()))
+    print('Status = {}{}'.format(
+        'ON' if host.is_available() else 'OFF',
+        '' if host.is_enabled() else ' (DISABLED)'))
     print('Address = {}'.format(host.get_zabbix_addr()))
     print('ExternalIP4 = {}'.format(host.get_exit_ip4()))
     print('Proxy = {}'.format(host.proxy or ''))
@@ -290,19 +317,28 @@ def show_host(host):
 if __name__ == '__main__':
     def main():
         parser = argparse.ArgumentParser()
-        parser.add_argument('-g', '--section', dest='section',
-                            help='Use SECTION from ~/.zabbixrc for defaults')
-        parser.add_argument('-a', '--api', dest='api',
-                            help='Zabbix json_rpc API URL, for example: '
-                                 'https://zabbix.example.nl/api_jsonrpc.php')
-        parser.add_argument('-u', '--user', dest='user',
-                            help='API username')
-        parser.add_argument('-p', '--password', dest='password',
-                            help='API password')
-        parser.add_argument('--show', choices=('host',),
-                            help='Show info about host')
-        parser.add_argument('search', nargs='?',
-                            help='Hostname to search for')
+        parser.add_argument(
+            '-g', '--section', dest='section', help=(
+                'Use SECTION from ~/.zabbixrc for defaults'))
+        parser.add_argument(
+            '-A', '--api', dest='api', help=(
+                'Zabbix json_rpc API URL, for example: '
+                'https://zabbix.example.nl/api_jsonrpc.php'))
+        parser.add_argument(
+            '-u', '--user', dest='user', help=(
+                'API username'))
+        parser.add_argument(
+            '-p', '--password', dest='password', help=(
+                'API password'))
+        parser.add_argument(
+            '-a', '--all', action='store_true', help=(
+                'List all hosts even if there are exact matches'))
+        parser.add_argument(
+            '--show', choices=('host',), help=(
+                'Show info about host'))
+        parser.add_argument(
+            'search', nargs='?', help=(
+                'Hostname to search for'))
 
         args = parser.parse_args()
 
@@ -340,11 +376,17 @@ if __name__ == '__main__':
             print('nothing found', file=sys.stderr)
             sys.exit(1)
 
-        exact_hosts = [host for host in hosts if str(host) == args.search]
+        # Unless the user supplied --all, if there is a single match, use that.
+        exact_match = False
+        if not args.all:
+            exact_hosts = [host for host in hosts if str(host) == args.search]
+            if len(exact_hosts) == 1:
+                exact_match = True
+                hosts = exact_hosts
 
-        if not args.show and len(exact_hosts) == 1:  # or len(hosts) == 1:
-            host = exact_hosts[0]  # exact match
-            print(host.get_zabbix_addr_first())
+        # One match, show the IP.
+        if not args.show and exact_match:
+            print(hosts[0].get_zabbix_addr_first())
             sys.exit(0)
 
         for host in sorted(hosts):
