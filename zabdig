@@ -83,6 +83,9 @@ class ZHost(ZBaseHost):
         else:
             self.proxy = None
 
+    def has_ip(self, ip):
+        return (ip in self.get_zabbix_addr_list())
+
     def get_zabbix_addr_first(self):
         addr_list = self.get_zabbix_addr_list()
         if not addr_list:
@@ -93,30 +96,39 @@ class ZHost(ZBaseHost):
         return ', '.join(self.get_zabbix_addr_list())
 
     def get_zabbix_addr_list(self):
-        # type 1 = Zabbix Agent
-        # type 2 = SNMP
-        # type 3 = IPMI
-        # type 4 = JMX
-        ret = []
-        for interface in self._hostinfo['interfaces']:
-            if int(interface['type']) == 1:
-                if int(interface['useip']):
-                    # For zabbix proxies, we see the lo IP only.. super
-                    # annoying when trying to find where it is. Hope
-                    # that someone (ab)used the DNS field for more info.
-                    if interface['ip'] == '127.0.0.1':
-                        if interface['dns']:
-                            ret.append(interface['dns'])
-                        elif self.get_exit_ip4():
-                            ret.append(self.get_exit_ip4())
+        if not hasattr(self, '_zabbix_addr_list'):
+            exit_ip4 = self.get_exit_ip4()
+            ret = []
+            for interface in self._hostinfo['interfaces']:
+                # type 1 = Zabbix Agent
+                # type 2 = SNMP
+                # type 3 = IPMI
+                # type 4 = JMX
+                if int(interface['type']) == 1:
+                    if int(interface['useip']):
+                        # For zabbix proxies, we see the lo IP only.. super
+                        # annoying when trying to find where it is. Hope
+                        # that someone (ab)used the DNS field for more info.
+                        if interface['ip'] == '127.0.0.1':
+                            if interface['dns']:
+                                ret.append(interface['dns'])
+                            elif exit_ip4:
+                                ret.append(exit_ip4)
+                            else:
+                                # 127.0.0.1 anyway..
+                                ret.append(interface['ip'])
                         else:
-                            # 127.0.0.1 anyway..
                             ret.append(interface['ip'])
                     else:
-                        ret.append(interface['ip'])
-                else:
-                    ret.append(interface['dns'])
-        return list(sorted(set(ret)))
+                        ret.append(interface['dns'])
+            self._zabbix_addr_list = list(sorted(set(ret)))
+
+            # Always add exit_ip4; but add it last, as we may not be
+            # able to access anything through it directly.
+            if exit_ip4 and exit_ip4 not in self._zabbix_addr_list:
+                self._zabbix_addr_list.append(exit_ip4)
+
+        return self._zabbix_addr_list
 
     def get_exit_ip4(self):
         return self._hostinfo.get('inventory', {}).get('host_router', None)
@@ -337,6 +349,9 @@ if __name__ == '__main__':
             '--show', choices=('host',), help=(
                 'Show info about host'))
         parser.add_argument(
+            '-x', '--with-ip', help=(
+                'Filter by IP-address'))  # compare 'dig -x'
+        parser.add_argument(
             'search', nargs='?', help=(
                 'Hostname to search for'))
 
@@ -376,9 +391,14 @@ if __name__ == '__main__':
             print('nothing found', file=sys.stderr)
             sys.exit(1)
 
+        # Limit hosts by IP address.
+        # FIXME: perhaps do server-side search if possible here?
+        if args.with_ip:
+            hosts = [host for host in hosts if host.has_ip(args.with_ip)]
+
         # Unless the user supplied --all, if there is a single match, use that.
         exact_match = False
-        if not args.all:
+        if not args.all and not args.with_ip:
             exact_hosts = [host for host in hosts if str(host) == args.search]
             if len(exact_hosts) == 1:
                 exact_match = True
