@@ -90,14 +90,23 @@ class ZHost(object):
                     # For zabbix proxies, we see the lo IP only.. super
                     # annoying when trying to find where it is. Hope
                     # that someone (ab)used the DNS field for more info.
-                    if (interface['dns'] and
-                            interface['ip'] == '127.0.0.1'):
-                        ret.append(interface['dns'])
+                    if interface['ip'] == '127.0.0.1':
+                        if interface['dns']:
+                            ret.append(interface['dns'])
+                        elif self.get_exit_ip4():
+                            ret.append(self.get_exit_ip4())
+                        else:
+                            # 127.0.0.1 anyway..
+                            ret.append(interface['ip'])
                     else:
                         ret.append(interface['ip'])
                 else:
                     ret.append(interface['dns'])
         return list(sorted(set(ret)))
+
+    def get_exit_ip4(self):
+        # We populate the host_router inventory with the IPv4 exit-ip.
+        return self._hostinfo.get('inventory', {}).get('host_router', None)
 
     def __str__(self):
         return (
@@ -186,6 +195,7 @@ class ZInterface(object):
             {'output': ['name', 'host', 'interfaces', 'proxy_hostid'],
              # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
              #            'status'],
+             'selectInventory': ['host_router'],  # or 'extend' for _all_
              'selectInterfaces': 'extend',
              'selectGroups': 'extend',
              'search': {
@@ -269,6 +279,14 @@ def get_from_secret_storage(section):
         return (user, password)
 
 
+def show_host(host):
+    print('[{}]'.format(host))
+    print('Address = {}'.format(host.get_zabbix_addr()))
+    print('ExternalIP4 = {}'.format(host.get_exit_ip4()))
+    print('Proxy = {}'.format(host.proxy or ''))
+    print()
+
+
 if __name__ == '__main__':
     def main():
         parser = argparse.ArgumentParser()
@@ -281,6 +299,8 @@ if __name__ == '__main__':
                             help='API username')
         parser.add_argument('-p', '--password', dest='password',
                             help='API password')
+        parser.add_argument('--show', choices=('host',),
+                            help='Show info about host')
         parser.add_argument('search', nargs='?',
                             help='Hostname to search for')
 
@@ -316,22 +336,25 @@ if __name__ == '__main__':
             print('fetch failed: {}'.format(e), file=sys.stderr)
             sys.exit(1)
 
+        if not hosts:
+            print('nothing found', file=sys.stderr)
+            sys.exit(1)
+
         exact_hosts = [host for host in hosts if str(host) == args.search]
 
-        if len(exact_hosts) == 1:  # or len(hosts) == 1:
+        if not args.show and len(exact_hosts) == 1:  # or len(hosts) == 1:
             host = exact_hosts[0]  # exact match
             print(host.get_zabbix_addr_first())
+            sys.exit(0)
 
-        elif len(hosts):
-            for host in sorted(hosts):
+        for host in sorted(hosts):
+            if args.show == 'host':
+                show_host(host)
+            else:
                 print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
                     name=host,
                     addr=host.get_zabbix_addr(),
                     optional_proxy=(
                         host.proxy and ' ({!s})'.format(host.proxy) or '')))
-
-        else:
-            print('nothing found', file=sys.stderr)
-            sys.exit(1)
 
     main()
