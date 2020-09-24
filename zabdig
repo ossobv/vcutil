@@ -131,6 +131,10 @@ class ZHost(ZBaseHost):
         return self._zabbix_addr_list
 
     def get_exit_ip4(self):
+        if self._hostinfo.get('inventory') == []:
+            print('WARNING: {name} does not have Inventory enabled'.format(
+                name=self.get_name()), file=sys.stderr)
+            return None
         return self._hostinfo.get('inventory', {}).get('host_router', None)
 
     def is_available(self):
