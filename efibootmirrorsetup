@@ -243,14 +243,29 @@ EOF
 make_grub_postinstall() {
     temp=$(mktemp)
     dst=/etc/kernel/postinst.d/zz-grub-install-efibootmirrorsetup
-    cat >"$temp" <<EOF
+    cat >"$temp" <<EOF2
 #!/bin/sh
 # Do not use grub-install --bootloader-id because it breaks the hardcoded path
 # in grub.efi to EFI\\\\ubuntu\\\\grub.cfg
 disk0=$diskbyid0
 disk1=$diskbyid1
-grub-install --efi-directory /boot/efi \$disk0
-grub-install --efi-directory /boot/efi2 \$disk1
+err=
+grub-install --efi-directory /boot/efi \$disk0 || err=1
+grub-install --efi-directory /boot/efi2 \$disk1 || err=1
+if test -n "\$err"; then
+    # Observed "grub-install: error: unknown filesystem." in the wild;
+    # was fixed by a reboot.
+    cat >&2 <<EOF
+
+ERROR: issue with grub-install (unknown filesystem?)
+You may need to reboot first.. but FIRST manually check:
+  efibootmgr -v         # look for File()
+  find /boot/efi        # see if the file is here
+  find /boot/efi2       # .. and here
+They should have the appropriate *.efi files.
+
+EOF
+fi
 binpath=\$(efibootmgr -v | sed -e '/ ubuntu[[:blank:]]/!d;s/.*File(//;s/)\$//')
 if test -z "\$binpath"; then
     binpath='\\EFI\\ubuntu\\shimx64.efi'
@@ -272,7 +287,7 @@ for disk in \$disk0 \$disk1; do
     label=\$(basename "\$disk")
     efibootmgr -q -c -d \$disk -p \$part -w -L "\$label" -l "\$binpath"
 done
-EOF
+EOF2
     if ! cmp -s "$dst" "$temp"; then
         diff --text -Nu "$dst" "$temp" || true
         echo
