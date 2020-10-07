@@ -104,7 +104,7 @@ check_two_disk_args() {
         echo "versus:" >&2
         printf "  /dev/$disk1p%s %s\\n" $partitions1 >&2
         echo >&2
-        echo -n "Is this the right disk? Continue anyway [y/N]? "
+        echo -n "Is this the right disk? Proceed anyway [y/N]? "
         read yn
         if test "$yn" != y; then
             echo "Aborted" >&2
@@ -232,7 +232,7 @@ check_two_efi_partitions() {
         fi
 
         destpart=/dev/$otherdisk$foundpart
-        echo -n "Shall I format the EFI partition for you on $destpart (y/n)? "
+        echo -n "Shall I format the EFI partition for you on $destpart [y/n]? "
         read yn
         if test "$yn" != y; then
             echo "Aborted" >&2
@@ -295,7 +295,7 @@ EOF
     if ! cmp -s /etc/fstab "$temp"; then
         diff -u /etc/fstab "$temp" || true
         echo
-        echo -n "Shall I update fstab for you (y/n)? "
+        echo -n "Shall I update fstab for you [y/n]? "
         read yn
         if test "$yn" != y; then
             echo "Aborted" >&2
@@ -372,7 +372,7 @@ EOF2
     if ! cmp -s "$dst" "$temp"; then
         diff --text -Nu "$dst" "$temp" || true
         echo
-        echo -n "Shall I update $dst for you? (y/n) "
+        echo -n "Shall I update $dst for you? [y/n] "
         read yn
         if test "$yn" != y; then
             echo "Aborted" >&2
