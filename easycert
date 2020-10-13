@@ -53,20 +53,23 @@ openssl_connect() {
 }
 
 run_help() {
-    echo "Usage: $0 -c NL -l Groningen -o OSSO\ B.V. -e info@osso.nl osso.nl"
-    echo "Usage: $0 osso.nl \"/C=NL/L=Groningen/ST=Groningen/\
-O=OSSO B.V./CN=osso.nl/\""
-    echo "Usage: $0 -T www.osso.nl 443"
-    echo "Usage: $0 -T /path/to/chain.pem"
+    cat <<EOF
+Usage: $0 -c NL -l Groningen -o OSSO\\ B.V. -e info@osso.nl osso.nl
+Usage: $0 osso.nl "/C=NL/L=Groningen/ST=Groningen/O=OSSO B.V./CN=osso.nl/"
+Usage: $0 -T www.osso.nl 443"
+Usage: $0 -T /path/to/chain.pem
+
+When showing -T (test) output, the list of certificates should be logically
+ordered. Locally, you want to have the last certificate as a symlink similar
+to /etc/ssl/certs/2e5ac55d.0 (based on the certificate hash).
+EOF
 }
 
 run_test() {
-    echo "The list below should be logically ordered,"
-    echo "and end with a self-signed root certificate."
-    echo "(Although the last one is optional and only "
-    echo "overhead.)"
-    echo
-
+#     cat <<EOF
+# The list below should be logically ordered, and end with a self-signed root
+# certificate. (Although the last one is optional and only echo "overhead.)
+# EOF
     if test $# -eq 1; then
         cat "$1" | show_certchain || exit $?
         echo "Expires in $(cat "$1" | get_expiry_days) days"
@@ -267,30 +270,38 @@ action=generate
 # use builtin getopts (plural!) that handles quoted arguments.
 options=Thc:l:s:o:e:
 temp=$(getopt -o $options -- "$@")
+has_flag=0
 test $? != 0 && exit 1
 eval set -- "$temp"
 while getopts $options opt; do
     case $opt in
     c)
         country="$OPTARG"
+        has_flag=1
         ;;
     l)
         city="$OPTARG"
+        has_flag=1
         ;;
     s)
         state="$OPTARG"
+        has_flag=1
         ;;
     o)
         organisation="$OPTARG"
+        has_flag=1
         ;;
     e)
         email="$OPTARG"
+        has_flag=1
         ;;
     T)
         action=test
+        has_flag=1
         ;;
     h)
         action=help
+        has_flag=1
         ;;
     *)
         exit 1
@@ -311,13 +322,21 @@ test)
     fi
     ;;
 generate)
-    if test $# -lt 1; then
+    case $has_flag-$# in
+    *-0)
         echo "Missing argument. See $0 -h for help." >&2
         exit 1
-    elif test $# -gt 2; then
+        ;;
+    0-1)
+        echo "Did you forget -T to test?" >&2
+        exit 1
+        ;;
+    1-1|*-2)
+        ;;
+    *)
         echo "Action generate takes at most two arguments!" >&2
         exit 1
-    fi
+    esac
     cn="$1"
     test -n "$2" && subject="$2"
     test -z "$2" && subject="/C=$country/L=$city/ST=$state/O=$organisation/\
