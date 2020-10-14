@@ -9,7 +9,7 @@ Build-Depends-Indep: python:any, python3:any, dh-python
 Package: vcutil
 Architecture: all
 Depends: ${misc:Depends}
-Suggests: python, python3
+Suggests: python, python3, python-is-python3
 Description: OSSO version control and sysadmin utilities
  The vcutil utilities contain various small utilities making our lives
  easier.
