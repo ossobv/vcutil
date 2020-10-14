@@ -1,3 +1,29 @@
+vcutil (1.23) stable; urgency=low
+
+  * Removed:
+    - salt-highstate-pp: Nobody uses this.
+    - sh-c: Well, not actually removed, but it's not used by these tools
+      anymore. We suggest python-is-python3 instead;
+    - wsvreader.py: This shouldn't have been in this repo in the first place.
+
+  * Improvements:
+    - easycert: Highlight the most common usage, which is -T
+    - easycert: The subject/issuer-hash values are useless; use X509v3 exts
+    - efibootmirrorsetup: Add source documentation and local variables
+    - efibootmirrorsetup: Allow continuing on disks with different partitions
+    - efibootmirrorsetup: Fix so it works with nvme disks as well
+    - efibootmirrorsetup: Improve auto-detection and keeping paritions sane
+    - efibootmirrorsetup: Improve placement of boot dir in fstab
+    - efibootmirrorsetup: Warn/explain what happens when grub-install errors
+    - psdiff: Add tmux to list of ignored daemons
+    - zabdig: Add --OFF/--DOWN status to listing; add -a for --all results
+    - zabdig: Add -x/--with-ip option
+    - zabdig: Add zssh tip
+    - zabdig: Don't die, but warn, when inventory is not set to Auto
+    - zabdig: Read the host_router inventory if available
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 14 Oct 2020 17:56:36 +0200
+
 vcutil (1.22) stable; urgency=low
 
   * Improvements:
