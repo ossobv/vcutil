@@ -122,6 +122,60 @@ lines() {
     fi
 }
 
+check_efi_partition() {
+    local action=$1
+    local disk=$2
+    local partnum=$3
+    local diskp
+    local dev
+    local vals
+    local has_vfat
+    local has_efidos
+    local has_efigpt
+
+    test "${disk%[0-9]}" = "${disk}" && diskp=$disk || diskp=${disk}p
+    dev=/dev/$diskp$partnum
+    vals=$(blkid -o export "$dev") || return
+    has_vfat=$(echo "$vals" | grep '^TYPE=vfat$' | wc -l)
+    has_efidos=$(fdisk -lo device,type "/dev/$disk" 2>/dev/null |
+        grep "^$dev[[:blank:]]\+EFI System" | wc -l)
+    has_efigpt=$(lsblk -no PARTTYPE "$dev" 2>/dev/null |
+        grep c12a7328-f81f-11d2-ba4b-00a0c93ec93b | wc -l)
+
+    case $action in
+    scan)
+        if test $((has_vfat + has_efidos + has_efigpt)) -ne 0; then
+            echo "HINT: $dev is possibly an EFI partition" >&2
+            test $has_vfat -ne 0 && echo "  - it has TYPE=vfat" >&2
+            test $has_efidos -ne 0 &&
+                echo "  - it has the EFI dos partition type (fdisk t)" >&2
+            test $has_efigpt -ne 0 &&
+                echo "  - it has the EFI partition GUID" >&2
+            echo "\
+If this _is_ an EFI partition, please use fatlabel(1) and label it:
+  fatlabel '$dev' 'EFI'
+" >&2
+        fi
+        ;;
+    verify)
+        if test $((has_vfat + has_efidos + has_efigpt)) -ne 3; then
+            echo "WARNING: $dev lacks some EFI characteristics" >&2
+            test $has_vfat -eq 0 && echo "- it lacks TYPE=vfat" >&2
+            test $has_efidos -eq 0 &&
+                echo "- it lacks the EFI dos partition type (fdisk t)" >&2
+            test $has_efigpt -eq 0 &&
+                echo "- it lacks the EFI partition GUID \
+(sgdisk --typecode=$partnum:ef00 /dev/$disk)" >&2
+            echo >&2
+        fi
+        ;;
+    *)
+        echo "Programming error: $action" >&2
+        exit 1
+        ;;
+    esac
+}
+
 locate_efi_partitions() {
     # Example pre-condition:
     #   $disk0p     = "sdb"
@@ -132,14 +186,17 @@ locate_efi_partitions() {
     #   sdb 1 <uuid>
     local found=0
     local disk
+    local diskp
     local partnum
+    local dev
     local vals
-    for disk in $disk0p $disk1p; do
+    for disk in $disk0 $disk1; do
         for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
+            test "${disk%[0-9]}" = "${disk}" && diskp=$disk || diskp=${disk}p
+            dev=/dev/$diskp$partnum
             vals=$(
-                blkid -t LABEL=EFI -o export "/dev/$disk$partnum" ||
-                blkid -t PARTLABEL='EFI System Partition' -o export \
-                    "/dev/$disk$partnum") ||
+                blkid -t LABEL=EFI -o export "$dev" ||
+                blkid -t PARTLABEL='EFI System Partition' -o export "$dev") ||
                 continue
             if echo "$vals" | grep -qE \
                     '^LABEL=EFI$|^PARTLABEL=EFI\\ System\\ Partition$' &&
@@ -151,17 +208,9 @@ locate_efi_partitions() {
         done
     done
     if test $found -eq 0; then
-        for disk in $disk0p $disk1p; do
+        for disk in $disk0 $disk1; do
             for partnum in $(echo "$partitions" | sed -e 's/ .*//'); do
-                vals=$(blkid -o export "/dev/$disk$partnum") ||
-                    continue
-                if echo "$vals" | grep -q '^TYPE=vfat$'; then
-                    echo "\
-WARNING: Found TYPE=vfat partition /dev/$disk$partnum without 'EFI' LABEL
-or 'EFI System Partition' PARTLABEL.
-  If that is an EFI partition, perhaps use fatlabel(1) to set it.
-" >&2
-                fi
+                check_efi_partition scan "$disk" "$partnum"
             done
         done
     fi
@@ -266,6 +315,9 @@ check_two_efi_partitions() {
         echo "See blkid(1). Use uuidgen(1) to get fresh UUIDs" >&2
         exit 1
     fi
+
+    check_efi_partition verify "$disk0" "$part0"
+    check_efi_partition verify "$disk1" "$part1"
 }
 
 check_and_fix_fstab() {
