@@ -42,7 +42,7 @@
 # be different, for starters depending on whether secure boot is
 # enabled or not.
 #
-# This script has been tested on Ubuntu bionic (March 2020).
+# This script has been tested on Ubuntu bionic and focal (March-Oct 2020).
 
 set -eu
 export LC_ALL=C
@@ -281,16 +281,16 @@ check_and_fix_fstab() {
     local temp=$(mktemp)
     mkdir -p /boot/efi /boot/efi2
 
-    cat >>"$temp" <<EOF
-# EFI: $diskbyid0-part$part0 ($disk0p$part0)
-PARTUUID=$uuid0 /boot/efi vfat nofail,x-systemd.device-timeout=1 0 1
-# EFI: $diskbyid1-part$part1 ($disk1p$part1)
-PARTUUID=$uuid1 /boot/efi2 vfat nofail,x-systemd.device-timeout=1 0 1
-EOF
     cat /etc/fstab | sed -e '
         /^# EFI:/d
         / \/boot\/efi[0-9]* /d
     ' >>"$temp"
+    cat >>"$temp" <<EOF
+# EFI: $diskbyid0-part$part0 ($disk0p$part0)
+PARTUUID=$uuid0 /boot/efi vfat nofail,x-systemd.device-timeout=15 0 2
+# EFI: $diskbyid1-part$part1 ($disk1p$part1)
+PARTUUID=$uuid1 /boot/efi2 vfat nofail,x-systemd.device-timeout=15 0 2
+EOF
 
     if ! cmp -s /etc/fstab "$temp"; then
         diff -u /etc/fstab "$temp" || true
