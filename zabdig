@@ -33,6 +33,18 @@
 #
 # See zabdig --help for more info.
 #
+# Tip /usr/local/bin/zssh:
+#
+#     #!/bin/sh
+#     host="$1"; shift
+#     ip=$(zabdig "$host")
+#     if ! echo "$ip" | grep -qE '^([0-9]+[.]){3}[0-9]+$'; then
+#         echo "Bad IP: $ip" >&2
+#         exit 1
+#     fi
+#     echo "(connecting to $ip ...)" >&2
+#     exec ssh -l COMMON_USER "$ip" "$@"
+#
 # Requirements: requests (python3-requests)
 #
 import argparse
