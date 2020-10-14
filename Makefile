@@ -61,7 +61,6 @@ OTHER = \
 	tcpdump247 \
 	tcpdump247.default \
 	udiff.selftest \
-	wsvreader.py
 
 .PHONY: all clean deb hashes make_has_all_files
 all: hashes make_has_all_files
@@ -70,8 +69,6 @@ clean:
 	$(MAKE) -f udiff.selftest clean
 
 test:
-	python2 -m unittest wsvreader
-	python3 -m unittest wsvreader
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean
 
 deb:
