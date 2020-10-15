@@ -43,7 +43,8 @@
 #         exit 1
 #     fi
 #     echo "(connecting to $ip ...)" >&2
-#     exec ssh -l COMMON_USER "$ip" "$@"
+#     # (set -l <USERNAME> before "$@" on ssh before version 8)
+#     exec ssh "$ip" "$@" -l COMMON_USER
 #
 # Requirements: requests (python3-requests)
 #
