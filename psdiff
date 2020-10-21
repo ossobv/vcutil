@@ -745,4 +745,4 @@ def process(args, old_output, formatter_class):
 
 if __name__ == '__main__':
     main()
-# vim: set ts=8 sw=4 sts=4 et ai indentexpr= syn=python:
+# vim: set ts=8 sw=4 sts=4 et ai:
