@@ -283,6 +283,8 @@ class FilteredProcessFormatter(ProcessFormatter):
                 '/usr/sbin/CRON',  # newer cron
                 # Is a daemon, but spawns children of init for extra work.
                 '/usr/bin/python /usr/bin/salt-minion',
+                # Comes and goes.
+                '/usr/libexec/fwupd/fwupd',
                 # User systemd comes and goes as it pleases with (sd-pam).
                 '/lib/systemd/systemd --user')):
             return False
