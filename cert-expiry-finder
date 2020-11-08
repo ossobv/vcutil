@@ -27,9 +27,10 @@ enum_all_certs() {
         enum_dovecot_certs
         enum_haproxy_certs
         enum_nginx_certs
+        enum_openvpn_certs
         enum_postfix_certs
         enum_ser_certs
-    ) | sort -u
+    ) | LC_ALL=C sort -u
 }
 
 enum_apache2_certs() {
@@ -37,19 +38,20 @@ enum_apache2_certs() {
          /etc/apache2/mods-enabled/ssl.conf \
          /etc/apache2/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
-    xargs -0 sed -ne '
+    xargs --no-run-if-empty -0 sed -ne '
         s/^[[:blank:]]*SSLCertificateFile[[:blank:]]\+\([^[:blank:]]*\).*/\1/p'
 }
 
 enum_dovecot_certs() {
     find /etc/dovecot/ '(' -type f -o -type l ')' '!' -name '.*' \
         -print0 2>/dev/null |
-    xargs -0 sed -ne '
+    xargs --no-run-if-empty -0 sed -ne '
         s/^ssl_cert_file[[:blank:]]*=[[:blank:]]*\([^[:blank:]]\+\).*/\1/p'
 }
 
 enum_haproxy_certs() {
-    find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null | xargs -0 sed -e '
+    find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null |
+    xargs --no-run-if-empty -0 sed -e '
         /^[[:blank:]]*bind[[:blank:]].*[[:blank:]]ssl\($\|[[:blank:]]\)/!d
         s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
     sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//' | while read f; do
@@ -61,8 +63,17 @@ enum_nginx_certs() {
          /etc/nginx/conf.d/ \
          /etc/nginx/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
-    xargs -0 sed -ne '
+    xargs --no-run-if-empty -0 sed -ne '
         s/^[[:blank:]]*ssl_certificate[[:blank:]]\+\([^[:blank:]]*\).*;.*/\1/p'
+}
+
+enum_openvpn_certs() {
+    find /etc/openvpn/ \
+         /etc/openvpn/client \
+         /etc/openvpn/server \
+        -maxdepth 1 -name '*.conf' -print0 2>/dev/null |
+    xargs --no-run-if-empty -0 grep -E '^(ca|cert)[[:blank:]]' /dev/null |
+    sed -e 's/[^\/]*.conf:\(ca\|cert\)[[:blank:]]\+//'
 }
 
 enum_postfix_certs() {
@@ -76,13 +87,13 @@ enum_ser_certs() {
     # tls_certificate = XYZ
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
-    xargs -0 sed -ne "
+    xargs --no-run-if-empty -0 sed -ne "
         s/^$w*tls_certificate$w*=$w*\"\($W*\)\".*/\1/p"
 
     # modparam("tls", "certificate", "XYZ")
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
-    xargs -0 sed -ne "
+    xargs --no-run-if-empty -0 sed -ne "
         s/^$w*modparam(\"tls\(_mgm\)\?\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\2/p"
 }
 
