@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2020
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2021
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -19,7 +19,7 @@
 # Amend the PATH so we're more likely to.
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-global_t0=`date +%s`  # cache the "now" value
+global_t0=$(date +%s)  # cache the "now" value
 
 enum_all_certs() {
     (
@@ -68,12 +68,17 @@ enum_nginx_certs() {
 }
 
 enum_openvpn_certs() {
-    find /etc/openvpn/ \
-         /etc/openvpn/client \
-         /etc/openvpn/server \
-        -maxdepth 1 -name '*.conf' -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 grep -E '^(ca|cert)[[:blank:]]' /dev/null |
-    sed -e 's/[^\/]*.conf:\(ca\|cert\)[[:blank:]]\+//'
+    find /etc/openvpn /etc/openvpn-nl -maxdepth 2 -name '*.conf' 2>/dev/null |
+    while read -r f; do
+        certs=$(cat "$f" | sed -ne "
+            s/^[[:blank:]]*\\(ca\\|cert\\|crl-verify\\)[[:blank:]]\\+\
+\\([^[:blank:]#]*\\).*/\\2/p")
+        fpath=${f%/*}
+        for cert in $certs; do
+            test "${cert#/}" = "${cert}" && cert=$fpath/$cert
+            echo "$cert"
+        done
+    done
 }
 
 enum_postfix_certs() {
@@ -99,7 +104,7 @@ enum_ser_certs() {
 
 list_cert_expiry_days() {
     for file in "$@"; do
-        expiry=`expiry_after "$file"`
+        expiry=$(expiry_after "$file")
         if test -n "$expiry"; then
             expiry=$((expiry / 86400))
             printf '%-7d %s\n' $expiry "$file"
@@ -111,17 +116,25 @@ list_cert_expiry_days() {
 
 expiry_after() {
     file=$1
-    date=`openssl x509 -in "$file" -noout -dates |
-          sed -e '/notAfter=/!d;s/.*=//'`
-    tn=`date --date="$date" +%s`
+    case $file in
+    *.crl)
+        date=$(openssl crl -in "$file" -noout -nextupdate |
+               sed -e '/nextUpdate=/!d;s/.*=//')
+        ;;
+    *)
+        date=$(openssl x509 -in "$file" -noout -dates |
+               sed -e '/notAfter=/!d;s/.*=//')
+        ;;
+    esac
+    tn=$(date --date="$date" +%s)
     td=$((tn - global_t0))
     echo $td
 }
 
 if test $# -eq 0; then
-    list_cert_expiry_days `enum_all_certs`
+    list_cert_expiry_days $(enum_all_certs)
 elif test $# -eq 1 && test "$1" = "--min"; then
-    list_cert_expiry_days `enum_all_certs` |
+    list_cert_expiry_days $(enum_all_certs) |
     awk '{if(n==""||$1<n){n=$1}}END{if(n!=""){print n}else{exit 1}}'
 else
     cat >&2 << __EOF__
