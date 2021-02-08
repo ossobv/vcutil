@@ -1,3 +1,13 @@
+vcutil (1.24) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Also scan openvpn CA/CRT/CRL files
+    - psdiff: Ignore fwupd
+    - psdiff: Fix vim modeline
+    - zabdig: Update zssh comment
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Mon, 08 Feb 2021 17:58:06 +0100
+
 vcutil (1.23) stable; urgency=low
 
   * Removed:
