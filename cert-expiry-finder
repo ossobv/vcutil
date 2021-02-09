@@ -117,7 +117,7 @@ list_cert_expiry_days() {
 expiry_after() {
     file=$1
     case $file in
-    *.crl)
+    *.crl|*/crl.pem)
         date=$(openssl crl -in "$file" -noout -nextupdate |
                sed -e '/nextUpdate=/!d;s/.*=//')
         ;;
