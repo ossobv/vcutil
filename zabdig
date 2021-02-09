@@ -37,14 +37,22 @@
 #
 #     #!/bin/sh
 #     host="$1"; shift
+#
 #     ip=$(zabdig "$host")
 #     if ! echo "$ip" | grep -qE '^([0-9]+[.]){3}[0-9]+$'; then
 #         echo "Bad IP: $ip" >&2
 #         exit 1
 #     fi
+#
+#     # Add -lSOMEUSER at tail, unless there is a "-l" somewhere already.
+#     add_min_l_arg=-lSOMEUSER  # optional..
+#     for arg in "$@"; do
+#         test "${arg#-l}" != "$arg" && add_min_l_arg= && break
+#     done
+#
 #     echo "(connecting to $ip ...)" >&2
-#     # (set -l <USERNAME> before "$@" on ssh before version 8)
-#     exec ssh "$ip" "$@" -l COMMON_USER
+#     # (move $add_min_l_arg to the left of "$@" on ssh before version 8)
+#     exec ssh "$ip" "$@" $add_min_l_arg
 #
 # Requirements: requests (python3-requests)
 #
