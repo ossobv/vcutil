@@ -201,7 +201,7 @@ locate_efi_partitions() {
             if echo "$vals" | grep -qE \
                     '^LABEL=EFI$|^PARTLABEL=EFI\\ System\\ Partition$' &&
                     echo "$vals" | grep -q '^TYPE=vfat$'; then
-                echo "$disk $partnum $(
+                echo "$diskp $partnum $(
                     echo "$vals" | sed -ne 's/^PARTUUID=//p')"
                 found=$((found+1))
             fi
@@ -271,10 +271,10 @@ check_two_efi_partitions() {
     if test $located_n -eq 1; then
         founddisk=$(echo "$located" | cut -d' ' -f1)
         foundpart=$(echo "$located" | cut -d' ' -f2)
-        if test $founddisk = $disk0; then
-            otherdisk=$disk1
-        elif test $founddisk = $disk1; then
-            otherdisk=$disk0
+        if test $founddisk = $disk0p; then
+            otherdisk=$disk1p
+        elif test $founddisk = $disk1p; then
+            otherdisk=$disk0p
         else
             echo "Unexpected founddisk $founddisk" >&2
             exit 1
