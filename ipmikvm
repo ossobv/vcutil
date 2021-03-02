@@ -1,5 +1,5 @@
 #!/bin/sh
-# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2020 // Public Domain
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2021 // Public Domain
 #
 # A wrapper to call the SuperMicro iKVM console bypassing Java browser
 # plugins.
@@ -53,6 +53,10 @@ usage() {
     exit ${1:-1}
 }
 
+as_http() {
+    echo "$1" | sed -e 's#^https://\([^:/]*\):443#http://\1#;s#^https:#http:#'
+}
+
 while getopts 'hu:P:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
@@ -97,6 +101,7 @@ get_launch_jnlp() {
     passes="$3"
 
     url="https://$management_ip"
+    local_append=''
     temp=$(mktemp)
 
     until test -z "$users"; do
@@ -109,8 +114,9 @@ get_launch_jnlp() {
             echo "unexpected login page on address '$management_ip': $data" >&2
             data=
             if test "${url#https:}" != "$url"; then
-                url="http:${url#https:}"
+                url=$(as_http "$url")
                 echo "retrying without ssl on $url" >&2
+                local_append='<!-- DISABLED_SSL -->'
                 data=$(curl --fail -LksS --cookie-jar "$temp" "$url")
                 if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
                     echo "sad times" >&2
@@ -167,7 +173,7 @@ get_launch_jnlp() {
         fi
     fi
     rm "$temp"
-    test -n "$data" && echo "$data"
+    test -n "$data" && echo "$data$local_append"
 }
 # SYNOPSIS: get_launch_jnlp 10.x.x.x USERNAME PASSWORD
 
@@ -220,6 +226,9 @@ install_ikvm_application() {
     set -e
     codebase=$(
       echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//')
+    if echo "$launch_jnlp" | grep -q DISABLED_SSL; then
+        codebase=$(as_http "$codebase")
+    fi
     jar=$(get_jar "$launch_jnlp")
     case "$(uname -s)" in
         Linux) libprefix=liblinux;;
