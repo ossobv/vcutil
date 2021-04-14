@@ -1,0 +1,182 @@
+#!/bin/sh -eu
+# wvpn (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
+#
+# Helps out when you have a bunch of openvpn clients on your machine.
+#
+# Requires that you have consistent naming:
+#   /etc/openvpn/client/myvpn.conf - where you use 'dev vpn-myvpn'
+#
+# All interfaces on your machine that start with "vpn-" are assumed to be
+# openvpn tun/tap devices.
+#
+# Example usage:
+#
+#   $ wvpn
+#   vpn-myvpn         192.168.33.129    up
+#   vpn-system2       10.199.197.1      up-after-reconnect
+#
+#   $ wvpn myvpn
+#   vpn-myvpn         192.168.33.129    up
+#
+#   $ wvpn :myvpn
+#   (stops myvpn)
+#
+#   $ wvpn
+#   vpn-system2       10.199.197.1      up
+#
+#   $ wvpn :
+#   (stops all vpns)
+
+
+_get_gateway() {
+    local iproute="$(ip route show dev "$1" 2>/dev/null)"
+    test $? -ne 0 && exit 1
+    local gwip="$(
+        echo "$iproute" | sed -e '/ via /!d;s/.* via //' | sort -u)"
+    if echo "$iproute" | sed '/ proto kernel /!d;s/ .*//' | grep -q /; then
+        echo $gwip
+    else
+        echo "$iproute" | sed -e "/^${gwip%.*}.[0-9]* /!d;s/ .*//" | head -n1
+    fi
+}
+
+_test_gateway() {
+    local gwip="$1"
+    test -n "$gwip" && ping -q -c1 -w1 "$gwip" >/dev/null && return
+    false
+}
+
+_list_vpn_interfaces() {
+    ip link | sed -ne 's/^[0-9]*: *\(vpn-[^:]*\):.*/\1/p' | LC_ALL=C sort -V
+}
+
+_interface_to_service() {
+    local ifname="$1"
+    local openvpn_client_conf=${ifname#vpn-}  # drop "vpn-" from ifname
+    echo openvpn-client@$openvpn_client_conf
+}
+
+_restart_interface() {
+    local ifname="$1"
+    local service="$(_interface_to_service "$ifname")"
+    echo "(restarting $service)" >&2
+    sudo systemctl --quiet stop "$service" \
+        >/dev/null 2>&1 </dev/null || true
+    sudo systemctl --quiet start "$service"
+    _wait_for_interface "$ifname"
+}
+
+_stop_interface() {
+    local ifname="$1"
+    local service="$(_interface_to_service "$ifname")"
+    sudo systemctl --quiet stop "$service" \
+        >/dev/null 2>&1 </dev/null || true
+}
+
+_wait_for_interface() {
+    local ifname="$1"
+    local gwip
+    for i in 1 2 3 4 5; do
+        gwip=$(_get_gateway "$ifname")
+        test -n "$gwip" && break
+        sleep 1
+    done
+    if test -z "$gwip"; then
+        echo "$ifname: no gateway received" >&2
+        false
+    elif ! _test_gateway "$gwip"; then
+        echo "$ifname: no ping on $gwip" >&2
+        false
+    else
+        true
+    fi
+}
+
+_test_and_list() {
+    local ifnames="$1"
+    local ifname
+    local gwip
+    for ifname in $ifnames; do
+        gwip=$(_get_gateway "$ifname")
+        if _test_gateway "$gwip"; then
+            printf '%-16s  %-16s  %s\n' "$ifname" "$gwip" "up"
+        elif _restart_interface "$ifname"; then
+            gwip=$(_get_gateway "$ifname")
+            printf '%-16s  %-16s  %s\n' "$ifname" "$gwip" "up-after-reconnect"
+        else
+            printf '%-16s  %-16s  %s\n' "$ifname" "$gwip" "DOWN"
+        fi
+    done
+}
+
+_alias_to_interfaces() {
+    local alias="$(echo "$1" | head -n1 | grep '^[A-Za-z_][A-Za-z0-9@_-]*$')"
+    if test "$1" != "$alias"; then
+        echo "$0: bad alias/interface name: '$1'" >&2
+        exit 1
+    fi
+    # If the name contains only [A-Za-z0-9_] it might be an alias.
+    if test "$alias" = "${alias#*-}" -a "$alias" = "${alias#*@}"; then
+        local value="$(eval echo "\${${alias}}" 2>/dev/null || true)"
+        local arg
+        for arg in $(test -n "$value" && echo $value || echo $alias); do
+            test "$arg" = "${arg#vpn-}" && echo "vpn-$arg" || echo "$arg"
+        done
+    else
+        test "$alias" = "${alias#vpn-}" && echo "vpn-$alias" || echo "$alias"
+    fi
+}
+
+_ensure_started() {
+    _test_and_list "$(_alias_to_interfaces "$1")"
+}
+
+_ensure_stopped() {
+    local ifnames="$(_alias_to_interfaces "$1")"
+    local ifname
+    test -z "$ifnames" && ifnames=$(_list_vpn_interfaces)  # empty = all
+    for ifname in $ifnames; do
+        _stop_interface "$ifname"
+    done
+}
+
+list() {
+    _test_and_list "$(_list_vpn_interfaces)"
+}
+
+# Use local config to define groups, like:
+# bestvpn='vpn-system1 vpn-system2'
+local_config=$HOME/.config/wvpn
+test -f "$local_config" && . "$local_config"
+
+if test $# -eq 0; then
+    list
+elif test "$1" = "-h" -o "$1" = "--help"; then
+    cat << EOF
+wvpn lists openvpn connectivity and allows for quick restarts
+
+wvpn                    lists currently connected vpns (reconnects if needed)
+wvpn system1 system2    ensures that vpn-system1 and vpn-system2 are up
+wvpn mygroup            same as previous, if mygroup='vpn-system1 vpn-system2'
+wvpn :system1 :system2  ensures that vpn-system1 and vpn-system2 are down
+wvpn :                  stops all
+
+The config in $local_config is read before starting.
+There you can define aliases, like mygroup='vpn-system1 vpn-system2' and
+refer to both using the 'mygroup' name.
+
+(You might also override _interface_to_service() if you're not starting
+your openvpn daemons as openvpn-client@IFNAME_WITHOUT_VPN_PREFIX.)
+EOF
+else
+    for arg in "$@"; do
+        # Does not start with a colon?
+        if test "$arg" = "${arg#:}"; then
+            _ensure_started "$arg"
+        else
+            _ensure_stopped "${arg#:}"
+        fi
+    done
+fi
+
+# vim: set ts=8 sw=4 sts=4 et ai:

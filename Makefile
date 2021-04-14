@@ -49,6 +49,7 @@ BINS = \
 	wtimediff \
 	wtimestamp \
 	wtrunc \
+	wvpn \
 	zabdig
 
 OTHER = \
