@@ -33,10 +33,15 @@ _get_gateway() {
     test $? -ne 0 && exit 1
     local gwip="$(
         echo "$iproute" | sed -e '/ via /!d;s/.* via //' | sort -u)"
-    if echo "$iproute" | sed '/ proto kernel /!d;s/ .*//' | grep -q /; then
+    local protokernel="$(echo "$iproute" | sed '/ proto kernel /!d;s/ .*//')"
+    if test -n "$gwip" && echo "$protokernel" | grep -q /; then
         echo $gwip
-    else
-        echo "$iproute" | sed -e "/^${gwip%.*}.[0-9]* /!d;s/ .*//" | head -n1
+    elif echo "$iproute" | sed -e "/^${gwip%.*}.[0-9]* /!d;s/ .*//" |
+            head -n1 | grep ''; then
+        true
+    elif test -n "$protokernel"; then
+        local net="$(echo "$protokernel" | head -n1)"
+        echo "${net%.*}.1"
     fi
 }
 
