@@ -1,3 +1,17 @@
+vcutil (1.25) stable; urgency=low
+
+  * Added:
+    - wvpn: Script to make managing multiple openvpn connections easier
+
+  * Improvements:
+    - cert-expiry-finder: OpenVPN CRLs are commonly called crl.pem
+    - efibootmirrorsetup: Fix bug with nvme drives
+    - ipmikvm: Better handling of deprecated SSL (by falling back to http)
+    - ipmikvm: Fix support for iKVM__V1.69.42.0x0 which adds a certificate arg
+    - zabdig: Expand zssh tip
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 16 Apr 2021 14:13:42 +0200
+
 vcutil (1.24) stable; urgency=low
 
   * Improvements:
