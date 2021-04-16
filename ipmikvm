@@ -206,11 +206,21 @@ get_jar() {
 # SYNOPSIS: get_jar JNLP_DATA
 
 get_arguments() {
+    certarg=$(echo "$1" | tr '\n' '|' | sed -e '
+      /-----BEGIN CERTIFICATE/!d
+      s/.*<argument>\(-----BEGIN CERTIFICATE[^<]*\)<.*/\1/
+      '"s/['\"$]//g"';s/|/${LF}/g')
     echo "$1" |
       sed -e '/<argument>/!d;s#.*<argument>\([^<]*\)</argument>.*#\1#' |
-      sed -e 's/^$/./g'  # empty args would be skipped..
+      sed -e "s/['\"$]//g;s/.*/'&'/" |
+      sed -e "s!^'[[:blank:]]*<argument>-----BEGIN.*!\"$certarg\"!g"
 }
-# SYNOPSIS: get_arguments JNLP_DATA  # returns LF-separated args
+# SYNOPSIS: get_arguments JNLP_DATA  # dumps quotes args to stdout
+# DESCRIPTION: fetches every <argument>...</argument> from the data
+#   and echoes them surrounded by quotes, so <argument>1</argument>
+#   becomes '1'. For the optional certificate multiline argument, an
+#   ${LF} variable is added, so we get a linefeed in the eval.
+# USAGE: LF=$'\n'; eval set -- $(get_arguments "$JNLP_DATA")
 
 exec_ikvm() {
     jar="$1"; shift
@@ -267,4 +277,9 @@ test -z "$JNLP" && echo "Failed to get launch.jnlp" >&2 && exit 1
 JAR=$(get_ikvm_jar "$JNLP" "$APP_CACHE_DIR")
 test -z "$JAR" && echo "Failed to get iKVM*.jar" >&2 && exit 1
 
-exec_ikvm "$JAR" $(get_arguments "$JNLP")
+# Load quoted arguments (including multiline args)
+LF='
+'
+eval set -- $(get_arguments "$JNLP")
+
+exec_ikvm "$JAR" "$@"
