@@ -239,28 +239,32 @@ class FilteredProcessFormatter(ProcessFormatter):
             process.cmdline = process.cmdline.split(' [', 1)[0]
 
         elif process.cmdline.startswith((
+                '/usr/bin/containerd-shim-runc-v2 ',
                 'containerd-shim ',
                 'docker-containerd-shim ')):
             # Docker 18+ instances have fluctuating arguments:
+            #   /usr/bin/containerd-shim-runc-v2 -namespace moby -id <ID> ...
             #   containerd-shim ... -workdir /var/...containerd/<ID> ...
             args = process.cmdline.split()
-            try:
+            if '-id' in args:
+                # -id [ID]
+                pos = args.index('-id') + 1
+                if pos < len(args):
+                    args[pos] = '<ID>'
+            if '-workdir' in args:
                 # -workdir [PATH]
-                workdir_pos = args.index('-workdir') + 1
                 # /var/lib/containerd/io.containerd.runtime.v1.linux/moby/<ID>
-                args[workdir_pos] = (
-                    args[workdir_pos].rsplit('/', 1)[0] + '/<ID>')
-            except ValueError:
+                pos = args.index('-workdir') + 1
+                if pos < len(args):
+                    args[pos] = args[pos].rsplit('/', 1)[0] + '/<ID>'
+            if len(args) == 4 and args[3] == 'docker-runc':
                 # Docker 17- instances have fluctuating arguments:
                 #   docker-containerd-shim <ID> /var/...containerd/<ID> \
                 #     docker-runc
-                args = process.cmdline.split()
-                if len(args) == 4 and args[3] == 'docker-runc':
-                    args[1] = '<ID>'
-                    args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
-                    process.cmdline = ' '.join(args)
-            else:
-                process.cmdline = ' '.join(args)
+                args[1] = '<ID>'
+                args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
+
+            process.cmdline = ' '.join(args)
 
     def include(self, process):
         # Ignore kernel threads.
