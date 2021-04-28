@@ -26,6 +26,19 @@
 #
 #   $ wvpn :
 #   (stops all vpns)
+#
+# If you run your openvpn-client@%i.service jobs as --user, you can
+# alter ~/.config/wvpn to this:
+#
+#   _service_start() { systemctl --user --quiet start "$1"; }
+#   _service_stop() { systemctl --user --quiet stop "$1"; }
+#
+# If you have clusters of VPNs you want started together, you can put
+# this in ~/.config/wvpn:
+#
+#   mycluster='myvpn1 myvpn2'
+#
+# Starting or stopping mycluster will then do both myvpn1 and myvpn2.
 
 
 _get_gateway() {
@@ -61,21 +74,27 @@ _interface_to_service() {
     echo openvpn-client@$openvpn_client_conf
 }
 
+_service_start() {
+    sudo systemctl --quiet start "$1"
+}
+
+_service_stop() {
+    sudo systemctl --quiet stop "$1" >/dev/null 2>&1 </dev/null
+}
+
 _restart_interface() {
     local ifname="$1"
     local service="$(_interface_to_service "$ifname")"
     echo "(restarting $service)" >&2
-    sudo systemctl --quiet stop "$service" \
-        >/dev/null 2>&1 </dev/null || true
-    sudo systemctl --quiet start "$service"
+    _service_stop "$service" || true
+    _service_start "$service"
     _wait_for_interface "$ifname"
 }
 
 _stop_interface() {
     local ifname="$1"
     local service="$(_interface_to_service "$ifname")"
-    sudo systemctl --quiet stop "$service" \
-        >/dev/null 2>&1 </dev/null || true
+    _service_stop "$service" || true
 }
 
 _wait_for_interface() {
