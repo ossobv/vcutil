@@ -64,8 +64,13 @@ _test_gateway() {
     false
 }
 
-_list_vpn_interfaces() {
-    ip link | sed -ne 's/^[0-9]*: *\(vpn-[^:]*\):.*/\1/p' | LC_ALL=C sort -V
+_list_found_vpn_interfaces() {
+    ip link | sed -ne 's/^[0-9]*: *\(vpn-[^:]*\):.*/\1/p'
+}
+
+_list_expected_vpn_interfaces() {
+    ( _list_found_vpn_interfaces; _service_list | _service_to_interface ) |
+        LC_ALL=C sort -uV
 }
 
 _interface_to_service() {
@@ -74,19 +79,40 @@ _interface_to_service() {
     echo openvpn-client@$openvpn_client_conf
 }
 
+_service_to_interface() {
+    sed -e 's/^[^@]*@\([^.]*\).service/vpn-\1/'
+}
+
+_service_list() {
+    local service_name="$(_interface_to_service 'vpn-*')"
+    # Looking for "loaded active" or "loaded activating".
+    systemctl --no-legend list-units "$service_name" |
+        sed -e '/loaded act/!d;s/[[:blank:]].*//'
+}
+
 _service_start() {
-    sudo systemctl --quiet start "$1"
+    sudo systemctl start "$1"
 }
 
 _service_stop() {
-    sudo systemctl --quiet stop "$1" >/dev/null 2>&1 </dev/null
+    sudo systemctl stop "$1"
+}
+
+_service_force_stop() {
+    # Grrrr.. openvpn might still be in 'starting' state, waiting for
+    # user/pass input. Then a 'stop' doesn't get through.
+    _service_stop "$1" & pid=$!
+    while test -d /proc/$pid; do  # kill -0 returns EPERM
+        pgrep systemd-ask-pas >/dev/null && sudo pkill systemd-ask-pas
+    done
+    wait
 }
 
 _restart_interface() {
     local ifname="$1"
     local service="$(_interface_to_service "$ifname")"
     echo "(restarting $service)" >&2
-    _service_stop "$service" || true
+    _service_force_stop "$service" || true
     _service_start "$service"
     _wait_for_interface "$ifname"
 }
@@ -94,7 +120,7 @@ _restart_interface() {
 _stop_interface() {
     local ifname="$1"
     local service="$(_interface_to_service "$ifname")"
-    _service_stop "$service" || true
+    _service_force_stop "$service"
 }
 
 _wait_for_interface() {
@@ -158,14 +184,15 @@ _ensure_started() {
 _ensure_stopped() {
     local ifnames="$(_alias_to_interfaces "$1")"
     local ifname
-    test -z "$ifnames" && ifnames=$(_list_vpn_interfaces)  # empty = all
+    test -z "$ifnames" &&  # no argument: all vpns
+        ifnames=$(_list_expected_vpn_interfaces)
     for ifname in $ifnames; do
         _stop_interface "$ifname"
     done
 }
 
 list() {
-    _test_and_list "$(_list_vpn_interfaces)"
+    _test_and_list "$(_list_expected_vpn_interfaces)"
 }
 
 # Use local config to define groups, like:
