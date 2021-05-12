@@ -26,6 +26,7 @@ enum_all_certs() {
         enum_apache2_certs
         enum_dovecot_certs
         enum_haproxy_certs
+        enum_kuberstuff_certs
         enum_nginx_certs
         enum_openvpn_certs
         enum_postfix_certs
@@ -56,6 +57,18 @@ enum_haproxy_certs() {
         s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
     sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//' | while read f; do
       test -d "$f" && find "$f" -maxdepth 1 -type f || echo "$f"; done
+}
+
+enum_kuberstuff_certs() {
+    # Expected paths:
+    # /var/lib/kube-apiserver/pki
+    # /var/lib/kube-controller-manager/pki
+    # /var/lib/kube-scheduler/pki
+    # /var/lib/kubelet/pki
+    # Exclude "-----BEGIN PUBLIC KEY-----" from access-token.crt.
+    find /var/lib/kube*/pki -name '*.crt' 2>/dev/null |
+        xargs --no-run-if-empty grep -l '^-----BEGIN CERTIFICATE-----'
+        # no dollar, CR optional
 }
 
 enum_nginx_certs() {
