@@ -1,0 +1,103 @@
+#!/bin/sh -eu
+# sadfscheck (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
+#
+# Checks nvme and zfs configurations for suboptimal/non-osso configuration.
+#
+
+nvme_list() {
+    devs=$(nvme list | awk '/^\/dev\//{print $1}')
+    test -z "$devs" && echo "info: no nvme devices found" >&2
+    echo $devs
+}
+
+nvme_check_best_sector() {
+    for dev in $(nvme_list); do
+        local sector_sizes="$(nvme id-ns -H "$dev" | grep '^LBA Format')"
+        local sector_inuse="$(echo "$sector_sizes" | sed -e '
+            /(in use)/!d
+            s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
+        local sector_best="$(echo "$sector_sizes" | sed -e '
+            / Best\([[:blank:]]\|$\)/!d
+            s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
+        # Some devices list multiple formats as "Best", so we use grep instead
+        # of an int comparison.
+        if ! echo "$sector_best" | grep -q "^$sector_inuse$"; then
+            echo "$dev: sector size not optimal\
+ (best="$sector_best", inuse=$sector_inuse)"
+        fi
+    done
+}
+
+dev_sector_size() {
+    local dev="$(realpath "$1")"
+    if test "${dev#/dev/nvme}" != "$dev"; then
+        local sector_size=$(nvme id-ns -H "$dev" | sed -e '
+            /^LBA Format/!d;/(in use)/!d
+            s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')
+        test -z "$sector_size" && echo "error: No sector size for $1" >&2
+        echo $sector_size
+    else
+        local size=
+        local is_not_ssd=1
+        smartctl -i "$dev" | while read -r line; do
+            if test "${line#Rotation Rate:}" != "$line"; then
+                test "${line%Solid State Device}" != "$line"
+                is_not_ssd=$?
+            elif test "${line#Sector Size:}" != "$line"; then
+                size=${line#*:}; size=${size% bytes*}
+            elif test -z "${line% }" && test -n "$size"; then
+                if test $is_not_ssd -eq 0; then
+                    echo 4096  # not 512.. probably, maybe even 8192
+                else
+                    echo $size
+                fi
+                break
+            fi
+        done    
+    fi
+}
+
+dev_sector_shift() {
+    local sector_size="$(dev_sector_size "$1")"
+    case $sector_size in
+    512)
+        echo 9
+        ;;
+    4096)
+        echo 12
+        ;;
+    8192)
+        echo 13
+        ;;
+    *)
+        echo "unknown-${sector_size}-for-$1" >&2
+        echo 12
+        ;;
+    esac
+}
+
+zpool_check_ashift() {
+    zdb | while read line; do
+        local pool
+        local ashift
+        local path
+        local actual_ashift
+        if test "${line#name:}" != "$line"; then
+            pool=${line##* }; pool=${pool%\'}; pool=${pool#\'}
+        elif test "${line#ashift:}" != "$line"; then
+            ashift=${line##* }
+        elif test "${line#path:}" != "$line"; then
+            path=${line##* }; path=${path%\'}; path=${path#\'}
+            local dev_ashift=$(dev_sector_shift $path)
+            if test $ashift -lt $dev_ashift; then
+                echo "$pool: ashift $ashift on zpool lower\
+ than disk ashift $dev_ashift"
+            elif test $ashift -lt 12; then
+                echo "$pool: unexpected ashift $ashift"
+            fi
+        fi
+    done | uniq
+}
+
+nvme_check_best_sector
+zpool_check_ashift

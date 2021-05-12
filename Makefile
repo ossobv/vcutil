@@ -35,6 +35,7 @@ BINS = \
 	pdns-mysql-slave-prune \
 	psdiff \
 	pve-macaddr-security \
+	sadfscheck \
 	sh-c \
 	tls-sniff-ciphers \
 	udiff \
