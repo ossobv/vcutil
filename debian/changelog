@@ -1,3 +1,17 @@
+vcutil (1.26) stable; urgency=low
+
+  * Added:
+    - sadfscheck: Check various zfs/disk settings
+
+  * Improvements:
+    - cert-expiry-finder: Also check K8S certs
+    - psdiff: Docker 19+ containerd-shim-runc-v2 has new style args
+    - wvpn: Improve 'stop' reliability, and make it aware of 'starting' jobs;
+      allow one to override _service_start() and _service_stop(), if you're
+      not using openvpn-client@NAME.service
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 13 May 2021 23:48:59 +0200
+
 vcutil (1.25) stable; urgency=low
 
   * Added:
