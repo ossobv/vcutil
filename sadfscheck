@@ -23,7 +23,7 @@ nvme_check_best_sector() {
         # of an int comparison.
         if ! echo "$sector_best" | grep -q "^$sector_inuse$"; then
             echo "$dev: sector size not optimal\
- (best="$sector_best", inuse=$sector_inuse)"
+ (inuse=$sector_inuse, best="$sector_best")"  # multiline->single
         fi
     done
 }
@@ -41,11 +41,13 @@ dev_sector_size() {
         local is_not_ssd=1
         smartctl -i "$dev" | while read -r line; do
             if test "${line#Rotation Rate:}" != "$line"; then
-                test "${line%Solid State Device}" != "$line"
-                is_not_ssd=$?
+                test "${line%Solid State Device}" != "$line" &&
+                    is_not_ssd=0 || is_not_ssd=1
             elif test "${line#Sector Size:}" != "$line"; then
-                size=${line#*:}; size=${size% bytes*}
-            elif test -z "${line% }" && test -n "$size"; then
+                size=${line#*:}; size=${size% bytes*}; size=$((size + 0))
+            elif test "${line#Logical block size:}" != "$line"; then
+                size=${line#*:}; size=${size% bytes*}; size=$((size + 0))
+            elif test -z "${line% *}" && test -n "$size"; then
                 if test $is_not_ssd -eq 0; then
                     echo 4096  # not 512.. probably, maybe even 8192
                 else
@@ -99,5 +101,27 @@ zpool_check_ashift() {
     done | uniq
 }
 
+zpool_check_stripe() {
+    local pool=
+    local type1=
+    local type2=
+    zdb | while read line; do
+        if test "${line#name:}" != "$line"; then
+            pool=${line##* }; pool=${pool%\'}; pool=${pool#\'}
+            type1=
+            type2=
+        elif test -z "$type1" && test "${line#type:}" != "$line"; then
+            type1=${line##* }; type1=${type1%\'}; type1=${type1#\'}
+        elif test -z "$type2" && test "${line#type:}" != "$line"; then
+            type2=${line##* }; type2=${type2%\'}; type2=${type2#\'}
+            if test "$type2" != "mirror" && test "$type2" != "raidz"; then
+                echo "$pool: unexpected non-mirror/non-raidz,\
+ striping intentional?"
+            fi
+        fi
+    done
+}
+
 nvme_check_best_sector
 zpool_check_ashift
+zpool_check_stripe
