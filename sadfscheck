@@ -55,7 +55,7 @@ dev_sector_size() {
                 fi
                 break
             fi
-        done    
+        done
     fi
 }
 
@@ -122,6 +122,38 @@ zpool_check_stripe() {
     done
 }
 
+zfs_check_arc() {
+    local module_arc_min=$(sed -e \
+        '/^options zfs .*zfs_arc_min=/!d;s/.*zfs_arc_min=//;s/[^0-9].*//' \
+        /etc/modprobe.d/*.conf); module_arc_min=${module_arc_min:-0}
+    local module_arc_max=$(sed -e \
+        '/^options zfs .*zfs_arc_max=/!d;s/.*zfs_arc_max=//;s/[^0-9].*//' \
+        /etc/modprobe.d/*.conf); module_arc_max=${module_arc_max:-0}
+    local param_arc_min=$(cat /sys/module/zfs/parameters/zfs_arc_min)
+    local param_arc_max=$(cat /sys/module/zfs/parameters/zfs_arc_max)
+    local current_arc=$(awk '/^size/{print $3}' /proc/spl/kstat/zfs/arcstats)
+    test "$module_arc_min" -ne "$param_arc_min" &&
+        echo "zfs-kernel-module: running arc min ($param_arc_min) unequal\
+ to modprobe config ($module_arc_min)"
+    test "$module_arc_max" -ne "$param_arc_max" &&
+        echo "zfs-kernel-module: running arc min ($param_arc_max) unequal\
+ to modprobe config ($module_arc_max)"
+    local memory=$(free -m | awk '/^Mem:/{print $2}')
+    local maxpct=$(awk -v mem=$memory -v max=$module_arc_max \
+        'BEGIN{print int((max/1024/1024*100)/mem+0.5);exit}')
+    if test $current_arc -lt $module_arc_min ||
+            test $current_arc -gt $module_arc_max; then
+        echo "zfs-kernel-module: current arc size ($current_arc)\
+ not within modprobe config bounds"
+    fi
+    if test $maxpct -lt 3 || test $maxpct -gt 85; then
+        echo "zfs-kernel-module: arc max modprobe config out of normal bounds\
+ ($maxpct% is not between 3% and 85%)"
+    fi
+}
+
+
 nvme_check_best_sector
 zpool_check_ashift
 zpool_check_stripe
+zfs_check_arc
