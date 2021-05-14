@@ -19,6 +19,10 @@ nvme_check_best_sector() {
         local sector_best="$(echo "$sector_sizes" | sed -e '
             / Best\([[:blank:]]\|$\)/!d
             s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
+        test -z "$sector_best" &&
+            sector_best="$(echo "$sector_sizes" | sed -e '
+              / Better\([[:blank:]]\|$\)/!d
+              s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
         # Some devices list multiple formats as "Best", so we use grep instead
         # of an int comparison.
         if ! echo "$sector_best" | grep -q "^$sector_inuse$"; then
