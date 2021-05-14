@@ -97,8 +97,28 @@ dev_sector_shift() {
     esac
 }
 
+_zdb_output=
+zdb_output() {
+    # zdb lists cached info. Sometimes pools are imported with
+    # cachefile=none or cachefile=/else/where. zdb will not list those.
+    # So, instead we use -eC to read their "non-imported" values.
+    # (And because this is slow (not cached), we cache the output for
+    # ourselves.)
+    # Note that the zdb -C output is just slightly different from the
+    # regular zdb output.
+    if test -z "$_zdb_output"; then
+        _zdb_output=$(\
+            zdb
+            eval $(zpool list -Honame,cachefile | sed -e '
+                /[[:blank:]]-$/d
+                s/^\([^[:blank:]]*\)[[:blank:]].*/zdb -eC \1;/')
+        )
+    fi
+    echo "$_zdb_output"
+}
+
 zpool_check_ashift() {
-    zdb | while read line; do
+    zdb_output | while read line; do
         local pool
         local ashift
         local path
@@ -127,7 +147,7 @@ zpool_check_stripe() {
     local pool=
     local type1=
     local type2=
-    zdb | while read line; do
+    zdb_output | while read line; do
         if test "${line#name:}" != "$line"; then
             pool=${line##* }; pool=${pool%\'}; pool=${pool#\'}
             type1=
@@ -143,7 +163,8 @@ zpool_check_stripe() {
         fi
     done
 
-    zdb_names=$(zdb | sed -ne "s/^    name: '\([^']*\)'/\1/p" | LC_ALL=C sort)
+    zdb_names=$(zdb_output | sed -ne "s/^[[:blank:]]\+name: '\([^']*\)'/\1/p" |
+        LC_ALL=C sort)  # '") vimsynfix
     zpool_names=$(zpool list -Honame | LC_ALL=C sort)
     if test "$zdb_names" != "$zpool_names"; then
         echo "error: did not get info about all zpools ("$zdb_names"\
