@@ -33,7 +33,12 @@ nvme_check_best_sector() {
 }
 
 dev_sector_size() {
-    local dev="$(realpath "$1")"
+    local dev="$1"
+    if ! test -b "$dev" && test -b /dev/disk/by-id/${dev#/dev/}; then
+        # Old ZFS 0.7.5 links to wrong device. Quick hack to fix.
+        dev=/dev/disk/by-id/${dev#/dev/}
+    fi
+    local dev="$(realpath "$dev")"
     if test "${dev#/dev/nvme}" != "$dev"; then
         local sector_size=$(nvme id-ns -H "$dev" | sed -e '
             /^LBA Format/!d;/(in use)/!d
