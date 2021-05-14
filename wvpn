@@ -75,8 +75,25 @@ _list_expected_vpn_interfaces() {
 
 _interface_to_service() {
     local ifname="$1"
-    local openvpn_client_conf=${ifname#vpn-}  # drop "vpn-" from ifname
-    echo openvpn-client@$openvpn_client_conf
+    local startswith=${ifname#vpn-}  # drop "vpn-" from ifname
+    # Interface name is limited to 15 chars.. so if filename is longer than
+    # <11>.conf we must globmatch the rest.
+    config=$(
+        find /etc/openvpn -maxdepth 2 -name "${startswith}*.conf" |
+        LC_ALL=C sort | head -n1)
+    config=${config%.conf}
+    config=${config#/etc/openvpn/}
+    if test -z "$config"; then
+        echo skipping-$ifname-has-no-config.service
+    elif test "${config#client/}" != "$config"; then  # startswith client/
+        echo openvpn-client@${config#client/}.service
+    elif test "${config#server/}" != "$config"; then  # startswith server/
+        echo openvpn-server@${config#server/}.service
+    elif test "${config#*/}" = "$config"; then  # has no slash
+        echo openvpn@$config.service
+    else
+        echo skipping-$ifname-unknown-config.service
+    fi
 }
 
 _service_to_interface() {
@@ -160,6 +177,7 @@ _test_and_list() {
 }
 
 _alias_to_interfaces() {
+    # Convert name/alias to interface name (including "vpn-" prefix).
     local alias="$(echo "$1" | head -n1 | grep '^[A-Za-z_][A-Za-z0-9@_-]*$')"
     if test "$1" != "$alias"; then
         echo "$0: bad alias/interface name: '$1'" >&2
@@ -178,11 +196,15 @@ _alias_to_interfaces() {
 }
 
 _ensure_started() {
-    _test_and_list "$(_alias_to_interfaces "$1")"
+    # (truncate interface names to 15 chars)
+    _test_and_list \
+        "$(_alias_to_interfaces "$1" | sed -e 's/\(.\{15\}\).*/\1/')"
 }
 
 _ensure_stopped() {
-    local ifnames="$(_alias_to_interfaces "$1")"
+    # (truncate interface names to 15 chars)
+    local ifnames="$(_alias_to_interfaces "$1" |
+        sed -e 's/\(.\{15\}\).*/\1/')"
     local ifname
     test -z "$ifnames" &&  # no argument: all vpns
         ifnames=$(_list_expected_vpn_interfaces)
