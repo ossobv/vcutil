@@ -5,7 +5,7 @@
 #
 
 nvme_list() {
-    devs=$(nvme list | awk '/^\/dev\//{print $1}')
+    devs=$(nvme list 2>/dev/null | awk '/^\/dev\//{print $1}')
     test -z "$devs" && echo "info: no nvme devices found" >&2
     echo $devs
 }
