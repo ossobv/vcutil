@@ -94,20 +94,23 @@ zpool_check_ashift() {
         local ashift
         local path
         local actual_ashift
-        if test "${line#name:}" != "$line"; then
-            pool=${line##* }; pool=${pool%\'}; pool=${pool#\'}
-        elif test "${line#ashift:}" != "$line"; then
-            ashift=${line##* }
-        elif test "${line#path:}" != "$line"; then
-            path=${line##* }; path=${path%\'}; path=${path#\'}
+
+        case "$line" in
+        name:*)
+            pool=${line##* }; pool=${pool%\'}; pool=${pool#\'};;
+        ashift:*)
+            ashift=${line##* };;
+        path:*)
+            path=${line##* }; path=${path%\'}; path=${path#\'};;
+        features_for_read:)
             local dev_ashift=$(dev_sector_shift $path)
             if test $ashift -lt $dev_ashift; then
                 echo "$pool: ashift $ashift on zpool lower\
  than disk ashift $dev_ashift"
             elif test $ashift -lt 12; then
-                echo "$pool: unexpected ashift $ashift"
+                echo "$pool: unexpected ashift $ashift below 12"
             fi
-        fi
+        esac
     done | uniq
 }
 
@@ -126,7 +129,7 @@ zpool_check_stripe() {
             type2=${line##* }; type2=${type2%\'}; type2=${type2#\'}
             if test "$type2" != "mirror" && test "$type2" != "raidz"; then
                 echo "$pool: unexpected non-mirror/non-raidz,\
- striping intentional?"
+ striping/single intentional? (hardware raid?)"
             fi
         fi
     done
