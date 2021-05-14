@@ -142,6 +142,14 @@ zpool_check_stripe() {
             fi
         fi
     done
+
+    zdb_names=$(zdb | sed -ne "s/^    name: '\([^']*\)'/\1/p" | LC_ALL=C sort)
+    zpool_names=$(zpool list -Honame | LC_ALL=C sort)
+    if test "$zdb_names" != "$zpool_names"; then
+        echo "error: did not get info about all zpools ("$zdb_names"\
+ <> "$zpool_names")" >&2
+        false
+    fi
 }
 
 zfs_check_arc() {
