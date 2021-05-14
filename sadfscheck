@@ -38,23 +38,33 @@ dev_sector_size() {
         echo $sector_size
     else
         local size=
-        local is_not_ssd=1
+        local assume_4096=
         smartctl -i "$dev" | while read -r line; do
-            if test "${line#Rotation Rate:}" != "$line"; then
-                test "${line%Solid State Device}" != "$line" &&
-                    is_not_ssd=0 || is_not_ssd=1
-            elif test "${line#Sector Size:}" != "$line"; then
-                size=${line#*:}; size=${size% bytes*}; size=$((size + 0))
-            elif test "${line#Logical block size:}" != "$line"; then
-                size=${line#*:}; size=${size% bytes*}; size=$((size + 0))
-            elif test -z "${line% *}" && test -n "$size"; then
-                if test $is_not_ssd -eq 0; then
-                    echo 4096  # not 512.. probably, maybe even 8192
-                else
-                    echo $size
+            case "$line" in
+            'Rotation Rate:'*)
+                # Rotation Rate:    Solid State Device
+                test -z "$assume_4096" &&
+                    test "${line%Solid State Device}" != "$line" &&
+                    assume_4096=1 || assume_4096=0;;
+            'Sector Size:'*)
+                # Sector Size:      512 bytes logical/physical
+                size=${line#*:}; size=${size% bytes*}; size=$((size + 0));;
+            'Sector Sizes:'*)
+                # Sector Sizes:     512 bytes logical, 4096 bytes physical
+                size=${line#*: *logical, }; size=${size% bytes*}
+                assume_4096=0;;
+            'Logical block size:'*)
+                size=${line#*:}; size=${size% bytes*}; size=$((size + 0));;
+            '')
+                if test -n "$size"; then
+                    if test ${assume_4096:-0} -eq 1; then
+                        echo 4096  # not 512.. probably, maybe even 8192
+                    else
+                        echo $size
+                    fi
+                    break
                 fi
-                break
-            fi
+            esac
         done
     fi
 }
