@@ -154,8 +154,10 @@ zfs_check_arc() {
     local memory=$(free -m | awk '/^Mem:/{print $2}')
     local maxpct=$(awk -v mem=$memory -v max=$module_arc_max \
         'BEGIN{print int((max/1024/1024*100)/mem+0.5);exit}')
+
+    # Allow the current_arc to overflow max by 128MiB.
     if test $current_arc -lt $module_arc_min ||
-            test $current_arc -gt $module_arc_max; then
+            test $((current_arc - 128*1024*1024)) -gt $module_arc_max; then
         echo "zfs-kernel-module: current arc size ($current_arc)\
  not within modprobe config bounds"
     fi
