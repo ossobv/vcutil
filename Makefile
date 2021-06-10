@@ -27,6 +27,7 @@ BINS = \
 	indirect-scp \
 	interfaces2netplan \
 	ipmikvm \
+	is-vm \
 	kubectl-sh-bash \
 	kubectl-sh-secret \
 	kubectl-sh-wrapper \
