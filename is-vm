@@ -1,17 +1,17 @@
-#!/bin/sh
+#!/bin/sh -u
 # is-vm (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
 #
 # Quick and dirty script that guesses whether we're a virtual machine.
 #
 # Return value 0 (success) means VM, return value 1 (failure) means hardware.
 #
-# Note that it only detects QEMU/KVM based VMs. For LXC containers it
+# Note that it only detects Xen/QEMU/KVM based VMs. For LXC containers it
 # will guess that you're on (the host) hardware.
 #
 test -t 2; QUIET=$?  # silent if stderr is not a tty
 
 chassis=$(cat /sys/class/dmi/id/chassis_vendor)
-test "$chassis" = "QEMU"; chassis_is_not_vm=$?
+test "$chassis" = "QEMU" -o "$chassis" = "Xen"; chassis_is_not_vm=$?
 
 test $QUIET = 1 && exit $chassis_is_not_vm  # 0=is_vm, 1=is_not_vm
 
