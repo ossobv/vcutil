@@ -1,3 +1,14 @@
+vcutil (1.27) stable; urgency=low
+
+  * Added:
+    - is-vm: Quick script to identify a machine as a VM or not
+
+  * Improvements:
+    - sadfscheck: Various improvements
+    - wvpn: Improved matching of (truncated) interface name to service
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 10 Jun 2021 13:47:58 +0200
+
 vcutil (1.26) stable; urgency=low
 
   * Added:
