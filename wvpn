@@ -76,11 +76,20 @@ _list_expected_vpn_interfaces() {
 _interface_to_service() {
     local ifname="$1"
     local startswith=${ifname#vpn-}  # drop "vpn-" from ifname
+    local config=
+    # Try without find first, in case the user has no read permissions on the
+    # directories.
+    for path in /etc/openvpn /etc/openvpn/client /etc/openvpn/server; do
+        test -f "$path/$startswith.conf" &&
+            config="$path/$startswith.conf" &&
+            break
+    done
     # Interface name is limited to 15 chars.. so if filename is longer than
     # <11>.conf we must globmatch the rest.
-    config=$(
-        find /etc/openvpn -maxdepth 2 -name "${startswith}*.conf" |
-        LC_ALL=C sort | head -n1)
+    test -z "$config" &&
+        config=$(
+            find /etc/openvpn -maxdepth 2 -name "${startswith}*.conf" |
+            LC_ALL=C sort | head -n1)
     config=${config%.conf}
     config=${config#/etc/openvpn/}
     if test -z "$config"; then
@@ -101,9 +110,9 @@ _service_to_interface() {
 }
 
 _service_list() {
-    local service_name="$(_interface_to_service 'vpn-*')"
+    local service_names='openvpn@* openvpn-client@*'
     # Looking for "loaded active" or "loaded activating".
-    systemctl --no-legend list-units "$service_name" |
+    systemctl --no-legend list-units $service_names |
         sed -e '/loaded act/!d;s/[[:blank:]].*//'
 }
 
