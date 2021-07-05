@@ -1,5 +1,5 @@
 #!/bin/sh -u
-# is-vm (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
+# sys-is-vm (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
 #
 # Quick and dirty script that guesses whether we're a virtual machine.
 #
@@ -23,7 +23,7 @@ if test $cpu_is_not_vm = 0 -a $chassis_is_not_vm = 1; then
 fi
 
 is_vm_str=$(test $chassis_is_not_vm = 0 && echo true || echo false)
-echo "chassis: $chassis  [/sys/class/dmi/id/chassis_vendor]" >&2
-echo "cpu:     $cpu_model  [/proc/cpuinfo]" >&2
-echo "is-vm:   $is_vm_str" >&2
+echo "chassis:    $chassis  [/sys/class/dmi/id/chassis_vendor]" >&2
+echo "cpu:        $cpu_model  [/proc/cpuinfo]" >&2
+echo "sys-is-vm:  $is_vm_str" >&2
 exit $chassis_is_not_vm  # 0=is_vm, 1=is_not_vm

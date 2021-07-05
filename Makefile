@@ -27,7 +27,6 @@ BINS = \
 	indirect-scp \
 	interfaces2netplan \
 	ipmikvm \
-	is-vm \
 	kubectl-sh-bash \
 	kubectl-sh-secret \
 	kubectl-sh-wrapper \
@@ -38,6 +37,7 @@ BINS = \
 	pve-macaddr-security \
 	sadfscheck \
 	sh-c \
+	sys-is-vm \
 	tls-sniff-ciphers \
 	udiff \
 	uwsgi-list \
