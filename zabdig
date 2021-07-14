@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017-2021 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2020 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
@@ -125,8 +125,6 @@ class ZAlert(object):
         return cls.SEVERITIES[num]
 
     def __init__(self, problem, trigger):
-        assert problem['suppressed'] == '0', problem  # ENOTIMPL
-
         assert trigger['value'] == '1', trigger  # 1=Problem
         assert trigger['flags'] in (
             '0',  # Normal item
@@ -174,7 +172,12 @@ class ZAlert(object):
 
     @property
     def enabled(self):
-        assert self._trigger['status'] in ('0', '1')
+        assert self._problem['suppressed'] in ('0', '1'), self._problem
+        assert self._trigger['status'] in ('0', '1'), self._trigger
+        if self._problem['suppressed'] == '1':
+            warn('trigger suppressed on {0.hostname}: {0.description}'.format(
+                self))
+            return False
         return self._trigger['status'] != '1'  # 1=disabled
 
     @property
