@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017-2020 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2021 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
@@ -63,6 +63,9 @@ import os
 import requests
 import sys
 
+from datetime import datetime, timezone
+from warnings import warn
+
 
 class ZConfigError(ValueError):
     pass
@@ -78,6 +81,123 @@ class ZLoginError(ZInterfaceError):
 
 class ZDataError(ZInterfaceError):
     pass
+
+
+class ZAlert(object):
+    SEVERITIES = {
+        0: 'N/A',   # Unclassified
+        1: 'INFO',  # Info
+        2: 'WARN',  # Warning
+        3: 'AVG',   # Average
+        4: 'HIGH',  # High
+        5: 'CRIT',  # Disaster
+    }
+
+    @staticmethod
+    def severity_mask_to_zabbix(mask):
+        """
+        We've defined severity starting with 1 for disaster as a bitmask.
+
+        mask:   1=disaster, 2=high, 4=avg..
+        zabbix: 0=unclass, 1=info, 2=warn, 3=avg, 4=high, 5=disaster
+        """
+        if mask == 0:
+            mask = 63  # ALL
+
+        ret = []
+        if mask & 1:
+            ret.append(5)  # Disaster
+        if mask & 2:
+            ret.append(4)  # High
+        if mask & 4:
+            ret.append(3)  # Average
+        if mask & 8:
+            ret.append(2)  # Warning
+        if mask & 16:
+            ret.append(1)  # Info
+        if mask & 32:
+            ret.append(0)  # Unclassified
+
+        return ret
+
+    @classmethod
+    def severity_zabbix_to_str(cls, num):
+        return cls.SEVERITIES[num]
+
+    def __init__(self, problem, trigger):
+        assert problem['suppressed'] == '0', problem  # ENOTIMPL
+
+        assert trigger['value'] == '1', trigger  # 1=Problem
+        assert trigger['flags'] in (
+            '0',  # Normal item
+            '1',  # Discovery rule
+            '2',  # Item prototype
+            '4',  # Auto-created item
+        ), trigger  # XXX?
+
+        assert len(trigger['hosts']) == 1, trigger
+        host = trigger['hosts'][0]
+        del trigger['hosts']
+
+        assert all(
+            i['hostid'] == host['hostid'] for i in trigger['items']), (
+                trigger)
+        items = trigger['items']
+        del trigger['items']
+
+        self._problem = problem
+        self._trigger = trigger
+        self._host = host
+        self._items = items
+
+    @property
+    def description(self):
+        if self._trigger['error']:
+            return '{} [{}]'.format(
+                self._problem['name'], self._trigger['error'])
+        return self._problem['name']
+
+    @property
+    def hostname(self):
+        return self._host['host']
+
+    @property
+    def host_enabled(self):
+        assert self._host['status'] in ('0', '1')
+        return self._host['status'] != '1'  # 1=disabled
+
+    @property
+    def all_items_enabled(self):
+        assert all(i['status'] in ('0', '1') for i in self._items), (
+            self._items)
+        return all(i['status'] != '1' for i in self._items)  # 1=disabled
+
+    @property
+    def enabled(self):
+        assert self._trigger['status'] in ('0', '1')
+        return self._trigger['status'] != '1'  # 1=disabled
+
+    @property
+    def begin(self):
+        if not hasattr(self, '_begin'):
+            ts = int(self._problem['clock']) + (
+                int(self._problem['ns']) / 1000000000.0)
+            tz = timezone.utc if False else None  # FIXME?
+            self._begin = datetime.fromtimestamp(ts, tz=tz)
+        return self._begin
+
+    @property
+    def severity(self):
+        num = int(self._problem['severity'])
+        return self.severity_zabbix_to_str(num)
+
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return (
+            'alert:{0.severity:4s} {0.begin}: {0.description} '
+            '({0.hostname})'.format(self))
 
 
 class ZBaseHost(object):
@@ -246,6 +366,74 @@ class ZInterface(object):
             except ZInterfaceError as e:
                 raise ZLoginError(*e.args)
 
+    def get_alerts(self, severity, enabled_only=True):
+        self._login()
+
+        problems = self._zabbix_call(
+            'problem.get',
+            {'output': [
+                'eventid', 'objectid', 'clock', 'ns', 'severity',
+                'suppressed', 'name'],
+             'source': 0,  # 0=trigger
+             'object': 0,  # 0=trigger
+             # 'hostids': [10884],
+             # 'hostids': [12108],
+             'recent': False,  # only UNRESOLVED
+             'severities': ZAlert.severity_mask_to_zabbix(severity)})
+
+        triggerids = list(set([i['objectid'] for i in problems]))
+        triggers_by_triggerid = dict(
+            (i['triggerid'], i) for i in self._zabbix_call(
+                'trigger.get',
+                {'output': [
+                    'triggerid', 'status', 'error', 'suppressed',
+                    'flags', 'value'],
+                 'selectHosts': ['hostid', 'host', 'status'],
+                 'selectItems': ['hostid', 'status'],
+                 'triggerids': triggerids}))
+
+        alerts = []
+        for problem in problems:
+            trigger = triggers_by_triggerid.get(problem['objectid'])
+            if not trigger:
+                # This may auto-heal if the trigger was recently removed.
+                # Otherwise:
+                #   delete ev from events ev
+                #   left join triggers tr on tr.triggerid = ev.objectid
+                #   where tr.triggerid is null and
+                #     ev.source = 0 and ev.object = 0;
+                warn('no trigger for alert {!r}'.format(problem))
+                continue
+
+            alert = ZAlert(problem, trigger)
+            if not alert.host_enabled:
+                # host is disabled, skip
+                continue
+
+            if not alert.all_items_enabled:
+                # Some of the trigger items are disabled. This is generally
+                # rather annoying. Do check and re-enable them if possible.
+                # There are better ways to fix this.
+                warn('some or all items disabled in {}'.format(alert))
+                continue
+
+            if alert.enabled or not enabled_only:
+                alerts.append(alert)
+
+        alerts.sort(key=(lambda x: (
+            x._problem['severity'], x.description, x.hostname)))
+
+        if False:
+            import pprint
+            for alert in alerts:
+                print(alert)
+                pprint.pprint(alert._problem)
+                pprint.pprint(alert._trigger)
+                pprint.pprint(alert._host)
+                pprint.pprint(alert._items)
+
+        return alerts
+
     def get_hosts(self, hostname_search):
         self._login()
 
@@ -371,8 +559,13 @@ if __name__ == '__main__':
             '-a', '--all', action='store_true', help=(
                 'List all hosts even if there are exact matches'))
         parser.add_argument(
-            '--show', choices=('host',), help=(
-                'Show info about host'))
+            '-S', '--alert-severity', action='store', default=3, type=int,
+            help=(
+                'Show info about current alerts, use bitmask: 0=all, '
+                '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
+        parser.add_argument(
+            '--show', choices=('host', 'alerts'), help=(
+                'Show info about host, alerts'))
         parser.add_argument(
             '-x', '--with-ip', help=(
                 'Filter by IP-address'))  # compare 'dig -x'
@@ -406,6 +599,15 @@ if __name__ == '__main__':
                 file=sys.stderr)
             sys.exit(1)
 
+        if args.show == 'alerts':
+            if args.search:
+                raise NotImplementedError()  # not yet
+            alerts = zint.get_alerts(args.alert_severity)
+            for alert in alerts:
+                print(alert)
+            print(len(alerts))
+            exit(0)
+
         try:
             hosts = list(zint.get_hosts(args.search))
         except ZInterfaceError as e:
@@ -437,6 +639,10 @@ if __name__ == '__main__':
         for host in sorted(hosts):
             if args.show == 'host':
                 show_host(host)
+            elif args.show == 'alerts':
+                raise NotImplementedError()  # handled earlier
+            elif args.show:
+                raise NotImplementedError()  # unexpected?
             else:
                 print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
                     name=host,
@@ -445,3 +651,5 @@ if __name__ == '__main__':
                         host.proxy and ' ({!s})'.format(host.proxy) or '')))
 
     main()
+
+# vim: set ts=8 sw=4 sts=4 et ai:
