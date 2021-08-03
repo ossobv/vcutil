@@ -71,7 +71,15 @@ run_test() {
 # certificate. (Although the last one is optional and only echo "overhead.)
 # EOF
     if test $# -eq 1; then
-        cat "$1" | show_certchain || exit $?
+        input=$(cat "$1")
+        if test "$(echo "$input" | head -n1)" \
+                = "-----BEGIN RSA PRIVATE KEY-----"; then
+            echo "(skipped private key)" >&2
+            echo >&2
+            input=$(echo "$input" | sed -e '
+  /-----BEGIN RSA PRIVATE KEY-----/,/-----END RSA PRIVATE KEY-----/d')
+        fi
+        echo "$input" | show_certchain || exit $?
         echo "Expires in $(cat "$1" | get_expiry_days) days"
     else
         host="$1"
