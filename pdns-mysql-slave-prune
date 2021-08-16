@@ -1,5 +1,5 @@
 #!/bin/sh
-# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017
+# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021
 #   // Public Domain
 #
 # Reads PowerDNS MySQL backend SLAVE data for stale domains and prunes
@@ -28,15 +28,59 @@
 DBNAME=$(find /etc/powerdns/ -name '*.conf' -type f |
          xargs grep -h ^gmysql-dbname= | sed -e 's/[^=]*=//')
 
+AVG_OLD_TIMESTAMP='(UNIX_TIMESTAMP() - 2 * 86400)'  # '-2 days'
+OLD_TIMESTAMP='(UNIX_TIMESTAMP() - 3*86400)'        # '-3 days'
+
 myquery() {
     mysql --defaults-file=/etc/mysql/debian.cnf "$DBNAME" -Ne "$1"
 }
 
 test_slave_running() {
+    #return  # <-- DISABLE this check?
     if test "$(myquery "
-            SELECT AVG(last_check) > (UNIX_TIMESTAMP() - 2*86400) AS val
+            SELECT AVG(last_check) > $AVG_OLD_TIMESTAMP AS val
             FROM domains WHERE type = 'SLAVE';")" != "1"; then
-        echo 'Slave updates appear broken! Stopping...' >&2
+        updated=$(myquery "
+            SELECT name FROM domains WHERE last_check >= $AVG_OLD_TIMESTAMP
+              AND type = 'SLAVE' ORDER BY name;")
+        not_updated=$(myquery "
+            SELECT name FROM domains WHERE last_check < $AVG_OLD_TIMESTAMP
+              AND type = 'SLAVE' ORDER BY name;")
+        if test -z "$updated"; then
+            cat >&2 <<EOF
+Slave updates are probably broken!
+No domain appears to have been updated recently.
+
+Stopping the pruning to avoid accidents..
+EOF
+        else
+            updated_len=$(echo "$updated" | wc -l)
+            not_updated_len=$(echo "$not_updated" | wc -l)
+            # NOTE: Using tail instead of head in the sample, because we don't
+            # want to see only PTR (in-addr.arpa.) ranges.
+            cat >&2 <<EOF
+Slave updates _might_ be broken.
+$updated_len domains are updated, $not_updated_len are not.
+
+Sample of updated domains:
+- ...
+$(echo "$updated" | sed -e 's/^/- /' | tail -n10)
+
+Sample of not updated domains:
+- ...
+$(echo "$not_updated" | sed -e 's/^/- /' | tail -n10)
+
+Perhaps you deleted a lot of domains -- more than half? (The not-updated ones.)
+If so, you should disable this check temporarily, so the pruning can commence.
+
+See the to-be-pruned candidates for yourself:
+
+  SELECT name FROM domains WHERE last_check < $OLD_TIMESTAMP
+    AND type = 'SLAVE' ORDER BY name;
+
+Stopping for now..
+EOF
+        fi
         exit 1
     fi
 }
@@ -44,7 +88,7 @@ test_slave_running() {
 old_slave_domains() {
     myquery "
         SELECT id, name FROM domains
-        WHERE type = 'SLAVE' AND last_check < (UNIX_TIMESTAMP() - 3*86400)
+        WHERE type = 'SLAVE' AND last_check < $OLD_TIMESTAMP
         ORDER BY name, id;"
 }
 
