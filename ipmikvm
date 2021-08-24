@@ -14,6 +14,9 @@
 #   $ ipmikvm 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
 #
+#   $ ipmikvm manually-downloaded.jnlp
+#   (skips login, uses local jnlp file)
+#
 # Config file ~/.config/ipmikvm/dict:
 #
 #   * * ADMIN ADMIN
@@ -270,9 +273,13 @@ install_ikvm_application() {
 }
 # SYNOPSIS: install_ikvm_application JNLP_DATA DESTDIR
 
-
-JNLP=$(get_launch_jnlp "$IP" "$USERS" "$PASSES")
-test -z "$JNLP" && echo "Failed to get launch.jnlp" >&2 && exit 1
+if test "${IP%.jnlp}" != "$IP" -a -f "$IP"; then
+    echo "(assuming $IP is the JNLP file)" >&2
+    JNLP=$(cat "$IP")
+else
+    JNLP=$(get_launch_jnlp "$IP" "$USERS" "$PASSES")
+    test -z "$JNLP" && echo "Failed to get launch.jnlp" >&2 && exit 1
+fi
 
 JAR=$(get_ikvm_jar "$JNLP" "$APP_CACHE_DIR")
 test -z "$JAR" && echo "Failed to get iKVM*.jar" >&2 && exit 1
