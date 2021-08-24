@@ -24,11 +24,10 @@
 #   alias 1.2.3.4 ADMIN ADMIN
 #
 # This has been tested with:
+# - JViewer-1.46
 # - iKVM__V1.69.19.0x0
-# - iKVM__V1.69.22.0x0
-# - iKVM__V1.69.24.0x0
-# - iKVM__V1.69.25.0x0
-# - iKVM__V1.69.39.0x0
+# - ...
+# - iKVM__V1.69.42.0x0
 #
 # See also: ipmiview
 #
@@ -227,8 +226,15 @@ get_arguments() {
 
 exec_ikvm() {
     jar="$1"; shift
+    case $jar in
+    # iKVM
+    */iKVM*.jar) class=tw.com.aten.ikvm.KVMMain;;
+    # Redirection Viewer v1.46
+    */JViewer.jar) class=com.ami.kvm.jviewer.JViewer;;
+    *) echo "Unknown entrypoint in $jar" >&2; exit 1;;
+    esac
     exec java -Djava.library.path="$(dirname "$jar")" \
-      -cp "$jar" tw.com.aten.ikvm.KVMMain "$@"
+      -cp "$jar" $class "$@"
 }
 # SYNOPSIS: exec_ikvm 10.x.x.x KVM_USERNAME KVM_PASSWORD
 
@@ -242,6 +248,7 @@ install_ikvm_application() {
     if echo "$launch_jnlp" | grep -q DISABLED_SSL; then
         codebase=$(as_http "$codebase")
     fi
+    test "${codebase%/}" = "$codebase" || codebase="${codebase%/}"
     jar=$(get_jar "$launch_jnlp")
     case "$(uname -s)" in
         Linux) libprefix=liblinux;;
@@ -257,16 +264,17 @@ install_ikvm_application() {
     mkdir -p "$destdir"
     cd "$destdir"
     for x in $jar $nativelibs; do
-        if curl -ko "$x.pack.gz" "$codebase$x.pack.gz"; then
+        test "${x%/*}" = "$x" || mkdir -p "${x%/*}"
+        if curl --fail -ko "$x.pack.gz" "$codebase/$x.pack.gz"; then
             unpack200 "$x.pack.gz" "$x"
-        elif curl -ko "$x" "$codebase$x"; then
+        elif curl --fail -ko "$x" "$codebase/$x"; then
             :
         else
             echo "$launch_jnlp"
             false
         fi
     done
-    unzip -o $libprefix*.jar
+    test ! -f "$libprefix"*.jar || unzip -o $libprefix*.jar
     rm -rf META-INF
     set +x
     set +e
