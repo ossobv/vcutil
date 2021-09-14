@@ -335,20 +335,31 @@ class InterfacesParser(object):
         elif (len(cols) in (6, 8) and cols[0] in ('route', '/sbin/route') and
                 ((cmd in 'up' and cols[1] == 'add') or
                  (cmd == 'down' and cols[1] == 'del')) and
-                cols[2] == '-net' and (
-                    (len(cols) == 6 and '/' in cols[3] and
-                     cols[4] == 'gw') or
-                    (len(cols) == 8 and cols[4] == 'netmask' and
-                     cols[6] == 'gw'))):
+                cols[2] in ('-host', '-net') and
+                ((len(cols) == 6 and cols[4] == 'gw') or
+                 (len(cols) == 8 and cols[4] == 'netmask' and
+                  cols[6] == 'gw'))):
             # up route add -net NET (netmask MASK) gw GW
             # down route del -net NET (netmask MASK) gw GW
             if 'routes' not in config:
                 config['routes'] = []
+
             if len(cols) == 6:
-                route = {'to': cols[3], 'via': cols[5]}
+                if cols[2] == '-host':
+                    assert '/' not in cols[3], cols
+                    to = '{}/32'.format(cols[3])
+                else:
+                    assert '/' in cols[3], cols
+                    to = cols[3]
+                via = cols[5]
             else:
-                route = {'to': '{}/{}'.format(cols[3], _netmaskbits(cols[5])),
-                         'via': cols[7]}
+                assert cols[2] == '-net', cols
+                assert '/' not in cols[3], cols
+                to = '{}/{}'.format(cols[3], _netmaskbits(cols[5]))
+                via = cols[7]
+
+            route = {'to': to, 'via': via}
+
             if cmd == 'up':
                 config['routes'].append(route)
             elif cmd == 'down':
