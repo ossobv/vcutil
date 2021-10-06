@@ -1,3 +1,21 @@
+vcutil (1.28) stable; urgency=low
+
+  * Improvements:
+    - easycert: Skip over haproxy bundle style RSA key in -T test mode
+    - interfaces2netplan: Also cope with "route add -host IP" syntax
+    - interfaces2netplan: Also cope with "route add -net IP/MASK" syntax
+    - ipmikvm: Add mode where it reads a locally downloaded *.jnlp file
+    - ipmikvm: Add partial JViewer support (supply jnlp manually)
+    - is-vm: Is now called 'sys-is-vm'
+    - pdns-mysql-slave-prune: Explain false positive and suggest fixes
+    - sys-is-vm: Renamed from is-vm; makes more sense
+    - sys-is-vm: Also accept Xen as VM chassis
+    - wvpn: Fix case when there is no read perms on the openvpn directories
+    - zabdig: Add --show alerts -S 3; to show current problems
+    - zabdig: Cope with suppressed triggers (maintenance)
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 06 Oct 2021 10:08:40 +0200
+
 vcutil (1.27) stable; urgency=low
 
   * Added:
