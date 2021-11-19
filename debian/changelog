@@ -1,3 +1,15 @@
+vcutil (1.29) stable; urgency=low
+
+  * Added:
+    - mount.zfs-non-legacy: Add helper script in /usr/sbin for ZFS and
+      systemd .mount files. Useful for systemd dependency handling of regular
+      ZFS mount points.
+
+  * Improvements:
+    - ipmikvm: Sligh refactoring
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 19 Nov 2021 12:12:40 +0100
+
 vcutil (1.28) stable; urgency=low
 
   * Improvements:
