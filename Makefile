@@ -3,6 +3,7 @@ HASHES = $(wildcard *.hash)
 DESTDIR =
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
+SBINDIR = $(PREFIX)/sbin
 SYSCONFDIR = /etc
 
 BINS = \
@@ -54,6 +55,9 @@ BINS = \
 	wvpn \
 	zabdig
 
+SBINS = \
+	mount.zfs-non-legacy
+
 OTHER = \
 	.gitignore \
 	Makefile \
@@ -81,6 +85,8 @@ deb:
 install:
 	install -d $(DESTDIR)$(BINDIR)
 	install $(BINS) $(DESTDIR)$(BINDIR)
+	install -d $(DESTDIR)$(SBINDIR)
+	install $(SBINS) $(DESTDIR)$(SBINDIR)
 	#install -D -T tcpdump247 $(DESTDIR)$(SYSCONFDIR)/init.d/tcpdump247
 	#install -m0600 -D -T \
 	#  tcpdump247.default $(DESTDIR)$(SYSCONFDIR)/default/tcpdump247
@@ -93,7 +99,7 @@ hashes: $(HASHES)
 
 make_has_all_files:
 	@bash -c "diff -pu <(git ls-files | grep -vF / | sort -V) \
-		<(echo $(BINS) $(OTHER) | tr ' ' '\n' | sort -V)"
+		<(echo $(BINS) $(SBINS) $(OTHER) | tr ' ' '\n' | sort -V)"
 
 %.hash: % Makefile
 	sha256sum $< > $@

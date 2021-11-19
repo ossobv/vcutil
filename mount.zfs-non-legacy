@@ -1,0 +1,104 @@
+#!/bin/sh
+# mount.zfs-non-legacy (part of ossobv/vcutil) // wdoekes/2021
+#  // Public Domain
+#
+# This script is a mount wrapper that adds the 'zfs-non-legacy' type for
+# mount(8). It checks whether a particular ZFS dataset is mounted,
+# and tries to import the pool and mount it, if it isn't.
+#
+# Rationale behind this script is the following:
+# - systemd has .mount files that can be used in dependencies
+# - zfs (non-legacy) doesn't use mount(8), so systemd interfaces poorly with it
+# By using this script, we can leverage the power of systemd .mount files
+# while using regular ZFS mount points.
+#
+# Common scenario:
+# - /var/lib/docker resides on a separate ZFS pool (data)
+# - docker.service needs to depend on that
+# If there is no such dependency, docker might start _before_ all zfs imports
+# and mounts have completed, data gets written in the root filesystem instead.
+#
+# >>> Fix in /etc/systemd/system/var-lib-docker.mount <<<
+# [Unit]
+# Documentation=https://github.com/ossobv/vcutil/blob/main/mount.zfs-non-legacy
+# After=zfs-mount.service
+# Requires=zfs-mount.service
+# [Mount]
+# Where=/var/lib/docker
+# What=data/docker
+# Type=zfs-non-legacy
+#
+# >>> Fix in /etc/systemd/system/docker.service.d/override.conf <<<
+# [Unit]
+# RequiresMountsFor=/var/lib/docker
+#
+# Now a start of the docker.service will depend on var-lib-docker.mount.
+# That mount unit will call something like this:
+# > mount -t zfs-non-legacy data/docker /var/lib/docker
+# And that call ends up in this wrapper script:
+# - it checks if data is imported, and imports it if it isn't
+# - it checks that the mount path is correct
+# - it checks whether it is mounted, and if not, it mounts it
+#
+set -eu
+
+name="$1"  # data/docker
+path="$2"  # /var/lib/docker
+
+# Get mounted state, but tries to import the zpool if it was not found.
+# Implemented in a function so we can retry this during boot. During boot
+# several jobs may be attempting to mount/import stuff, causing intermittent
+# failures that will auto-heal.
+get_mounted() {
+    local name="$1"         # data/docker
+    local zpool=${name%%/*} # data
+    local found=0
+    local mounted
+    mounted="$(zfs list -Homounted "$name")" && found=1
+    if test $found -eq 0; then
+        if ! zpool list -Honame "$zpool" >/dev/null; then
+            if ! zpool import "$zpool"; then
+                false  # intermittent or permanent failure?
+                return
+            fi
+        fi
+        mounted="$(zfs list -Homounted "$name")" || mounted=no-dataset
+    fi
+    echo "$mounted"
+}
+
+# Get mounted value. Retry a couple of times.
+mounted=
+for retry in 1 2 3 0; do
+    mounted=$(get_mounted "$name") && break
+    sleep $retry || true
+    false
+done || mounted=no-pool
+
+# Handle the various possibilities.
+case $mounted in
+no-dataset|no-pool)
+    echo "zfs-no-legacy: failed to load $name: $mounted" >&2
+    exit 1
+    ;;
+no|yes)
+    if ! mountpoint=$(zfs list -Homountpoint "$name") ||
+            test "$path" != "$mountpoint"; then
+        echo "zfs-no-legacy: dest fail for $name: $path ~ $mountpoint" >&2
+        exit 1
+    fi
+    ;;
+*)
+    echo "zfs-no-legacy: unexpected mounted value for $name: $mounted" >&2
+    exit 1
+    ;;
+esac
+
+# So.. it wasn't mounted? Try that then.
+if test "$mounted" = no && zfs mount "$name"; then
+    echo "zfs-no-legacy: failed to mount $name" >&2
+    exit 1
+fi
+
+# All good.
+exit 0
