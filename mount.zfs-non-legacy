@@ -78,25 +78,25 @@ done || mounted=no-pool
 # Handle the various possibilities.
 case $mounted in
 no-dataset|no-pool)
-    echo "zfs-no-legacy: failed to load $name: $mounted" >&2
+    echo "zfs-non-legacy: failed to load $name: $mounted" >&2
     exit 1
     ;;
 no|yes)
     if ! mountpoint=$(zfs list -Homountpoint "$name") ||
             test "$path" != "$mountpoint"; then
-        echo "zfs-no-legacy: dest fail for $name: $path ~ $mountpoint" >&2
+        echo "zfs-non-legacy: dest fail for $name: $path ~ $mountpoint" >&2
         exit 1
     fi
     ;;
 *)
-    echo "zfs-no-legacy: unexpected mounted value for $name: $mounted" >&2
+    echo "zfs-non-legacy: unexpected mounted value for $name: $mounted" >&2
     exit 1
     ;;
 esac
 
 # So.. it wasn't mounted? Try that then.
 if test "$mounted" = no && zfs mount "$name"; then
-    echo "zfs-no-legacy: failed to mount $name" >&2
+    echo "zfs-non-legacy: failed to mount $name" >&2
     exit 1
 fi
 
