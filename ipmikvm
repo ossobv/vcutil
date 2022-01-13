@@ -38,15 +38,20 @@ APP_CACHE_DIR="$HOME/.local/lib/ipmikvm"
 IP=
 USER=
 PASS=
+PROXY=
 USERS='ADMIN '
 PASSES='ADMIN '
+HTTPS_PORT=443
+HTTP_PORT=80
+VNC_PORT=5900
+IPMI_PORT=623
 
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hu:P:' "$@")"
+eval set --"$(getopt -- 'hu:P:p:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
-    echo "Usage: $0 [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS"
+    echo "Usage: $0 [-u ADMIN] [-P ADMIN] [-p mysshgateway] IP.ADD.RE.SS"
     echo
     echo "Usernames, passwords and machine aliases may be specified in"
     echo "~/.config/ipmikvm/dict - as ALIAS ADDRESS USER PASS - one per"
@@ -56,14 +61,15 @@ usage() {
 }
 
 as_http() {
-    echo "$1" | sed -e 's#^https://\([^:/]*\):443#http://\1#;s#^https:#http:#'
+    echo "$1" | sed -e "s#^https://\([^:/]*\):($HTTPS_PORT|443)#http://\1:$HTTP_PORT#;s#^https:#http:#"
 }
 
-while getopts 'hu:P:' OPTION; do
+while getopts 'hu:P:p:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
     u) USER=$OPTARG;;
     P) PASS=$OPTARG;;
+    p) PROXY=$OPTARG;;
     ?) usage 1;;
     esac
 done
@@ -102,14 +108,14 @@ get_launch_jnlp() {
     local users="$2"
     local passes="$3"
 
-    local url="https://$management_ip"
+    local url="https://$management_ip:$HTTPS_PORT"
     local local_append=''
     local temp=$(mktemp)
 
     until test -z "$users"; do
         local user=${users%% *}; users=${users#* }
         local pass=${passes%% *}; passes=${passes#* }
-        echo "attempting login on '$management_ip' with user $user" >&2
+        echo "attempting login on '$management_ip:$HTTPS_PORT' with user $user" >&2
 
         local data="$(curl --fail -LksS --cookie-jar "$temp" "$url")"
         if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
@@ -223,7 +229,9 @@ get_arguments() {
     echo "$1" |
       sed -e '/<argument>/!d;s#.*<argument>\([^<]*\)</argument>.*#\1#' |
       sed -e "s/['\"$]//g;s/.*/'&'/" |
-      sed -e "s!^'[[:blank:]]*<argument>-----BEGIN.*!\"$certarg\"!g"
+      sed -e "s!^'[[:blank:]]*<argument>-----BEGIN.*!\"$certarg\"!g" |
+      sed -e "s/'5900'/'$VNC_PORT'/" |
+      sed -e "s/'623'/'$IPMI_PORT'/"
 }
 # SYNOPSIS: get_arguments JNLP_DATA  # dumps quotes args to stdout
 # DESCRIPTION: fetches every <argument>...</argument> from the data
@@ -260,7 +268,8 @@ install_ikvm_application() {
 
     set -e
     local codebase=$(
-      echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//')
+      echo "$launch_jnlp" | sed -e '/<jnlp /!d;s/.* codebase="//;s/".*//' | sed -e "s%:443/%:$HTTPS_PORT/%")
+
     if echo "$launch_jnlp" | grep -q DISABLED_SSL; then
         codebase=$(as_http "$codebase")
     fi
@@ -302,6 +311,58 @@ install_ikvm_application() {
     set +e
 }
 # SYNOPSIS: install_ikvm_application JNLP_DATA DESTDIR
+
+find_available_port()
+{
+    local START="$1"
+    local END="$2"
+    local HOSTNAME="${3:-"localhost"}"
+    for P in $(seq $START $END)
+    do
+        if ! nc -z "$HOSTNAME" "$P"
+        then
+            printf "%s" "$P"
+            return
+        fi
+    done
+    echo "Cannot find available local port beetween $START and $END"
+    exit 1
+}
+
+cleanup_ssh()
+{
+    echo "I: Cleaning ssh tunnel"
+    [ "$SSH_PID" ] || return 0
+    kill -9 $SSH_PID
+}
+
+if [ -n "$PROXY" ]; then
+    HTTPS_PORT="$(find_available_port 10443 20443)"
+    HTTP_PORT="$(find_available_port 30080 40080)"
+    VNC_PORT="$(find_available_port 5900 6000)"
+    IPMI_PORT="$(find_available_port 6230 7000)"
+
+    REMOTE_IP=$IP
+    IP=127.0.0.1
+
+    echo "I: Lauching ssh tunnel (-L$IPMI_PORT:$REMOTE_IP:623 -L$VNC_PORT:$REMOTE_IP:5900 -L$HTTPS_PORT:$REMOTE_IP:443 -L$HTTP_PORT:$REMOTE_IP:80 $PROXY)"
+    trap "cleanup_ssh" EXIT TERM INT
+    ssh -N -L$IPMI_PORT:$REMOTE_IP:623 -L$VNC_PORT:$REMOTE_IP:5900 -L$HTTPS_PORT:$REMOTE_IP:443 -L$HTTP_PORT:$REMOTE_IP:80 $PROXY &
+    SSH_PID=$!
+
+    TRIES=10
+    while ! nc -z 127.0.0.1 $IPMI_PORT
+    do
+        echo "I: Waiting for ssh"
+        sleep 1
+        TRIES=$(( $TRIES - 1 ))
+        if [ $TRIES -le 0 ]
+        then
+            echo "E: Failed."
+            exit 1
+        fi
+    done
+fi
 
 if test "${IP%.jnlp}" != "$IP" -a -f "$IP"; then
     echo "(assuming $IP is the JNLP file)" >&2
