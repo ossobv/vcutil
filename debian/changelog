@@ -1,3 +1,14 @@
+vcutil (1.30) stable; urgency=low
+
+  * Added:
+    - lldprecv: Script that reads LLDP frames as alternative to installing
+      lldpd(8).
+
+  * Improvements:
+    - mount.zfs-non-legacy: Fix typos.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 20 Jan 2022 15:42:42 +0100
+
 vcutil (1.29) stable; urgency=low
 
   * Added:
@@ -6,7 +17,7 @@ vcutil (1.29) stable; urgency=low
       ZFS mount points.
 
   * Improvements:
-    - ipmikvm: Sligh refactoring
+    - ipmikvm: Slight refactoring
 
  -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 19 Nov 2021 12:12:40 +0100
 
