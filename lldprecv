@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+# lldprecv (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Link Layer Discovery Protocol (LLDP) is a link layer protocol used by network
+# devices for advertising their identity, primarily on wired ethernet. Network
+# engineers can use LLDP to see which devices are attached to the same network.
+#
+# lldprecv listens for LLDP frames (broadcast by switches and routers)
+# and decodes them. This is a light weight alternative to installing
+# lldpd(1) and having that daemon record LDDP neighbours. Using lldprecv,
+# you'll see the frames as they arrive. Stop listening with ^C once you've
+# seen enough.
+#
+# Usage (as root):
+#
+# # lldprecv
+#
+# > Please wait at last 30 seconds for LLDP frames to arrive...
+# > (seconds elapsed: 14)
+# >
+# > t = 1642688890 918891 on ens2f1 00:30:11:22:33:44 -> 01:80:c2:00:00:0e
+# > [('Chassis ID', ('MAC address', '00:30:11:22:33:44')),
+# >  ('Port ID', ('Interface name', 'swp4')),
+# >  ('Time To Live', 120),
+# >  ('System name', 'leaf2-switch'),
+# >  ('System capabilities', ['Router', '!Bridge']),
+# >  ('Management address', '10.11.12.13'),
+# > ^C
+#
+"""
+See also:
+github.com/wireshark/wireshark/blob/master/epan/dissectors/packet-lldp.c
+
+Parts taken from:
+gist.githubusercontent.com/gteissier/4e076b2645e1754c99c8278cd4a6a987/
+  raw/73036826e820f6192480f7a9a9a2d8785260de20/tcpdump.py
+
+Promiscuous mode is not needed for LLDP because it's sent to a multicast
+address.
+"""
+import ctypes
+import mmap
+import select
+import socket
+import sys
+import time
+from pprint import pformat
+from struct import pack
+
+try:
+    from netifaces import interfaces
+except ImportError:
+    # XXX: or we could check /sys/class/net/*/ifindex
+    def interfaces():
+        return []
+
+
+# tcpdump -dd ether proto 0x88cc
+FILTER_ANY_ETHER_PROTO_88CC = (
+    (0x28, 0, 0, 0x0000000e),   # (000) ldh  [14]
+    (0x15, 0, 1, 0x000088cc),   # (001) jeq  #0x88cc  jt 2  jf 3
+    (0x6, 0, 0, 0x00040000),    # (002) ret  #262144
+    (0x6, 0, 0, 0x00000000),    # (003) ret  #0
+)
+# tcpdump -dd ether proto 0x88cc and ether dst host 01:80:c2:00:00:0[e30]
+# (special multicast address, no need for promiscuous mode)
+FILTER_ETH_ETHER_PROTO_88CC = (
+    (0x28, 0, 0, 0x0000000c),   # (000) ldh      [12]
+    (0x15, 0, 7, 0x000088cc),   # (001) jeq      #0x88cc      jt 2  jf 9
+    (0x20, 0, 0, 0x00000002),   # (002) ld       [2]
+    (0x15, 2, 0, 0xc200000e),   # (003) jeq      #0xc200000e  jt 6  jf 4
+    (0x15, 1, 0, 0xc2000003),   # (004) jeq      #0xc2000003  jt 6  jf 5
+    (0x15, 0, 3, 0xc2000000),   # (005) jeq      #0xc2000000  jt 6  jf 9
+    (0x28, 0, 0, 0x00000000),   # (006) ldh      [0]
+    (0x15, 0, 1, 0x00000180),   # (007) jeq      #0x180       jt 8  jf 9
+    (0x6, 0, 0, 0x00040000),    # (008) ret      #262144
+    (0x6, 0, 0, 0x00000000),    # (009) ret      #0
+)
+
+
+class tp_packet_req(ctypes.Structure):
+    _fields_ = [
+        ('tp_block_size', ctypes.c_uint),
+        ('tp_block_nr', ctypes.c_uint),
+        ('tp_frame_size', ctypes.c_uint),
+        ('tp_frame_nr', ctypes.c_uint),
+    ]
+
+
+class tpacket_hdr(ctypes.Structure):
+    _fields_ = [
+        ('tp_status', ctypes.c_ulong),
+        ('tp_len', ctypes.c_uint),
+        ('tp_snaplen', ctypes.c_uint),
+        ('tp_mac', ctypes.c_ushort),
+        ('tp_net', ctypes.c_ushort),
+        ('tp_sec', ctypes.c_uint),
+        ('tp_usec', ctypes.c_uint),
+    ]
+
+
+class sockaddr_ll(ctypes.Structure):
+    _fields_ = [
+        ('sll_family', ctypes.c_ushort),
+        ('sll_protocol', ctypes.c_ushort),
+        ('sll_ifindex', ctypes.c_uint),
+        ('sll_hatype', ctypes.c_ushort),
+        ('sll_pkttype', ctypes.c_uint8),
+        ('sll_halen', ctypes.c_uint8),
+        ('sll_addr', (ctypes.c_char * 8)),
+    ]
+
+
+def bin2mac(s):
+    assert len(s) == 6, s
+    return f'{s[0]:02x}:{s[1]:02x}:{s[2]:02x}:{s[3]:02x}:{s[4]:02x}:{s[5]:02x}'
+
+
+class Const(object):
+    ETH_P_ALL = 0x0003
+    ETH_P_IP = 0x0800
+    IFF_PROMISC = 0x100
+    SIOCGIFFLAGS = 0x8913
+    SIOCSIFFLAGS = 0x8914
+    SO_ATTACH_FILTER = 26
+
+    # Beware ancient versions of Linux kernel which may not support
+    # SOCK_NONBLOCK or the memory mapped ring buffer.
+    SOCK_NONBLOCK = 0x800
+    SOL_PACKET = 263
+    PACKET_RX_RING = 5
+
+    PACKET_HOST = 0         # To us
+    PACKET_BROADCAST = 1    # To all
+    PACKET_MULTICAST = 2    # To group
+    PACKET_OTHERHOST = 3    # To someone else
+    PACKET_OUTGOING = 4     # Outgoing
+    PACKET_USER = 6         # To userspace
+    PACKET_KERNEL = 7       # To kernel
+
+    PAGESIZE = 4096
+
+    TP_STATUS_KERNEL = 0
+    TP_STATUS_USER = 1
+
+
+# Frame structure:
+# - Start. Frame must be aligned to TPACKET_ALIGNMENT=16
+# - struct tpacket_hdr
+# - pad to TPACKET_ALIGNMENT=16
+# - struct sockaddr_ll
+# - Gap, chosen so that packet data (Start+tp_net) alignes to
+#   TPACKET_ALIGNMENT=16
+# - Start+tp_mac: [ Optional MAC header ]
+# - Start+tp_net: Packet data, aligned to TPACKET_ALIGNMENT=16.
+# - Pad to align to TPACKET_ALIGNMENT=16
+def TPACKET_ALIGN(x):
+    TPACKET_ALIGNMENT = 16
+    return (((x) + TPACKET_ALIGNMENT - 1) & ~(TPACKET_ALIGNMENT - 1))
+
+
+def bpf_pack(x):
+    return pack('HBBI', x[0], x[1], x[2], x[3])
+
+
+class Sniffer(object):
+    def __init__(self, nr_frames, filter=FILTER_ETH_ETHER_PROTO_88CC):
+        # check that number of frames is a power of 2
+        assert (nr_frames & (nr_frames - 1) == 0), nr_frames
+
+        s = socket.socket(
+            socket.PF_PACKET, socket.SOCK_RAW | Const.SOCK_NONBLOCK,
+            socket.htons(Const.ETH_P_ALL))
+
+        # attach BPF filter
+        filter_content = b''
+        for elm in filter:
+            filter_content += bpf_pack(elm)
+        addr_filter = ctypes.create_string_buffer(filter_content)
+        fprog = pack('HL', len(filter), ctypes.addressof(addr_filter))
+        s.setsockopt(socket.SOL_SOCKET, Const.SO_ATTACH_FILTER, fprog)
+
+        # create packets ring buffer
+        tp = tp_packet_req()
+        tp.tp_block_size = nr_frames * Const.PAGESIZE
+        tp.tp_block_nr = 1
+        tp.tp_frame_size = Const.PAGESIZE
+        tp.tp_frame_nr = nr_frames
+        self.nr_frames = nr_frames
+        s.setsockopt(Const.SOL_PACKET, Const.PACKET_RX_RING, tp)
+
+        # map packets ring buffer
+        self.ringbuffer = mmap.mmap(
+            s.fileno(), tp.tp_frame_size * tp.tp_frame_nr,
+            mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        self.offset = 0
+
+        # set properties
+        self.sock = s
+        self.tpacket_hdr_sizeof = TPACKET_ALIGN(ctypes.sizeof(tpacket_hdr()))
+
+    def recv_packets(self):
+        while True:
+            hdr = tpacket_hdr.from_buffer(
+                self.ringbuffer, self.offset * Const.PAGESIZE)
+            if (hdr.tp_status & Const.TP_STATUS_USER) == 0:
+                break
+
+            # The frame size is determined by the maximum frame size you wish
+            # to capture. It is necessary to allow additional space for header
+            # data at the start of each frame which contains a tpacket_hdr or
+            # equivalent, a sockaddr_ll, and two areas of padding needed for
+            # alignment. For TPACKET_V1, the required frame size is:
+            # ...
+            # TPACKET_HDRLEN = 0x1c (aligned -> 0x20)
+            sll = sockaddr_ll.from_buffer(
+                self.ringbuffer,
+                self.offset * Const.PAGESIZE + self.tpacket_hdr_sizeof)
+            assert sll.sll_family == socket.PF_PACKET, sll.sll_family
+            assert sll.sll_hatype == 0x01, sll.sll_hatype
+            assert socket.ntohs(sll.sll_protocol) == 0x88cc, (
+                hex(socket.ntohs(sll.sll_protocol)))
+
+            if sll.sll_pkttype == Const.PACKET_OUTGOING:
+                ifname = None
+            else:
+                try:
+                    ifname = interfaces()[sll.sll_ifindex - 1]
+                except IndexError:
+                    ifname = f'ifIndex{sll.sll_ifindex}'
+
+            # 0x0  tpacket_hdr + padding
+            # 0x20 sockaddr_ll + padding
+            # 0x42 tp_mac (+ padding)
+            # 0x50 tp_net
+            pkt_offset = self.offset * Const.PAGESIZE + hdr.tp_mac
+            pkt_length = hdr.tp_snaplen
+
+            yield (
+                ifname, (hdr.tp_sec, hdr.tp_usec),
+                self.ringbuffer[pkt_offset:(pkt_offset + pkt_length)])
+
+            hdr.tp_status = Const.TP_STATUS_KERNEL  # "free" it
+            self.offset = ((self.offset + 1) % self.nr_frames)
+
+
+s = Sniffer(nr_frames=64)
+n_packets = 0
+poller = select.poll()
+poller.register(s.sock, select.POLLIN)
+
+
+def get_tlv(pkt):
+    type_ = pkt[0] >> 1  # high 7 bits
+    len_ = ((pkt[0] & 0x1) << 8) | pkt[1]  # 9 bits
+    val = pkt[2:(2 + len_)]
+    pkt = pkt[2 + len_:]
+
+    if type_ == 0:
+        type_ = 'End of LLDPDU'
+        assert len_ == 0
+        val = None
+    elif type_ == 1:
+        type_ = 'Chassis ID'
+        # Please refer to section 8.5.2.2 of the 802.1AB for more info.
+        # CONFIG_NET_LLDP_CHASSIS_ID_SUBTYPE
+        subtype = {
+            1: 'Chassis component',
+            2: 'Interface alias',
+            3: 'Port component',
+            4: 'MAC address',
+            5: 'Network address',
+            6: 'Interface name',
+        }
+        if val[0] in (1, 2, 6):
+            val = (subtype[val[0]], val[1:].decode('ascii'))
+        elif val[0] == 4:
+            val = (subtype[val[0]], bin2mac(val[1:]))
+        else:
+            val = (subtype.get(val[0], val[0]), val[1:])
+    elif type_ == 2:
+        # Please refer to section 8.5.3.2 of the 802.1AB for more info.
+        # CONFIG_NET_LLDP_PORT_ID_SUBTYPE
+        type_ = 'Port ID'
+        subtype = {
+            1: 'Interface alias',
+            2: 'Port component',
+            3: 'MAC address',
+            4: 'Network address',
+            5: 'Interface name',
+            6: 'Agent circuit ID',
+            7: 'Locally assigned',
+        }
+        if val[0] in (1, 5):
+            val = (subtype[val[0]], val[1:].decode('ascii'))
+        elif val[0] == 3:
+            val = (subtype[val[0]], bin2mac(val[1:]))
+        else:
+            val = (subtype.get(val[0], val[0]), val[1:])
+    elif type_ == 3:
+        type_ = 'Time To Live'
+        val = (val[0] << 8 | val[1])
+    elif type_ == 4:
+        type_ = 'Port description'
+        val = val.decode('ascii')
+    elif type_ == 5:
+        type_ = 'System name'
+        val = val.decode('ascii')
+    elif type_ == 6:
+        type_ = 'System description'
+        val = val.decode('ascii')
+    elif type_ == 7:
+        type_ = 'System capabilities'
+        has = val[0] << 8 | val[1]
+        on = val[2] << 8 | val[3]
+        d = {
+            0x1: 'Other',
+            0x2: 'Repeater',
+            0x4: 'Bridge',
+            0x8: 'Wlan',
+            0x10: 'Router',
+            0x20: 'Telephone',
+            0x40: 'Docsis',
+            0x80: 'Station',
+        }
+        has = set(d.get(k) for k in d.keys() if has & k)
+        on = set(d.get(k) for k in d.keys() if on & k)
+        sum_ = sorted(on) + sorted(f'!{i}' for i in (has - on))
+        val = sum_
+    elif type_ == 8:
+        type_ = 'Management address'
+        if len(val) >= 2:
+            if (val[0] - 1) == 4 and val[1] == 1:
+                val = socket.inet_ntop(socket.AF_INET, val[2:6])
+            elif (val[0] - 1) == 16 and val[1] == 2:
+                val = socket.inet_ntop(socket.AF_INET6, val[2:18])
+    elif type_ == 127:
+        type_ = 'Custom TLV'
+
+    return (type_, val), pkt
+
+
+def get_custom_tlv(tlv):
+    """
+    Lookup vendor specific Organisational Unit Identifier (OUI) types
+    """
+    if len(tlv[1]) < 4:
+        return tlv
+    if tlv[1][0:3] == b'\x00\x12\x0f':
+        if tlv[1][3] == 1:
+            return ('IEEE 802.3 MAC/PHY config/status', tlv[1][4:])
+        if tlv[1][3] == 2:
+            return ('IEEE 802.3 Power via MDI', tlv[1][4:])
+        if tlv[1][3] == 3:
+            return ('IEEE 802.3 Link aggregation', tlv[1][4:])
+        if tlv[1][3] == 4:
+            return ('IEEE 802.3 Maximum frame size', tlv[1][4:])
+    if tlv[1][0:3] == b'\x00\x12\xbb':
+        if tlv[1][3] == 1:
+            return ('LLDP-MED Capabilities', tlv[1][4:])
+        if tlv[1][3] == 2:
+            return ('Voice Policy', tlv[1][4:])
+        if tlv[1][3] == 5:
+            return ('Inventory - Hardware Revision', tlv[1][4:])
+        if tlv[1][3] == 6:
+            return ('Inventory - Firmware Revision', tlv[1][4:])
+        if tlv[1][3] == 7:
+            return ('Inventory - Software Revision', tlv[1][4:])
+        if tlv[1][3] == 8:
+            return ('Inventory - Serial Number', tlv[1][4:])
+        if tlv[1][3] == 9:
+            return ('Inventory - Manufacturer Name', tlv[1][4:])
+        if tlv[1][3] == 10:
+            return ('Inventory - Model Name', tlv[1][4:])
+    return tlv
+
+
+def decode_ether_lldp(pkt):
+    dst_mac = pkt[0:6]
+    src_mac = pkt[6:12]
+    ether_proto = pkt[12:14]
+    # https://en.wikipedia.org/wiki/Link_Layer_Discovery_Protocol
+    pkt = pkt[14:]
+    tlvs = []
+    while pkt:
+        tlv, pkt = get_tlv(pkt)
+        if tlv[0] == 'Custom TLV':
+            tlv = get_custom_tlv(tlv)
+        tlvs.append(tlv)
+        if tlv[0] == 'End of LLDPDU':
+            break
+    return (bin2mac(src_mac), bin2mac(dst_mac), ether_proto, tlvs)
+
+
+print(
+    'Please wait at last 30 seconds for LLDP frames to arrive...',
+    file=sys.stderr)
+t0 = time.time()
+try:
+    while True:
+        seconds = int(time.time() - t0)
+        print(f'\r\x1b[K(seconds elapsed: {seconds})', file=sys.stderr, end='')
+
+        events = poller.poll(1000)
+        for fd, evt in events:
+            assert fd == s.sock.fileno(), fd
+            assert evt == select.POLLIN, evt
+
+            for (ifname, ts, pkt) in s.recv_packets():
+                (tv_sec, tv_usec) = ts
+                if ifname:
+                    src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
+                    print(f'\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
+                    print(
+                        't =', tv_sec, tv_usec, 'on', ifname, src_mac, '->',
+                        dst_mac)
+                    print(pformat(tlvs))
+                    print()
+                    n_packets += 1
+except KeyboardInterrupt:
+    print(f'\r\x1b[K', file=sys.stderr, end='')
+except BaseException:
+    print(f'\r\x1b[K', file=sys.stderr, end='')
+    raise
+
+print(f'(seen {n_packets} packets in {seconds} seconds)', file=sys.stderr)
