@@ -168,10 +168,88 @@ def TPACKET_ALIGN(x):
 
 
 def bpf_pack(x):
-    return pack('HBBI', x[0], x[1], x[2], x[3])
+    return pack('HBBI', *x)
 
 
-class Sniffer(object):
+class BaseSniffer:
+    def __init__(self):
+        self.ringbuffer = bytearray()
+        self.offset = 0
+        self.tpacket_hdr_sizeof = TPACKET_ALIGN(ctypes.sizeof(tpacket_hdr()))
+
+    def recv_packets(self):
+        while True:
+            hdr = tpacket_hdr.from_buffer(
+                self.ringbuffer, self.offset * Const.PAGESIZE)
+            if (hdr.tp_status & Const.TP_STATUS_USER) == 0:
+                break
+
+            yield self._extract_packet(hdr)
+
+            hdr.tp_status = Const.TP_STATUS_KERNEL  # "free" it
+            self.offset = ((self.offset + 1) % self.nr_frames)
+
+    def recv_test_packet(self):
+        from base64 import b16decode
+        # buf = self.ringbuffer[self.offset * PSZ:(self.offset + 1) * PSZ]
+        # for idx in range(0, len(buf), 32):
+        #     print(b16encode(buf[idx:(idx + 32)]))
+        # print()
+        buf = bytearray(b16decode((
+            '0100002000000000E7000000E700000042005000087BEA61C6A1070000000000'
+            '110088CC1700000001000206AAC8112233440000000000000000000000000000'
+            '00000180C200000EAAC81122334488CC020704680511223344040703AAC81122'
+            '3344060200780A0B6578616D706C652E636F6D0C5D5562756E74752032302E30'
+            '342E33204C5453204C696E757820352E342E302D39322D67656E657269632023'
+            '3130332D5562756E747520534D5020467269204E6F762032362031363A31333A'
+            '3030205554432032303231207838365F36340E04009C0014100C050101020304'
+            '02000000080010181102FE800000000000006A05112233445566020000000800'
+            '080F766574682D6578616D706C65646576FE0900120F030100000000FE090012'
+            '0F01008000002900000000000000000000000000000000000000000000000000'
+        ).encode('ascii')))
+
+        self.ringbuffer[self.offset:(self.offset + len(buf))] = buf
+        hdr = tpacket_hdr.from_buffer(
+            self.ringbuffer, self.offset * Const.PAGESIZE)
+        return self._extract_packet(hdr)
+
+    def _extract_packet(self, hdr):
+        # The frame size is determined by the maximum frame size you wish
+        # to capture. It is necessary to allow additional space for header
+        # data at the start of each frame which contains a tpacket_hdr or
+        # equivalent, a sockaddr_ll, and two areas of padding needed for
+        # alignment. For TPACKET_V1, the required frame size is:
+        # ...
+        # TPACKET_HDRLEN = 0x1c (aligned -> 0x20)
+        sll = sockaddr_ll.from_buffer(
+            self.ringbuffer,
+            self.offset * Const.PAGESIZE + self.tpacket_hdr_sizeof)
+        assert sll.sll_family == socket.PF_PACKET, sll.sll_family
+        assert sll.sll_hatype == 0x01, sll.sll_hatype
+        assert socket.ntohs(sll.sll_protocol) == 0x88cc, (
+            hex(socket.ntohs(sll.sll_protocol)))
+
+        if sll.sll_pkttype == Const.PACKET_OUTGOING:
+            ifname = None
+        else:
+            try:
+                ifname = interfaces()[sll.sll_ifindex - 1]
+            except IndexError:
+                ifname = f'ifIndex{sll.sll_ifindex}'
+
+        # 0x0  tpacket_hdr + padding
+        # 0x20 sockaddr_ll + padding
+        # 0x42 tp_mac (+ padding)
+        # 0x50 tp_net
+        pkt_offset = self.offset * Const.PAGESIZE + hdr.tp_mac
+        pkt_length = hdr.tp_snaplen
+
+        return (
+            ifname, (hdr.tp_sec, hdr.tp_usec),
+            self.ringbuffer[pkt_offset:(pkt_offset + pkt_length)])
+
+
+class Sniffer(BaseSniffer):
     def __init__(self, nr_frames, filter=FILTER_ETH_ETHER_PROTO_88CC):
         # check that number of frames is a power of 2
         assert (nr_frames & (nr_frames - 1) == 0), nr_frames
@@ -206,56 +284,6 @@ class Sniffer(object):
         # set properties
         self.sock = s
         self.tpacket_hdr_sizeof = TPACKET_ALIGN(ctypes.sizeof(tpacket_hdr()))
-
-    def recv_packets(self):
-        while True:
-            hdr = tpacket_hdr.from_buffer(
-                self.ringbuffer, self.offset * Const.PAGESIZE)
-            if (hdr.tp_status & Const.TP_STATUS_USER) == 0:
-                break
-
-            # The frame size is determined by the maximum frame size you wish
-            # to capture. It is necessary to allow additional space for header
-            # data at the start of each frame which contains a tpacket_hdr or
-            # equivalent, a sockaddr_ll, and two areas of padding needed for
-            # alignment. For TPACKET_V1, the required frame size is:
-            # ...
-            # TPACKET_HDRLEN = 0x1c (aligned -> 0x20)
-            sll = sockaddr_ll.from_buffer(
-                self.ringbuffer,
-                self.offset * Const.PAGESIZE + self.tpacket_hdr_sizeof)
-            assert sll.sll_family == socket.PF_PACKET, sll.sll_family
-            assert sll.sll_hatype == 0x01, sll.sll_hatype
-            assert socket.ntohs(sll.sll_protocol) == 0x88cc, (
-                hex(socket.ntohs(sll.sll_protocol)))
-
-            if sll.sll_pkttype == Const.PACKET_OUTGOING:
-                ifname = None
-            else:
-                try:
-                    ifname = interfaces()[sll.sll_ifindex - 1]
-                except IndexError:
-                    ifname = f'ifIndex{sll.sll_ifindex}'
-
-            # 0x0  tpacket_hdr + padding
-            # 0x20 sockaddr_ll + padding
-            # 0x42 tp_mac (+ padding)
-            # 0x50 tp_net
-            pkt_offset = self.offset * Const.PAGESIZE + hdr.tp_mac
-            pkt_length = hdr.tp_snaplen
-
-            yield (
-                ifname, (hdr.tp_sec, hdr.tp_usec),
-                self.ringbuffer[pkt_offset:(pkt_offset + pkt_length)])
-
-            hdr.tp_status = Const.TP_STATUS_KERNEL  # "free" it
-            self.offset = ((self.offset + 1) % self.nr_frames)
-
-
-s = Sniffer(nr_frames=64)
-n_packets = 0
-poller = select.poll()
-poller.register(s.sock, select.POLLIN)
 
 
 def get_tlv(pkt):
@@ -398,6 +426,26 @@ def decode_ether_lldp(pkt):
         if tlv[0] == 'End of LLDPDU':
             break
     return (bin2mac(src_mac), bin2mac(dst_mac), ether_proto, tlvs)
+
+
+# Test code, fix this:
+if False:
+    s = BaseSniffer()
+    ifname, ts, pkt = s.recv_test_packet()
+    (tv_sec, tv_usec) = ts
+    src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
+    print(
+        't =', tv_sec, tv_usec, 'on', ifname, src_mac, '->',
+        dst_mac)
+    print(pformat(tlvs))
+    print()
+    exit()
+
+
+s = Sniffer(nr_frames=64)
+n_packets = 0
+poller = select.poll()
+poller.register(s.sock, select.POLLIN)
 
 
 print(
