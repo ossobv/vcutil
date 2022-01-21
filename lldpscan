@@ -27,6 +27,14 @@
 # >  ('Management address', '10.11.12.13'),
 # > ^C
 #
+# Todo:
+# - Fix prettier output.
+# - Fix non-verbose vs. verbose output (don't show unnecessary fields).
+# - Store received messages and don't show already recieved ones.
+# - Remove unused code/constants.
+# - Make TLV code more data/lookup-driven and extensible.
+# - Proper shutdown/unmmap code.
+#
 """
 See also:
 github.com/wireshark/wireshark/blob/master/epan/dissectors/packet-lldp.c
