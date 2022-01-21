@@ -32,7 +32,7 @@ BINS = \
 	kubectl-sh-secret \
 	kubectl-sh-wrapper \
 	linux-kernel-autoremove \
-	lldprecv \
+	lldpscan \
 	mysql2csv \
 	pdns-mysql-slave-prune \
 	psdiff \

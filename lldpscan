@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# lldprecv (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+# lldpscan (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
 #
 # Link Layer Discovery Protocol (LLDP) is a link layer protocol used by network
 # devices for advertising their identity, primarily on wired ethernet. Network
 # engineers can use LLDP to see which devices are attached to the same network.
 #
-# lldprecv listens for LLDP frames (broadcast by switches and routers)
+# lldpscan listens for LLDP frames (broadcast by switches and routers)
 # and decodes them. This is a light weight alternative to installing
-# lldpd(1) and having that daemon record LDDP neighbours. Using lldprecv,
+# lldpd(1) and having that daemon record LDDP neighbours. Using lldpscan,
 # you'll see the frames as they arrive. Stop listening with ^C once you've
 # seen enough.
 #
 # Usage (as root):
 #
-# # lldprecv
+# # lldpscan
 #
 # > Please wait at last 30 seconds for LLDP frames to arrive...
 # > (seconds elapsed: 14)
