@@ -121,7 +121,9 @@ class sockaddr_ll(ctypes.Structure):
 
 def bin2mac(s):
     assert len(s) == 6, s
-    return f'{s[0]:02x}:{s[1]:02x}:{s[2]:02x}:{s[3]:02x}:{s[4]:02x}:{s[5]:02x}'
+    return (
+        '{s[0]:02x}:{s[1]:02x}:{s[2]:02x}:{s[3]:02x}:{s[4]:02x}:{s[5]:02x}'
+        .format(s=s))
 
 
 class Const(object):
@@ -235,7 +237,7 @@ class BaseSniffer:
             try:
                 ifname = interfaces()[sll.sll_ifindex - 1]
             except IndexError:
-                ifname = f'ifIndex{sll.sll_ifindex}'
+                ifname = 'ifIndex{sll.sll_ifindex}'.format(sll=sll)
 
         # 0x0  tpacket_hdr + padding
         # 0x20 sockaddr_ll + padding
@@ -361,7 +363,7 @@ def get_tlv(pkt):
         }
         has = set(d.get(k) for k in d.keys() if has & k)
         on = set(d.get(k) for k in d.keys() if on & k)
-        sum_ = sorted(on) + sorted(f'!{i}' for i in (has - on))
+        sum_ = sorted(on) + sorted('!{i}'.format(i=i) for i in (has - on))
         val = sum_
     elif type_ == 8:
         type_ = 'Management address'
@@ -455,7 +457,8 @@ t0 = time.time()
 try:
     while True:
         seconds = int(time.time() - t0)
-        print(f'\r\x1b[K(seconds elapsed: {seconds})', file=sys.stderr, end='')
+        print('\r\x1b[K(seconds elapsed: {seconds})'.format(
+            seconds=seconds), file=sys.stderr, end='')
 
         events = poller.poll(1000)
         for fd, evt in events:
@@ -466,7 +469,7 @@ try:
                 (tv_sec, tv_usec) = ts
                 if ifname:
                     src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
-                    print(f'\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
+                    print('\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
                     print(
                         't =', tv_sec, tv_usec, 'on', ifname, src_mac, '->',
                         dst_mac)
@@ -474,9 +477,10 @@ try:
                     print()
                     n_packets += 1
 except KeyboardInterrupt:
-    print(f'\r\x1b[K', file=sys.stderr, end='')
+    print('\r\x1b[K', file=sys.stderr, end='')
 except BaseException:
-    print(f'\r\x1b[K', file=sys.stderr, end='')
+    print('\r\x1b[K', file=sys.stderr, end='')
     raise
 
-print(f'(seen {n_packets} packets in {seconds} seconds)', file=sys.stderr)
+print('(seen {n_packets} packets in {seconds} seconds)'.format(
+    n_packets=n_packets, seconds=seconds), file=sys.stderr)
