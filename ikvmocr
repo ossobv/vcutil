@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+# ikvmocr (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# ikvmocr looks for a SuperMicro iKVM console window in the screenshot and does
+# character recognition on it. It dumps the screenshot as characters to stdout.
+#
+# If you use GNOME, take a window-only screenshot of your iKVM window using
+# Alt-PrintScreen and feed the saved PNG image to ikvmocr.
+#
+# An example ikvmocr.png is provided with this script to test things, as
+# is a preloaded Glyph database, which may not be complete.
+#
+# Python dependencies:
+# - Pillow (python3-pil)
+#
+# See also:
+# - ipmikvm(1) to simply connecting to SuperMicro IPMI KVM from the console
+# - xpaste(1) to paste characters to the Java iKVM program (kind of the
+#   inverse of this, which reads characters from the program)
+#
+# Todo:
+# - Bonus points if we can paste directly from the X11 copy buffer.
+# - Fix so ikvmocr.js does not need to be in the same directory as this binary.
+#   (This will fail in the default install...) And add user-specific DBs.
+# - Maybe optimize some things for speed. (And possibly improve coordinate
+#   detection.)
+# - Maybe do some constrast editing so we can remove some dupe
+#   characters which are only in the DB because they have an artifact.
+# - Also detect color?
+# - Delegate unknown glyph questions to a separate user interface class.
+# - Explain how glyphs are stored and add option to decode/show them.
+# - Maybe crop glyphs before handling. (Requires looping over the entire
+#   screenshot first. Or hardcoding glyph drop size in the DB.)
+#
+import json
+import os
+import sys
+import time
+from collections import defaultdict
+from functools import wraps
+from tempfile import NamedTemporaryFile
+
+from PIL import Image
+
+
+class Extent:
+    def __init__(self, top, right, bottom, left):
+        assert top < bottom, (top, bottom)
+        assert left < right, (left, right)
+        self.top = top
+        self.right = right      # XXX: should we do right+1?
+        self.bottom = bottom    # XXX: should we do bottom+1?
+        self.left = left
+
+    @property
+    def width(self):
+        return self.right + 1 - self.left
+
+    @property
+    def height(self):
+        return self.bottom + 1 - self.top
+
+    def as_box_tuple(self):
+        return (self.left, self.top, self.right + 1, self.bottom + 1)
+
+    def __repr__(self):
+        return (
+            'Exent(({0.left},{0.top}),({0.right},{0.bottom}),'
+            'w={0.width},h={0.height})'.format(self))
+
+
+def timeit(title=None):
+    def _wrapper(func):
+        func_title = title or func.__name__
+
+        @wraps(func)
+        def _timer(*args, **kwargs):
+            t0 = time.time()
+            ret = func(*args, **kwargs)
+            tn = time.time()
+            print('timing {}: {:.3f} s'.format(
+                func_title, tn - t0), file=sys.stderr)
+            return ret
+        return _timer
+    return _wrapper
+
+
+class IKvmOcrError(ValueError):
+    pass
+
+
+class ImageMixin:
+    BLACK_PIXEL = (0, 0, 0, 255)  # RGBA
+
+    def __init__(self, pilimg):
+        self._img = pilimg
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        self._img.close()
+        self._img = None
+
+    def is_horizontal_black_line(self, y, x_min=0, x_max=None):
+        if x_max is None:
+            x_max = self._img.width
+        for x in range(x_min, x_max):
+            if not self._is_blackish(x, y):
+                return False
+        return True
+
+    def is_vertical_black_line(self, x, y_min=0, y_max=None):
+        if y_max is None:
+            y_max = self._img.height
+        for y in range(y_min, y_max):
+            if not self._is_blackish(x, y):
+                return False
+        return True
+
+    def _is_blackish(self, x, y):
+        "There are too many artifacts to compare against self.BLACK_PIXEL"
+        r, g, b, a = self._img.getpixel((x, y))
+        return (r < 48 and r < 48 and b < 48 and a == 255)
+
+
+class IKvmScreenshot(ImageMixin):
+    """
+    Take a "active window" screenshot using GNOME Alt-PrintScreen and
+    supply the image to this instance.
+    """
+    @classmethod
+    def from_filename(cls, filename):
+        return cls(Image.open(filename))
+
+    @timeit()
+    def get_console_window(self):
+        extent = self.find_console_window_extent()
+        # NOTE: I wonder if this crop is (too) expensive. We could get
+        # away with adding an offset everywhere: make a virtual
+        # interface to _img instead.
+        pilimg = self._img.crop(extent.as_box_tuple())
+        assert pilimg.width == extent.width, (pilimg.width, extent.width)
+        assert pilimg.height == extent.height, (pilimg.height, extent.height)
+        print('found console window at coords=({},{}) size=({},{})'.format(
+            extent.left, extent.top, extent.width, extent.height),
+            file=sys.stderr)
+        return ConsoleWindow(pilimg)
+
+    def find_console_window_extent(self):
+        # self._img.info
+        # {'Software': 'gnome-screenshot',
+        #  'Creation Time': 'wo 23 feb 2022 09:32:57 CET'}
+        top, bottom = self._find_top_bottom()
+        left, right = self._find_right_left(top, (bottom + 1 - top))
+        extent = Extent(top, right, bottom, left)
+        assert (extent.width, extent.height) == (800, 600), extent
+        return extent
+
+    def _find_top_bottom(self):
+        """Assume the window has a black background. Find N black
+        lines in the middle, starting at the top."""
+        center = self._img.width // 2
+        min_width = 400
+        top = self._find_horizontal_black_lines(
+                3, range(0, self._img.height),
+                center - min_width // 2, center + min_width // 2)
+        bottom = self._find_horizontal_black_lines(
+                3, range(self._img.height - 1, -1, -1),
+                center - min_width // 2, center + min_width // 2)
+        assert top < bottom, (top, bottom)
+        return top, bottom
+
+    def _find_horizontal_black_lines(self, how_many, y_iter, x_min, x_max):
+        found_first = None
+        found = 0
+
+        for y in y_iter:
+            if self.is_horizontal_black_line(y, x_min, x_max):
+                if found_first is None:
+                    found_first = y
+                found += 1
+                if found >= how_many:
+                    return found_first
+            else:
+                found_first = None
+                found = 0
+
+        raise IKvmOcrError('{} black lines not found'.format(how_many))
+
+    def _find_right_left(self, top, height):
+        if height == 600:
+            width = 800
+        else:
+            raise IKvmOcrError('height {} not implemented'.format(height))
+
+        # Take top left position, and stop when it's black.
+        for x in range(0, self._img.width - width):
+            if self._is_blackish(x, top):
+                left = x
+                break
+        else:
+            raise IKvmOcrError('no top left black pixel found')
+
+        # Check right side.
+        right = x + width - 1
+        assert right < self._img.width, (x, width, self._img.width)
+        if not self._is_blackish(right, top):
+            pixel = self._img.getpixel((right, top))
+            raise IKvmOcrError('top right {},{} pixel not black: {}'.format(
+                right, top, pixel))
+        if right < self._img.width:
+            if self._is_blackish(right + 1, top):
+                raise IKvmOcrError('expected non-black pixel at {},{}'.format(
+                    right + 1, top))
+
+        assert left < right, (left, right)
+        return left, right
+
+
+class ConsoleWindow(ImageMixin):
+    """
+    Hold the console window and deduce column/row width/height and offset.
+    """
+    def __init__(self, pilimg):
+        self._img = pilimg
+
+    def get_console_grid(self):
+        (col_width, row_height), (left, top) = self.find_col_dimensions()
+
+        col_count = (self._img.width - left) // col_width
+        row_count = (self._img.height - top) // row_height
+        right = left + col_count * col_width - 1
+        bottom = top + row_count * row_height - 1
+        extent = Extent(top, right, bottom, left)
+        assert extent.width % col_width == 0, extent
+        assert extent.height % row_height == 0, extent
+
+        # NOTE: I wonder if this crop is (too) expensive. We could get
+        # away with adding an offset everywhere: make a virtual
+        # interface to _img instead.
+        pilimg = self._img.crop(extent.as_box_tuple())
+        assert pilimg.width == extent.width, (pilimg.width, extent.width)
+        assert pilimg.height == extent.height, (pilimg.height, extent.height)
+        print('found console grid at coords=({},{}) size=({},{})'.format(
+            extent.left, extent.top, extent.width, extent.height),
+            file=sys.stderr)
+        print('found console grid with {}x{} characters sized=({},{})'.format(
+            col_count, row_count, col_width, row_height), file=sys.stderr)
+        return ConsoleGrid(
+            pilimg, col_count, row_count, col_width, row_height)
+
+    @timeit()
+    def find_col_dimensions(self):
+        horizontal_black_lines = [
+            y for y in range(0, self._img.height)
+            if self.is_horizontal_black_line(y)]
+        vertical_black_lines = [
+            x for x in range(0, self._img.width)
+            if self.is_vertical_black_line(x)]
+
+        col_width, x_offset = self._find_size_offset_from_black(
+            vertical_black_lines)
+        row_height, y_offset = self._find_size_offset_from_black(
+            horizontal_black_lines)
+        return ((col_width, row_height), (x_offset, y_offset))
+
+    def _find_size_offset_from_black(self, black_lines):
+        outlines = self._outlines(black_lines)
+        size, offset = self._most_common_diff(outlines)
+        return size, offset
+
+    @staticmethod
+    def _outlines(numbers):
+        ret = []
+        for prev, number in zip(numbers[0:-1], numbers[1:]):
+            if prev != number - 1:
+                ret.append(prev)
+        return ret
+
+    @staticmethod
+    def _most_common_diff(consecutive_values):
+        diffs = defaultdict(list)
+        for prev, val in zip(consecutive_values[0:-1], consecutive_values[1:]):
+            diffs[val - prev].append(prev)
+        diffs = list(sorted(diffs.items(), key=(lambda x: -len(x[1]))))
+        return diffs[0][0], diffs[0][1][0]
+
+
+class ConsoleGrid(ImageMixin):
+    """
+    Hold the console window with letters
+    """
+    def __init__(self, pilimg, cols, rows, colsize, rowsize):
+        super().__init__(pilimg)
+        self.cols = cols
+        self.rows = rows
+        self.colsize = colsize
+        self.rowsize = rowsize
+
+    def set_glyphs(self, glyphs):
+        self.glyphs = glyphs
+        self.glyphs.set_active_size(self.colsize, self.rowsize)
+
+    @timeit()
+    def get_content(self):
+        lines = []
+        for row in range(0, self.rows):
+            line = []
+            for col in range(0, self.cols):
+                char = self.get_character(col, row)
+                glyph_id = char.as_int16s()
+                try:
+                    string = self.glyphs.get(glyph_id)
+                except KeyError:
+                    print('UNKNOWN GLYPH:', [hex(gl) for gl in glyph_id])
+                    print(char.as_string())
+                    string = input('Which letter? ')
+                    if string.startswith(' '):
+                        string = ' '
+                    else:
+                        string = string.strip()
+                    assert string != '', repr(string)
+                    self.glyphs.set(glyph_id, string)
+
+                line.append(string)
+            lines.append(''.join(line))
+        return '\n'.join(lines)
+
+    def get_character(self, col, row):
+        pixels = []
+        yoff = self.rowsize * row
+        xoff = self.colsize * col
+        for y in range(yoff, yoff + self.rowsize):
+            for x in range(xoff, xoff + self.colsize):
+                pixels.append(self._img.getpixel((x, y)))
+        return ConsoleChar(self.colsize, self.rowsize, pixels)
+
+
+class ConsoleChar:
+    def __init__(self, colsize, rowsize, data):
+        self.colsize = colsize
+        self.rowsize = rowsize
+        self._parse_data(data)
+
+    def _parse_data(self, data):
+        bwdata = []
+        for pixel in data:
+            bwdata.append(self._is_on(pixel))
+        self._bwdata = bwdata
+
+    def as_int16s(self):
+        "Encode as list of 64 bit integers (63 bit actually)"
+        ret = []
+        bitsum = bits = 0  # encode values per three bits
+        for number in self._as_array():
+            # Turn any number higher than 7 into 7+0.
+            while number > 7:
+                number -= 7
+
+                bitsum = (bitsum << 3) | 7
+                bits += 3
+                if bits >= 63:
+                    ret.append(bitsum)
+                    bitsum = bits = 0
+
+                bitsum = (bitsum << 3) | 0
+                bits += 3
+                if bits >= 63:
+                    ret.append(bitsum)
+                    bitsum = bits = 0
+
+            bitsum = (bitsum << 3) | number
+            bits += 3
+            if bits >= 63:
+                ret.append(bitsum)
+                bitsum = bits = 0
+
+        if bitsum:
+            ret.append(bitsum)
+
+        return tuple(ret)
+
+    def _as_array(self):
+        "Encode as counts of true/false, starting with false"
+        ret = []
+        last, count = False, 0
+        for cur in self._bwdata:
+            if cur == last:
+                count += 1
+            else:
+                ret.append(count)
+                last, count = cur, 1
+        # NOTE: We purposefully do NOT add the last count. We don't need
+        # it. (It follows from the previous values along with the
+        # character dimensions.)
+        return tuple(ret)
+
+    def as_string(self):
+        line = []
+        lines = []
+        for idx, cur in enumerate(self._bwdata, 1):
+            line.append('[X]' if cur else '   ')
+            if idx % self.colsize == 0:
+                line.append('|')
+                lines.append(''.join(line))
+                line = []
+        assert line == [], line
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _is_on(pixel):
+        assert pixel[3] == 255, pixel
+        return (pixel[0] + pixel[1] + pixel[2]) >= 144
+
+
+class ConsoleGlyphs:
+    def __init__(self):
+        self._storage = {}
+        self._active_cols_rows = None
+
+    @timeit('(the loading of glyphs from disk)')
+    def load_from_file(self, fp):
+        data = json.load(fp)
+        storage = {}
+        for cols_rows, js_array in data.items():
+            cols, rows = [int(i) for i in cols_rows.split(',')]
+            storage[(cols, rows)] = self._alpha_js_to_mem(js_array)
+        self._storage = storage
+
+    def save_to_file(self, fp):
+        """This does manual JS writing so we get a pretty/readable DB.
+        We wanted to store the int16s as 0xNUMBER, but JS does not allow
+        0x notation, so now it's a hex string instead (see
+        _str_from_glyph_id)."""
+        fp.write('{\n')
+        for idx1, ((cols, rows), mem_dict) in enumerate(
+                sorted(self._storage.items()), 1):
+            trailing_comma1 = ',' if idx1 != len(self._storage) else ''
+            fp.write('  "{},{}": {{\n'.format(cols, rows))
+            js_dict = self._alpha_mem_to_js(mem_dict)
+            for idx2, (string, glyph_ids) in enumerate(
+                    sorted(js_dict.items()), 1):
+                glyph_format = '", "'.join(sorted(glyph_ids))
+                trailing_comma2 = ',' if idx2 != len(js_dict) else ''
+                fp.write('    {}: ["{}"]{}\n'.format(
+                    json.dumps(string), glyph_format, trailing_comma2))
+            fp.write('  }}{}\n'.format(trailing_comma1))
+        fp.write('}\n')
+
+    def set_active_size(self, colsize, rowsize):
+        self._active_cols_rows = (colsize, rowsize)
+        if self._active_cols_rows not in self._storage:
+            self._storage[self._active_cols_rows] = {}
+
+    def get(self, glyph_id):
+        return self._storage[self._active_cols_rows][glyph_id]
+
+    def set(self, glyph_id, string):
+        assert glyph_id not in self._storage[self._active_cols_rows]
+        self._storage[self._active_cols_rows][glyph_id] = string
+
+    def _str_from_glyph_id(self, glyph_id):
+        "[0x123, 0x456] => '123:456'"
+        glyph_parts = ['{:x}'.format(gl) for gl in glyph_id]
+        return ':'.join(glyph_parts)
+
+    def _str_to_glyph_id(self, glyph_id):
+        "'123:456' => [0x123, 0x456]"
+        if not glyph_id:
+            return ()
+        return tuple(int(gl, 16) for gl in glyph_id.split(':'))
+
+    def _alpha_mem_to_js(self, mem_dict):
+        ret = defaultdict(list)
+        for glyph_id, string in mem_dict.items():
+            ret[string].append(self._str_from_glyph_id(glyph_id))
+        return ret
+
+    def _alpha_js_to_mem(self, js_dict):
+        ret = {}
+        for string, str_glyph_ids in js_dict.items():
+            for str_glyph_id in str_glyph_ids:
+                glyph_id = self._str_to_glyph_id(str_glyph_id)
+                assert glyph_id not in ret, (string, str_glyph_id, glyph_id)
+                ret[glyph_id] = string
+        return ret
+
+
+def read_screenshot_and_dump(screenshot_filename, glyphs):
+    with IKvmScreenshot.from_filename(screenshot_filename) as screenshot:
+        with screenshot.get_console_window() as consolewin:
+            with consolewin.get_console_grid() as consolegrid:
+                consolegrid.set_glyphs(glyphs)
+                content = consolegrid.get_content()
+                print('----', screenshot_filename, '----', file=sys.stderr)
+                for line in content.split('\n'):
+                    print(line)
+
+
+def main(screenshot_filenames, glyph_db_filename):
+    glyphs = ConsoleGlyphs()
+    try:
+        with open(glyph_db_filename, 'r') as fp:
+            glyphs.load_from_file(fp)
+    except FileNotFoundError:
+        print('no glyph db found at {}, creating new'.format(
+            glyph_db_filename), file=sys.stderr)
+
+    try:
+        for screenshot_filename in screenshot_filenames:
+            read_screenshot_and_dump(screenshot_filename, glyphs)
+    finally:
+        with NamedTemporaryFile(
+                prefix=(os.path.basename(glyph_db_filename) + '.'),
+                dir=os.path.dirname(glyph_db_filename),
+                mode='w', delete=False) as fp:
+            try:
+                glyphs.save_to_file(fp)
+            except BaseException:
+                os.unlink(fp.name)
+                raise
+        os.rename(fp.name, glyph_db_filename)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) == 1:
+        print('''\
+usage: ikvmocr SCREENSHOT_FILE...
+
+ikvmocr looks for a SuperMicro iKVM console window in the screenshot and does
+character recognition on it. It dumps the screenshot as characters to stdout.
+
+If you use GNOME, take a window-only screenshot of your iKVM window using
+Alt-PrintScreen and feed the saved PNG image to ikvmocr.
+
+See also:
+- ipmikvm(1) to simply connecting to SuperMicro IPMI KVM from the console
+- xpaste(1) to paste characters to the Java iKVM program (the inverse of this)
+''', file=sys.stderr)
+        sys.exit(1)
+
+    glyph_db_filename = os.path.join(os.path.dirname(__file__), 'ikvmocr.js')
+    main(sys.argv[1:], glyph_db_filename)

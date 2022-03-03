@@ -25,6 +25,7 @@ BINS = \
 	git-reapply-patch \
 	gitlab-hook-postcommit-coloremail \
 	ifupdown2netplan \
+	ikvmocr \
 	indirect-scp \
 	interfaces2netplan \
 	ipmikvm \
