@@ -157,7 +157,6 @@ class IKvmScreenshot(ImageMixin):
         top, bottom = self._find_top_bottom()
         left, right = self._find_right_left(top, (bottom + 1 - top))
         extent = Extent(top, right, bottom, left)
-        assert (extent.width, extent.height) == (800, 600), extent
         return extent
 
     def _find_top_bottom(self):
@@ -194,6 +193,8 @@ class IKvmScreenshot(ImageMixin):
     def _find_right_left(self, top, height):
         if height == 600:
             width = 800
+        elif height == 768:
+            width = 1024
         else:
             raise IKvmOcrError('height {} not implemented'.format(height))
 
