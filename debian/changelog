@@ -1,3 +1,17 @@
+vcutil (1.31) stable; urgency=low
+
+  * Added:
+    - ikvmocr: Quick and dirty tool to OCR screenshots from SuperMicro iKVM.
+
+  * Improvements:
+    - efibootmirrorsetup: Always create FAT16 partitions for EFI. Fixes
+      issues with 4096 logical sector sizes.
+    - lldpscan: Renamed from lldprecv.
+    - lldpscan: Improved Python compatibility.
+    - mysql2csv: Some mysql/python compatibility tweaks.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 04 Mar 2022 17:51:35 +0100
+
 vcutil (1.30) stable; urgency=low
 
   * Added:
