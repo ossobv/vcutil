@@ -27,7 +27,6 @@
 # - Maybe do some constrast editing so we can remove some dupe
 #   characters which are only in the DB because they have an artifact.
 # - Also detect color?
-# - Delegate unknown glyph questions to a separate user interface class.
 # - Explain how glyphs are stored and add option to decode/show them.
 # - Maybe crop glyphs before handling. (Requires looping over the entire
 #   screenshot first. Or hardcoding glyph drop size in the DB.)
@@ -314,19 +313,7 @@ class ConsoleGrid(ImageMixin):
             for col in range(0, self.cols):
                 char = self.get_character(col, row)
                 glyph_id = char.as_int16s()
-                try:
-                    string = self.glyphs.get(glyph_id)
-                except KeyError:
-                    print('UNKNOWN GLYPH:', [hex(gl) for gl in glyph_id])
-                    print(char.as_string())
-                    string = input('Which letter? ')
-                    if string.startswith(' '):
-                        string = ' '
-                    else:
-                        string = string.strip()
-                    assert string != '', repr(string)
-                    self.glyphs.set(glyph_id, string)
-
+                string = self.glyphs.get(glyph_id, as_string=char.as_string)
                 line.append(string)
             lines.append(''.join(line))
         return '\n'.join(lines)
@@ -404,7 +391,7 @@ class ConsoleChar:
         line = []
         lines = []
         for idx, cur in enumerate(self._bwdata, 1):
-            line.append('[X]' if cur else '   ')
+            line.append('[X]' if cur else ' - ')
             if idx % self.colsize == 0:
                 line.append('|')
                 lines.append(''.join(line))
@@ -457,8 +444,22 @@ class ConsoleGlyphs:
         if self._active_cols_rows not in self._storage:
             self._storage[self._active_cols_rows] = {}
 
-    def get(self, glyph_id):
-        return self._storage[self._active_cols_rows][glyph_id]
+    def get(self, glyph_id, as_string=None):
+        try:
+            ch = self._storage[self._active_cols_rows][glyph_id]
+        except KeyError:
+            assert callable(as_string), (glyph_id, s_string)
+            print('UNKNOWN GLYPH_ID:', self._str_from_glyph_id(glyph_id))
+            print('UNKNOWN GLYPH LAYOUT:')
+            print(as_string())
+            ch = input('Specify which character: ')
+            if ch.startswith(' '):
+                ch = ' '
+            else:
+                ch = ch.strip()
+            assert ch != '', repr(ch)
+            self.set(glyph_id, ch)
+        return ch
 
     def set(self, glyph_id, string):
         assert glyph_id not in self._storage[self._active_cols_rows]
