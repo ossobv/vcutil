@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2019 // Public Domain
+# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2022 // Public Domain
 #
 # This mysql2csv dump script is a convenient way to dump and/or prune
 # large tables. Instead of selecting all data at once, it takes chunks
@@ -39,14 +39,16 @@
 # - 2019-04-02: Trap incorrect None conversions by MySQLdb: better crash
 #               than silently truncate/NULLify values.
 # - 2019-04-02: Handle YYYY-mm-dd HH:MM:SS[.qqq[qqq]] TIMESTAMP values.
+# - 2022-03-04: Compatibility tweaks (py2/3, DATETIME NULL, BLOB).
 #
-from __future__ import print_function
+from __future__ import print_function, unicode_literals
 import argparse  # pip install argparse on old pre-2.7 python
 import getpass
 import sys
 import time
 
 from MySQLdb import connect, converters
+from base64 import b16encode
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -81,6 +83,16 @@ def _make_conversion_safe(orig_conversion):
         "Assert that None is never returned."
         ret = orig_conversion(s)
         if ret is None:
+            # > select ts, ts is null, ts = '0000-00-00 00:00:00'
+            #   from communication where ts is null;
+            # +---------------------+------------+----------------------------+
+            # | ts                  | ts is null | ts = '0000-00-00 00:00:00' |
+            # +---------------------+------------+----------------------------+
+            # | 0000-00-00 00:00:00 |          0 |                          1 |
+            # +---------------------+------------+----------------------------+
+            # ... so ts IS NULL but NOT NULL at the same time.
+            if s == '0000-00-00 00:00:00':
+                return "0000-00-00 00:00:00"
             raise NotImplementedError(
                 'conversion from {!r} yielded None; bug in MySQLdb?'.format(s))
         return ret
@@ -297,6 +309,8 @@ def to_string(data):
         return str(data)
     if data is None:
         return 'NULL'
+    if isinstance(data, bytes):
+        return '0x%s' % (b16encode(data).decode('ascii'),)  # UPPERCASE
     raise TypeError('Unexpected type %s for data %r: %s' % (
         type(data), data, data))
 
@@ -304,7 +318,7 @@ def to_string(data):
 def parse_defaults_file(filename):
     config = RawConfigParser()
     with open(filename, 'r') as fp:
-        config.readfp(fp)
+        config.read_file(fp)
 
     sections = config.sections()
     for possible_section in ('mysql2csv', 'client'):
