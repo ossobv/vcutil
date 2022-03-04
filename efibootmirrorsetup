@@ -1,5 +1,6 @@
 #!/bin/sh
-# efibootmirrorsetup (part of ossobv/vcutil) // wdoekes/2020 // Public Domain
+# efibootmirrorsetup (part of ossobv/vcutil) // wdoekes/2020-2022
+#   // Public Domain
 #
 # Setup helper script to set EFI up on software-raid mirrored disks, and
 # keep them in sync. If one disk fails or is removed, you will
@@ -297,7 +298,7 @@ check_two_efi_partitions() {
         # Two options, use FAT16, or manually reduce the number of sectors
         # per cluster to 1 (using -s 1), but that is only valid if the
         # sectors are large enough (4096).
-        mkfs -t vfat -F 16 -n EFI $destpart
+        mkfs.fat -F 16 -n EFI $destpart
 
         located="$(locate_efi_partitions)"
         located_n=$(lines "$located")
