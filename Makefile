@@ -65,6 +65,9 @@ OTHER = \
 	Makefile \
 	README.rst \
 	gitlab-hook-postcommit-coloremail.example \
+	ikvmocr.js \
+	ikvmocr-1.png \
+	ikvmocr-2.png \
 	psdiff.hash \
 	psdiff.rst \
 	tcpdump247 \

@@ -20,8 +20,6 @@
 #
 # Todo:
 # - Bonus points if we can paste directly from the X11 copy buffer.
-# - Fix so ikvmocr.js does not need to be in the same directory as this binary.
-#   (This will fail in the default install...) And add user-specific DBs.
 # - Maybe optimize some things for speed. (And possibly improve coordinate
 #   detection.)
 # - Maybe do some constrast editing so we can remove some dupe
@@ -504,13 +502,26 @@ def read_screenshot_and_dump(screenshot_filename, glyphs):
 
 
 def main(screenshot_filenames, glyph_db_filename):
+    glyph_db_filenames = [
+        glyph_db_filename,
+        os.path.expanduser('~/.local/share/ikvmocr/ikvmocr.js'),
+    ]
     glyphs = ConsoleGlyphs()
-    try:
-        with open(glyph_db_filename, 'r') as fp:
-            glyphs.load_from_file(fp)
-    except FileNotFoundError:
-        print('no glyph db found at {}, creating new'.format(
+    for glyph_db_filename in glyph_db_filenames:
+        try:
+            with open(glyph_db_filename, 'r') as fp:
+                glyphs.load_from_file(fp)
+        except FileNotFoundError:
+            pass
+        else:
+            break
+    else:
+        print('no glyph db found at {}, CREATING NEW'.format(
             glyph_db_filename), file=sys.stderr)
+        try:
+            os.makedirs(os.path.dirname(glyph_db_filename))
+        except FileExistsError:
+            pass
 
     try:
         for screenshot_filename in screenshot_filenames:
@@ -538,6 +549,9 @@ character recognition on it. It dumps the screenshot as characters to stdout.
 
 If you use GNOME, take a window-only screenshot of your iKVM window using
 Alt-PrintScreen and feed the saved PNG image to ikvmocr.
+
+The glyph configuration file is taken from the same directory as the binary,
+if it exists. Otherwise it uses ~/.local/share/ikvmocr/ikvmocr.js.
 
 See also:
 - ipmikvm(1) to simply connecting to SuperMicro IPMI KVM from the console
