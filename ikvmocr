@@ -448,7 +448,7 @@ class ConsoleGlyphs:
         try:
             ch = self._storage[self._active_cols_rows][glyph_id]
         except KeyError:
-            assert callable(as_string), (glyph_id, s_string)
+            assert callable(as_string), (glyph_id, as_string)
             print('UNKNOWN GLYPH_ID:', self._str_from_glyph_id(glyph_id))
             print('UNKNOWN GLYPH LAYOUT:')
             print(as_string())
