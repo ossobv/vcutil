@@ -15,15 +15,15 @@
 # Supply /dev/disk and /dev/otherdisk.
 #
 # It will do the following, if it hasn't been done yet:
-# - ensure there is a FAT32 fs on the other disks EFI partition
+# - ensure there is a FAT filesystem on the other drive's EFI partition
 # - ask if it can update fstab for you (you'll get to see a diff)
 # - mount the EFI partitions on /boot/efi and /boot/efi2
 # - ask if it may add/update zz-grub-install-efibootmirrorsetup in the
 #   /etc/kernel/postinst.d/ update hooks
 # - run that hook, inserting both partitions into the EFI boot order
 #
-# NOTE: If the partition IDs are equal on the different disks (maybe you
-# cloned the disks), it will prompt you to manually fix that.
+# NOTE: If the partition IDs are equal on the different drives (maybe you
+# cloned the drives), it will prompt you to manually fix that.
 #
 # The script is idempotent, so running it multiple times should be safe.
 #
@@ -38,7 +38,7 @@
 #     HD(<N>,GPT,<PARTUUID>,0x800,0x100000)/File(\EFI\UBUNTU\SHIMX64.EFI)
 #
 # The DISK_MODEL_NAME and PARTUUID speak for themselves (see blkid). The
-# N is the Nth partition on the disk (2 for sda2). The File() path may
+# N is the Nth partition on the drive (2 for sda2). The File() path may
 # be different, for starters depending on whether secure boot is
 # enabled or not.
 #
@@ -104,7 +104,7 @@ check_two_disk_args() {
         echo "versus:" >&2
         printf "  /dev/$disk1p%s %s\\n" $partitions1 >&2
         echo >&2
-        echo -n "Is this the right disk? Proceed anyway [y/N]? "
+        echo -n "Is this the right drive? Proceed anyway [y/N]? "
         read yn
         if test "$yn" != y; then
             echo "Aborted" >&2
@@ -258,7 +258,7 @@ check_two_efi_partitions() {
         exit 1
     elif test $located_n -gt 1 &&
             test $(echo "$located"|cut -d' ' -f1|sort -u| wc -l) -eq 1; then
-        echo "Did not expect more VFAT partitions on same disk. Abort" >&2
+        echo "Did not expect more VFAT partitions on same drive. Abort" >&2
         exit 1
     fi
 
@@ -287,7 +287,17 @@ check_two_efi_partitions() {
             echo "Aborted" >&2
             exit 1
         fi
-        mkfs -t vfat -F 32 -n EFI $destpart
+        # Until this commit, the sectors/cluster default for FAT32 is wrong:
+        # https://github.com/dosfstools/dosfstools/pull/153/commits/
+        #   404ead8adb76fcb3a3521c0c3f13ef39898c0818
+        # For a 510MiB filesystem, we'd get 130300 clusters for 512 byte
+        # sectors (4K clusters), but only 16312 clusters for 4096 byte
+        # sectors (32K clusters(!)). Microsoft and UEFI systems will detect
+        # FAT16 if there are fewer than 65,525 clusters.
+        # Two options, use FAT16, or manually reduce the number of sectors
+        # per cluster to 1 (using -s 1), but that is only valid if the
+        # sectors are large enough (4096).
+        mkfs -t vfat -F 16 -n EFI $destpart
 
         located="$(locate_efi_partitions)"
         located_n=$(lines "$located")
