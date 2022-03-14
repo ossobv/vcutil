@@ -20,6 +20,8 @@
 #
 # Todo:
 # - Bonus points if we can paste directly from the X11 copy buffer.
+# - Vertical grid dection is poor: is_black returns false negatives for
+#   various images. Improve detection before doing other contrast editing..
 # - Maybe optimize some things for speed. (And possibly improve coordinate
 #   detection.)
 # - Maybe do some constrast editing so we can remove some dupe
@@ -211,6 +213,9 @@ class IKvmScreenshot(ImageMixin):
             raise IKvmOcrError('top right {},{} pixel not black: {}'.format(
                 right, top, pixel))
         if right < self._img.width:
+            # Check that the right side of the console window looks like
+            # a window (non-black). Only useful when we assume that this is
+            # a screenshot of a window and not simply the window contents.
             if self._is_blackish(right + 1, top):
                 raise IKvmOcrError('expected non-black pixel at {},{}'.format(
                     right + 1, top))
@@ -246,6 +251,8 @@ class ConsoleWindow(ImageMixin):
         print('found console grid at coords=({},{}) size=({},{})'.format(
             extent.left, extent.top, extent.width, extent.height),
             file=sys.stderr)
+        assert 3 <= col_width <= 72 and 3 <= row_height <= 72, (
+            col_width, row_height)  # sanity check
         print('found console grid with {}x{} characters sized=({},{})'.format(
             col_count, row_count, col_width, row_height), file=sys.stderr)
         return ConsoleGrid(
@@ -256,14 +263,29 @@ class ConsoleWindow(ImageMixin):
         horizontal_black_lines = [
             y for y in range(0, self._img.height)
             if self.is_horizontal_black_line(y)]
+        row_height, y_offset = self._find_size_offset_from_black(
+            horizontal_black_lines)
+
         vertical_black_lines = [
             x for x in range(0, self._img.width)
             if self.is_vertical_black_line(x)]
-
         col_width, x_offset = self._find_size_offset_from_black(
             vertical_black_lines)
-        row_height, y_offset = self._find_size_offset_from_black(
-            horizontal_black_lines)
+
+        if not (3 <= col_width <= 72 and 3 <= row_height <= 72):
+            print('DEBUG: detected width x height: {}x{}'.format(
+                col_width, row_height), file=sys.stderr)
+            print('DEBUG: horizontal lines {}'.format(
+                horizontal_black_lines), file=sys.stderr)
+            print('DEBUG: horizontal outline {}'.format(self._outlines(
+                horizontal_black_lines)), file=sys.stderr)
+            print('DEBUG: vertical lines {}'.format(
+                vertical_black_lines), file=sys.stderr)
+            print('DEBUG: vertical outline {}'.format(self._outlines(
+                vertical_black_lines)), file=sys.stderr)
+            raise IKvmOcrError('grid width/height not sane: {}x{}'.format(
+                col_width, row_height))
+
         return ((col_width, row_height), (x_offset, y_offset))
 
     def _find_size_offset_from_black(self, black_lines):
