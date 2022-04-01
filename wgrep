@@ -1,5 +1,5 @@
 #!/bin/sh
-# wgrep (part of ossobv/vcutil) // wdoekes/2010,2015 // Public Domain
+# wgrep (part of ossobv/vcutil) // wdoekes/2010,2015,2022 // Public Domain
 #
 # Greps only these hardcoded file types for the arguments. Arguments to
 # grep are still supported. Use this to search a directory tree while
@@ -16,7 +16,7 @@ find "$path" \
     -regextype posix-extended \
     -regex '.*\.('\
 'asp|c|cc|cfg|conf|cpp|css|cxx|erb|go|'\
-'h|hpp|htm|html|java|js|less|m4|md|'\
+'h|hpp|htm|html|j2|java|js|less|m4|md|'\
 'php|po|pp|py|rb|rst|'\
 'sh|sls|sql|tpl|template|txt|xml|yaml|yml)' \
     '!' -name '*.min.*' \
