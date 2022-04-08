@@ -35,6 +35,7 @@ from base64 import b16decode
 from bisect import insort
 from collections import defaultdict, namedtuple
 from gzip import decompress
+from itertools import chain
 from socket import inet_ntoa
 from struct import unpack
 from warnings import warn
@@ -115,13 +116,21 @@ def pcap_file_to_records(fp):
 
 
 def pcap_text_to_records(fp):
+    it = iter(fp)
+    line = next(it)
+    if line.startswith(b'\xd4\xc3\xb2\xa1'):
+        fp.seek(0)
+        for pcap_record in pcap_file_to_records(fp):
+            yield pcap_record
+        return
+
     # 13:24:43.608757 IP 10.1.2.3.3384 > 10.5.5.5.12201:
     #   UDP, bad length 1804 > 1472
     line_re = re.compile(br'^\S')
     # <TAB>0x0000:  4500 05dc 3f17 2000 3b11 a219 0a01 0203  E...?...;....[1!
     data_re = re.compile(br'^\s+[0-9a-fx]+:\s*(?P<hexdata>.{39})')
     buf = bytearray()
-    for line in fp:
+    for line in chain([line], it):
         if line_re.match(line):
             if buf:
                 pcap_record = PcapRecord(0, 0, 0, 0, LINKTYPE_RAW, bytes(buf))
@@ -131,6 +140,8 @@ def pcap_text_to_records(fp):
             m = data_re.match(line)
             buf.extend(b16decode(
                 m.groupdict()['hexdata'].replace(b' ', b'').upper()))
+        else:
+            raise NotImplementedError(f'unexpected data {line!r}')
     if buf:
         pcap_record = PcapRecord(0, 0, 0, 0, LINKTYPE_RAW, bytes(buf))
         yield pcap_record
