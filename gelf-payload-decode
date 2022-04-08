@@ -223,8 +223,9 @@ class PcapRecordDefragmenter:
                     pcap_record.data[data_offset:(data_offset + data_len)])
                 packet.records = (pcap_record,)
                 if tup in self._fragments:
-                    warn('Overwriting dupe packet %r: %s',
-                         tup, self._fragments[tup])
+                    warn(
+                        f'Overwriting dupe packet {tup!r}: '
+                        f'{self._fragments[tup]}')
                 insort(self._fragments[tup], (
                     ip_frag_off, ip_frag_more, packet))
             else:
@@ -361,7 +362,12 @@ class GelfRecord:
             # header automatically.
             #
             # [...] GZIP is the protocol default.
-            self._data = decompress(self._datagram.data)
+            if self._datagram.data[0:2] == b'\x1f\x8b':  # gzip magic + 8 hdrs
+                self._data = decompress(self._datagram.data)
+            elif self._datagram.data[0:2] == b'{"':
+                self._data = self._datagram.data
+            else:
+                raise NotImplementedError(self._datagram.data[0:10])
         return self._data
 
     def get_pretty_data(self):
@@ -397,3 +403,8 @@ for gelfrecord in gelfdefragmenter:
         print(f'/* {gelfrecord.get_header()} */', file=sys.stderr)
         print(gelfrecord.get_data().decode('utf-8'))
         print(gelfrecord.get_pretty_data(), file=sys.stderr)
+
+if defragmenter._fragments:
+    warn(f'{len(defragmenter._fragments)} orphan UDP fragments at EOF')
+if gelfdefragmenter._fragments:
+    warn(f'{len(gelfdefragmenter._fragments)} orphan GELF fragments at EOF')
