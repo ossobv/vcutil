@@ -19,6 +19,7 @@ BINS = \
 	efibootmirrorsetup \
 	etccleaner \
 	filespeed \
+	gelf-payload-decode \
 	gitbackhub \
 	git-failed-msg \
 	git-hook-postcommit-coloremail \

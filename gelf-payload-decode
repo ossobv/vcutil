@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+# gelf-payload-decode (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Decodes GELF UDP packets. Prints decoded packets to stdout. Prints headers
+# and pretty formatted packets to stderr.
+#
+# (Although in fact, this is more a demonstration of decoding pcaps/tcpdump
+# and reassembling UDP. The GELF decoding is just a gzip decompress of the
+# data.)
+#
+# Example usage, reading from a PCAP file:
+#
+#   tcpdump -nni enp2s0 -s0 -w gelf-packets.pcap -vv \
+#     'host 10.1.2.3 and ((udp and port 12201) or (ip[6:2] & 0x1fff != 0))'
+#
+#   gelf-payload-decode [--only-fragmented] gelf-packets.pcap
+#
+# Example usage, reading tcpdump output through stdin:
+#
+#   gelf-payload-decode <<EOF
+#   ...tcpdump-X-output...
+#   EOF
+#
+# Example output:
+#
+#   <2> /* UDP 10.1.2.3:3384 -> 10.5.5.5:12201 length=1959 gelflength=7115 */
+#   <1> {"_LoggerName":"somelogger","_Severity":"DEBUG",...}
+#   <2> {
+#   <2>   "_LoggerName": "somelogger",
+#   <2>   "_Severity": "DEBUG",
+#   <2> ...
+#   <2> }
+#
+from base64 import b16decode
+from bisect import insort
+from collections import defaultdict, namedtuple
+from gzip import decompress
+from socket import inet_ntoa
+from struct import unpack
+from warnings import warn
+
+import json
+import re
+import sys
+
+LINKTYPE_ETHERNET = 1
+LINKTYPE_RAW = 101
+
+PcapHeader = namedtuple('PcapHeader', (
+    'magic_number version_major version_minor thiszone sigfigs '
+    'snaplen network'))
+PcapHeader.make = (lambda record: (
+    PcapHeader._make(unpack('IHHiIII', record))))
+PcapHeader.length = 24
+
+
+PcapRecord = namedtuple('PcapRecord', (
+    'ts_sec ts_usec incl_len orig_len linktype data'))
+PcapRecord.make = (lambda record: (
+    PcapRecord._make(unpack('IIII', record) + (0, None))))
+PcapRecord.length = 16
+
+
+class UdpDatagram:
+    header_size = 8
+
+    def __init__(self, src, dst, sport, dport, length, data, records=()):
+        self._src = src
+        self._dst = dst
+        self.sport = sport
+        self.dport = dport
+        self.length = length
+        self.data = data
+        self.records = records
+
+    @property
+    def src(self):
+        return inet_ntoa(self._src)
+
+    @property
+    def dst(self):
+        return inet_ntoa(self._dst)
+
+    def get_header(self):
+        return (
+            f'UDP {self.src}:{self.sport} -> '
+            f'{self.dst}:{self.dport} length={self.length}')
+
+
+def pcap_file_to_records(fp):
+    record = fp.read(PcapHeader.length)
+    pcap_header = PcapHeader.make(record)
+    if pcap_header.magic_number == 0xA1B2C3D4:
+        # We require version >= 2.3 because incl_len and orig_len are reversed
+        # in previous versions.
+        ver = (pcap_header.version_major, pcap_header.version_minor)
+        assert ver >= (2, 3), ver
+    elif pcap_header.magic_number == 0xD4C3B2A1:
+        raise NotImplementedError('endian swap not implemented')
+    else:
+        raise ValueError(
+            f'does not look like a pcap file: 0x{pcap_header.magic_number:X}')
+
+    while True:
+        record = fp.read(PcapRecord.length)
+        if not record:
+            break
+        pcap_record = PcapRecord.make(record)
+        assert pcap_record.incl_len == pcap_record.orig_len, 'low snaplen'
+        data = fp.read(pcap_record.incl_len)
+        pcap_record = PcapRecord._make(
+            pcap_record[0:-2] + (pcap_header.network, data))
+        assert len(pcap_record.data) == pcap_record.incl_len, 'truncated?'
+        yield pcap_record
+
+
+def pcap_text_to_records(fp):
+    # 13:24:43.608757 IP 10.1.2.3.3384 > 10.5.5.5.12201:
+    #   UDP, bad length 1804 > 1472
+    line_re = re.compile(br'^\S')
+    # <TAB>0x0000:  4500 05dc 3f17 2000 3b11 a219 0a01 0203  E...?...;....[1!
+    data_re = re.compile(br'^\s+[0-9a-fx]+:\s*(?P<hexdata>.{39})')
+    buf = bytearray()
+    for line in fp:
+        if line_re.match(line):
+            if buf:
+                pcap_record = PcapRecord(0, 0, 0, 0, LINKTYPE_RAW, bytes(buf))
+                yield pcap_record
+                buf[:] = b''
+        elif data_re.match(line):
+            m = data_re.match(line)
+            buf.extend(b16decode(
+                m.groupdict()['hexdata'].replace(b' ', b'').upper()))
+    if buf:
+        pcap_record = PcapRecord(0, 0, 0, 0, LINKTYPE_RAW, bytes(buf))
+        yield pcap_record
+
+
+class PcapRecordDefragmenter:
+    def __init__(self):
+        self._fragments = defaultdict(list)
+        self._defragmented = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            next_ = self._defragmented.pop(0)
+        except IndexError:
+            raise StopIteration
+        return next_
+
+    def feed(self, *pcap_records):
+        for pcap_record in pcap_records:
+            self._feed_one(pcap_record)
+
+    def _feed_one(self, pcap_record):
+        if pcap_record.linktype == LINKTYPE_ETHERNET:
+            packet_offset = 14  # dstmac, srcmac, ethertype (0x800)
+            assert pcap_record.data[12] == 0x08, pcap_record.data
+            assert pcap_record.data[13] == 0x00, pcap_record.data
+        elif pcap_record.linktype == LINKTYPE_RAW:
+            packet_offset = 0
+        else:
+            raise NotImplementedError(f'linktype {pcap_record.linktype}')
+
+        ip = pcap_record.data[packet_offset:]
+        assert ip[0] == 0x45, ip  # IHL == 5
+        ip_len = ip[2] << 8 | ip[3]
+        assert len(ip) == ip_len, (len(ip), ip_len, ip)
+        ip_id = ip[4] << 8 | ip[5]
+
+        # For unfragmented packets, the MF flag is cleared. For
+        # fragmented packets, all fragments except the last have the MF
+        # flag set. The last fragment has a non-zero Fragment Offset
+        # field, differentiating it from an unfragmented packet.
+        ip_flags = ip[6] >> 5
+        assert ip_flags & 4 == 0, f'reserved {ip_flags}'
+        # ip_frag_dont = (ip_flags & 2)
+        ip_frag_more = (ip_flags & 1)
+        ip_frag_off = ((ip[6] & 0x1f) << 8 | ip[7]) * 8  # per block of 8
+
+        ip_proto = ip[9]
+        ip_src = ip[12:16]
+        ip_dst = ip[16:20]
+
+        ip_header_size = 20  # because IHL 5
+        data_offset = packet_offset + ip_header_size
+
+        # Reassembly
+        # A receiver knows that a packet is a fragment, if at least one
+        # of the following conditions is true:
+        # - The flag more fragments is set, which is true for all
+        #   fragments except the last.
+        # - The field fragment offset is nonzero, which is true for all
+        #   fragments except the first.
+        if ip_frag_off == 0 and not ip_frag_more:
+            packet = self._parse_ip(
+                ip_proto, ip_src, ip_dst, ip[ip_header_size:])
+            packet.records = (pcap_record,)
+            self._defragmented.append(packet)
+        else:
+            tup = (ip_src, ip_dst, ip_id)
+
+            if ip_frag_off == 0:
+                packet = self._parse_ip(
+                    ip_proto, ip_src, ip_dst, ip[ip_header_size:])
+                packet.records = (pcap_record,)
+                if tup in self._fragments:
+                    warn('Overwriting dupe packet %r: %s',
+                         tup, self._fragments[tup])
+                insort(self._fragments[tup], (
+                    ip_frag_off, ip_frag_more, packet))
+            else:
+                insort(self._fragments[tup], (
+                    ip_frag_off, ip_frag_more, pcap_record,
+                    data_offset, (ip_len - ip_header_size)))
+
+            self._try_defrag(tup)
+
+    def _try_defrag(self, tup):
+        fragments = self._fragments[tup]
+        if (fragments[0][0] != 0 or      # we do not have first packet
+                len(fragments) == 1 or   # we only have one packet
+                fragments[-1][1] != 0):  # the last packet says there is more
+            return
+
+        datagram = fragments[0][2]
+        data = bytearray(datagram.data)
+        offset_at = datagram.header_size + len(data)
+        extra_pcap_records = []
+        for offset, frag_more, pcap_record, frag_off, frag_len in (
+                fragments[1:]):
+            if offset != offset_at:
+                print(datagram.length, offset_at, offset)
+                raise NotImplementedError('packet missing / out of order')
+
+            assert len(pcap_record.data) >= (frag_off + frag_len), (
+                len(pcap_record.data), frag_off, frag_len)
+            data.extend(pcap_record.data[frag_off:(frag_off + frag_len)])
+            offset_at += frag_len
+            extra_pcap_records.append(pcap_record)
+
+        assert datagram.length == offset_at - datagram.header_size == len(data)
+        datagram.data = bytes(data)
+        datagram.records += tuple(extra_pcap_records)
+
+        self._defragmented.append(datagram)
+        self._fragments.pop(tup)
+
+    def _parse_ip(self, proto, src, dst, encap):
+        assert proto == 17, f'expected UDP(17) got {proto}'
+        udp = encap
+        udp_sport = udp[0] << 8 | udp[1]
+        udp_dport = udp[2] << 8 | udp[3]
+        udp_len = udp[4] << 8 | udp[5]
+        # This assertion fails for fragmented packets:
+        # assert len(udp) == udp_len, (len(udp), udp_len, udp)
+        data = udp[8:]
+        return UdpDatagram(
+            src=src, dst=dst, sport=udp_sport, dport=udp_dport,
+            length=(udp_len - 8), data=data)  # substracting header size!
+
+
+class GelfRecord:
+    def __init__(self, udp_datagram):
+        self._datagram = udp_datagram
+        self._data = decompress(udp_datagram.data)
+        self.is_fragmented = (len(udp_datagram.records) > 1)
+
+    def get_header(self):
+        rechdr = self._datagram.get_header()
+        return f'{rechdr} gelflength={len(self._data)}'
+
+    def get_data(self):
+        return self._data
+
+    def get_pretty_data(self):
+        gelf_dict = json.loads(self.get_data())
+        return json.dumps(
+            gelf_dict, skipkeys=False, ensure_ascii=True, check_circular=True,
+            allow_nan=True, cls=None, indent=2, separators=(', ', ': '),
+            default=None, sort_keys=True)
+
+
+only_fragmented = False
+if sys.argv[1:2] == ['--only-fragmented']:
+    only_fragmented = bool(sys.argv.pop(1))
+assert len(sys.argv) <= 2
+if len(sys.argv) == 2:
+    with open(sys.argv[1], 'rb') as fp:
+        records = [record for record in pcap_file_to_records(fp)]
+else:
+    records = [record for record in pcap_text_to_records(sys.stdin.buffer)]
+
+defragmenter = PcapRecordDefragmenter()
+defragmenter.feed(*records)
+
+for datagram in defragmenter:
+    gelf = GelfRecord(datagram)
+    if gelf.is_fragmented or not only_fragmented:
+        print(f'/* {gelf.get_header()} */', file=sys.stderr)
+        print(gelf.get_data().decode('utf-8'))
+        print(gelf.get_pretty_data(), file=sys.stderr)
