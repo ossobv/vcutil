@@ -162,8 +162,8 @@ class PcapRecordDefragmenter:
             raise StopIteration
         return next_
 
-    def feed(self, *pcap_records):
-        for pcap_record in pcap_records:
+    def feed(self, pcap_record_iter):
+        for pcap_record in pcap_record_iter:
             self._feed_one(pcap_record)
 
     def _feed_one(self, pcap_record):
@@ -278,17 +278,90 @@ class PcapRecordDefragmenter:
             length=(udp_len - 8), data=data)  # substracting header size!
 
 
+class GelfRecordDefragmenter:
+    def __init__(self):
+        self._fragments = defaultdict(list)
+        self._defragmented = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            next_ = self._defragmented.pop(0)
+        except IndexError:
+            raise StopIteration
+        return next_
+
+    def feed(self, udp_datagram_iter):
+        for udp_datagram in udp_datagram_iter:
+            self._feed_one(udp_datagram)
+
+    def _feed_one(self, udp_datagram):
+        # Empty chunk? This should be:
+        # - Chunked GELF magic bytes - 2 bytes: 0x1e 0x0f
+        # - Message ID - 8 bytes
+        # - Sequence number - 1 byte, starting at 0
+        # - Sequence count - 1 byte, total chunks (max 128)
+        if (udp_datagram.data.startswith(b'\x1e\x0f') and
+                len(udp_datagram.data) >= 12):
+            message_id = udp_datagram.data[2:10]
+            seqno = udp_datagram.data[10]
+            seqcount = udp_datagram.data[11]
+            assert seqno < seqcount and seqcount <= 128, (seqno, seqcount)
+            # NOTE: We discard/ignore host/port info here. Should we add that
+            # to the tuple or not?
+            insort(self._fragments[message_id], (
+                seqno, seqcount, udp_datagram))
+            self._try_defrag(message_id)
+        else:
+            self._defragmented.append(
+                GelfRecord(udp_datagram, is_chunked=False))
+
+    def _try_defrag(self, message_id):
+        fragments = self._fragments[message_id]
+        seqcount = fragments[0][1]
+        if len(fragments) < seqcount:
+            return
+
+        assert len(fragments) == fragments[0][1], 'dupe packets?'
+        data = bytearray()
+        pcap_records = []
+        for idx, (fr_seqno, fr_seqcount, fragment) in enumerate(fragments):
+            assert fr_seqno == idx, (fr_seqno, idx)
+            assert fr_seqcount == seqcount, (fr_seqcount, seqcount)
+            data.extend(fragment.data[12:])
+            pcap_records.extend(fragment.records)
+
+        dg = fragments[0][2]
+        udp_datagram = UdpDatagram(
+            src=dg._src, dst=dg._dst, sport=dg.sport, dport=dg.dport,
+            length=len(data), data=data, records=tuple(pcap_records))
+        self._defragmented.append(
+            GelfRecord(udp_datagram, is_chunked=True))
+        self._fragments.pop(message_id)
+
+
 class GelfRecord:
-    def __init__(self, udp_datagram):
+    def __init__(self, udp_datagram, is_chunked):
+        self.is_chunked = is_chunked
+        self.is_defragmented = (len(udp_datagram.records) > 1)
         self._datagram = udp_datagram
-        self._data = decompress(udp_datagram.data)
-        self.is_fragmented = (len(udp_datagram.records) > 1)
 
     def get_header(self):
         rechdr = self._datagram.get_header()
-        return f'{rechdr} gelflength={len(self._data)}'
+        return f'{rechdr} gelflength={len(self.get_data())}'
 
     def get_data(self):
+        if not hasattr(self, '_data'):
+            # When using UDP as transport layer, GELF messages can be sent
+            # uncompressed or compressed with either GZIP or ZLIB.
+            #
+            # Graylog nodes detect the compression type in the GELF magic byte
+            # header automatically.
+            #
+            # [...] GZIP is the protocol default.
+            self._data = decompress(self._datagram.data)
         return self._data
 
     def get_pretty_data(self):
@@ -310,11 +383,17 @@ else:
     records = [record for record in pcap_text_to_records(sys.stdin.buffer)]
 
 defragmenter = PcapRecordDefragmenter()
-defragmenter.feed(*records)
+defragmenter.feed(records)
 
-for datagram in defragmenter:
-    gelf = GelfRecord(datagram)
-    if gelf.is_fragmented or not only_fragmented:
-        print(f'/* {gelf.get_header()} */', file=sys.stderr)
-        print(gelf.get_data().decode('utf-8'))
-        print(gelf.get_pretty_data(), file=sys.stderr)
+gelfdefragmenter = GelfRecordDefragmenter()
+gelfdefragmenter.feed(udp_datagram for udp_datagram in defragmenter)
+
+for gelfrecord in gelfdefragmenter:
+    # print(f'{pcap_record.ts_sec}.{pcap_record.ts_usec}')
+    if not only_fragmented or (
+            # gelfrecord.is_fragmented
+            gelfrecord.is_chunked
+            ):
+        print(f'/* {gelfrecord.get_header()} */', file=sys.stderr)
+        print(gelfrecord.get_data().decode('utf-8'))
+        print(gelfrecord.get_pretty_data(), file=sys.stderr)
