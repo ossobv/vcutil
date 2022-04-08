@@ -176,10 +176,12 @@ class PcapRecordDefragmenter:
         else:
             raise NotImplementedError(f'linktype {pcap_record.linktype}')
 
-        ip = pcap_record.data[packet_offset:]
+        ip_header_size = 20  # because IHL 5
+        ip = pcap_record.data[packet_offset:(packet_offset + ip_header_size)]
         assert ip[0] == 0x45, ip  # IHL == 5
         ip_len = ip[2] << 8 | ip[3]
-        assert len(ip) == ip_len, (len(ip), ip_len, ip)
+        assert len(pcap_record.data) >= (packet_offset + ip_len), (
+            len(pcap_record.data), packet_offset, ip_len, pcap_record.data)
         ip_id = ip[4] << 8 | ip[5]
 
         # For unfragmented packets, the MF flag is cleared. For
@@ -196,8 +198,8 @@ class PcapRecordDefragmenter:
         ip_src = ip[12:16]
         ip_dst = ip[16:20]
 
-        ip_header_size = 20  # because IHL 5
         data_offset = packet_offset + ip_header_size
+        data_len = ip_len - ip_header_size
 
         # Reassembly
         # A receiver knows that a packet is a fragment, if at least one
@@ -208,7 +210,8 @@ class PcapRecordDefragmenter:
         #   fragments except the first.
         if ip_frag_off == 0 and not ip_frag_more:
             packet = self._parse_ip(
-                ip_proto, ip_src, ip_dst, ip[ip_header_size:])
+                ip_proto, ip_src, ip_dst,
+                pcap_record.data[data_offset:(data_offset + data_len)])
             packet.records = (pcap_record,)
             self._defragmented.append(packet)
         else:
@@ -216,7 +219,8 @@ class PcapRecordDefragmenter:
 
             if ip_frag_off == 0:
                 packet = self._parse_ip(
-                    ip_proto, ip_src, ip_dst, ip[ip_header_size:])
+                    ip_proto, ip_src, ip_dst,
+                    pcap_record.data[data_offset:(data_offset + data_len)])
                 packet.records = (pcap_record,)
                 if tup in self._fragments:
                     warn('Overwriting dupe packet %r: %s',
@@ -226,7 +230,7 @@ class PcapRecordDefragmenter:
             else:
                 insort(self._fragments[tup], (
                     ip_frag_off, ip_frag_more, pcap_record,
-                    data_offset, (ip_len - ip_header_size)))
+                    data_offset, data_len))
 
             self._try_defrag(tup)
 
