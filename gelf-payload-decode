@@ -37,7 +37,7 @@ from collections import defaultdict, namedtuple
 from gzip import decompress
 from itertools import chain
 from socket import inet_ntoa
-from struct import unpack
+from struct import pack, unpack
 from warnings import warn
 
 import json
@@ -81,6 +81,9 @@ class UdpDatagram:
     @property
     def dst(self):
         return inet_ntoa(self._dst)
+
+    def get_tuple(self):
+        return pack('>4sH4sH', self._src, self.sport, self._dst, self.dport)
 
     def get_header(self):
         return (
@@ -304,21 +307,24 @@ class GelfRecordDefragmenter:
         # - Sequence count - 1 byte, total chunks (max 128)
         if (udp_datagram.data.startswith(b'\x1e\x0f') and
                 len(udp_datagram.data) >= 12):
+            # In practice, we can have duplicate message_ids from different
+            # sources. We'll want to include the TCP/UDP 4-tuple in the
+            # identifier too.
             message_id = udp_datagram.data[2:10]
+            # match_key = message_id
+            match_key = (message_id, udp_datagram.get_tuple())
+
             seqno = udp_datagram.data[10]
             seqcount = udp_datagram.data[11]
             assert seqno < seqcount and seqcount <= 128, (seqno, seqcount)
-            # NOTE: We discard/ignore host/port info here. Should we add that
-            # to the tuple or not?
-            insort(self._fragments[message_id], (
+            insort(self._fragments[match_key], (
                 seqno, seqcount, udp_datagram))
-            self._try_defrag(message_id)
+            self._try_defrag(message_id, match_key)
         else:
-            self._defragmented.append(
-                GelfRecord(udp_datagram, is_chunked=False))
+            self._defragmented.append(GelfRecord(udp_datagram))
 
-    def _try_defrag(self, message_id):
-        fragments = self._fragments[message_id]
+    def _try_defrag(self, message_id, match_key):
+        fragments = self._fragments[match_key]
         seqcount = fragments[0][1]
         if len(fragments) < seqcount:
             return
@@ -337,15 +343,16 @@ class GelfRecordDefragmenter:
             src=dg._src, dst=dg._dst, sport=dg.sport, dport=dg.dport,
             length=len(data), data=data, records=tuple(pcap_records))
         self._defragmented.append(
-            GelfRecord(udp_datagram, is_chunked=True))
-        self._fragments.pop(message_id)
+            GelfRecord(udp_datagram, chunked_message_id=message_id))
+        self._fragments.pop(match_key)
 
 
 class GelfRecord:
-    def __init__(self, udp_datagram, is_chunked):
-        self.is_chunked = is_chunked
+    def __init__(self, udp_datagram, chunked_message_id=None):
+        self.is_chunked = bool(chunked_message_id)
         self.is_defragmented = (len(udp_datagram.records) > 1)
         self._datagram = udp_datagram
+        self._message_id = chunked_message_id
 
     def get_header(self):
         rechdr = self._datagram.get_header()
@@ -390,8 +397,8 @@ if len(sys.argv) == 1:
 else:
     def loop_over_sys_argv_files_read_pcaps():
         for filename in sys.argv[1:]:
+            print(f'// reading {filename}', file=sys.stderr)
             with open(filename, 'rb') as fp:
-                print(f'// opened {filename}', file=sys.stderr)
                 for record in pcap_file_to_records(fp):
                     yield record
 
