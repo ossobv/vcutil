@@ -10,10 +10,10 @@
 #
 # Example usage, reading from a PCAP file:
 #
-#   tcpdump -nni enp2s0 -s0 -w gelf-packets.pcap -vv \
+#   tcpdump -nni enp2s0 -s0 -w gelf-pkts.pcap -vv \
 #     'host 10.1.2.3 and ((udp and port 12201) or (ip[6:2] & 0x1fff != 0))'
 #
-#   gelf-payload-decode [--only-fragmented] gelf-packets.pcap
+#   gelf-payload-decode [--only-fragmented] gelf-pkts.pcap gelf-pkts2.pcap
 #
 # Example usage, reading tcpdump output through stdin:
 #
@@ -152,19 +152,18 @@ class PcapRecordDefragmenter:
         self._fragments = defaultdict(list)
         self._defragmented = []
 
+    def set_input(self, pcap_record_producer):
+        self._initer = iter(pcap_record_producer)
+
     def __iter__(self):
         return self
 
     def __next__(self):
-        try:
-            next_ = self._defragmented.pop(0)
-        except IndexError:
-            raise StopIteration
-        return next_
-
-    def feed(self, pcap_record_iter):
-        for pcap_record in pcap_record_iter:
+        while not self._defragmented:
+            # May raise StopIteration
+            pcap_record = next(self._initer)
             self._feed_one(pcap_record)
+        return self._defragmented.pop(0)
 
     def _feed_one(self, pcap_record):
         if pcap_record.linktype == LINKTYPE_ETHERNET:
@@ -284,19 +283,18 @@ class GelfRecordDefragmenter:
         self._fragments = defaultdict(list)
         self._defragmented = []
 
+    def set_input(self, udp_datagram_producer):
+        self._initer = iter(udp_datagram_producer)
+
     def __iter__(self):
         return self
 
     def __next__(self):
-        try:
-            next_ = self._defragmented.pop(0)
-        except IndexError:
-            raise StopIteration
-        return next_
-
-    def feed(self, udp_datagram_iter):
-        for udp_datagram in udp_datagram_iter:
+        while not self._defragmented:
+            # May raise StopIteration
+            udp_datagram = next(self._initer)
             self._feed_one(udp_datagram)
+        return self._defragmented.pop(0)
 
     def _feed_one(self, udp_datagram):
         # Empty chunk? This should be:
@@ -370,41 +368,54 @@ class GelfRecord:
                 raise NotImplementedError(self._datagram.data[0:10])
         return self._data
 
+    def get_dict(self):
+        if not hasattr(self, '_dict'):
+            self._dict = json.loads(self.get_data())
+        return self._dict
+
     def get_pretty_data(self):
-        gelf_dict = json.loads(self.get_data())
         return json.dumps(
-            gelf_dict, skipkeys=False, ensure_ascii=True, check_circular=True,
-            allow_nan=True, cls=None, indent=2, separators=(', ', ': '),
+            self.get_dict(), skipkeys=False, ensure_ascii=True,
+            check_circular=True, allow_nan=True, cls=None,
+            indent=2, separators=(', ', ': '),
             default=None, sort_keys=True)
 
 
 only_fragmented = False
 if sys.argv[1:2] == ['--only-fragmented']:
     only_fragmented = bool(sys.argv.pop(1))
-assert len(sys.argv) <= 2
-if len(sys.argv) == 2:
-    with open(sys.argv[1], 'rb') as fp:
-        records = [record for record in pcap_file_to_records(fp)]
+
+if len(sys.argv) == 1:
+    pcap_record_producer = pcap_text_to_records(sys.stdin.buffer)
 else:
-    records = [record for record in pcap_text_to_records(sys.stdin.buffer)]
+    def loop_over_sys_argv_files_read_pcaps():
+        for filename in sys.argv[1:]:
+            with open(filename, 'rb') as fp:
+                print(f'// opened {filename}', file=sys.stderr)
+                for record in pcap_file_to_records(fp):
+                    yield record
 
-defragmenter = PcapRecordDefragmenter()
-defragmenter.feed(records)
+    pcap_record_producer = loop_over_sys_argv_files_read_pcaps()
 
-gelfdefragmenter = GelfRecordDefragmenter()
-gelfdefragmenter.feed(udp_datagram for udp_datagram in defragmenter)
 
-for gelfrecord in gelfdefragmenter:
-    # print(f'{pcap_record.ts_sec}.{pcap_record.ts_usec}')
+udp_datagram_producer = PcapRecordDefragmenter()
+udp_datagram_producer.set_input(pcap_record_producer)
+
+gelf_record_producer = GelfRecordDefragmenter()
+gelf_record_producer.set_input(udp_datagram_producer)
+
+for gelf_record in gelf_record_producer:
     if not only_fragmented or (
-            # gelfrecord.is_fragmented
-            gelfrecord.is_chunked
+            # gelf_record.is_fragmented
+            gelf_record.is_chunked
             ):
-        print(f'/* {gelfrecord.get_header()} */', file=sys.stderr)
-        print(gelfrecord.get_data().decode('utf-8'))
-        print(gelfrecord.get_pretty_data(), file=sys.stderr)
+        print(f'// {gelf_record.get_header()}', file=sys.stderr)
+        print(gelf_record.get_data().decode('utf-8'))
+        print(gelf_record.get_pretty_data(), file=sys.stderr)
 
-if defragmenter._fragments:
-    warn(f'{len(defragmenter._fragments)} orphan UDP fragments at EOF')
-if gelfdefragmenter._fragments:
-    warn(f'{len(gelfdefragmenter._fragments)} orphan GELF fragments at EOF')
+if udp_datagram_producer._fragments:
+    frags = udp_datagram_producer._fragments
+    warn(f'{len(frags)} orphan UDP fragments at EOF')
+if gelf_record_producer._fragments:
+    frags = gelf_record_producer._fragments
+    warn(f'{len(frags)} orphan GELF fragments at EOF')
