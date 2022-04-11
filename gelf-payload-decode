@@ -90,6 +90,14 @@ class UdpDatagram:
             f'UDP {self.src}:{self.sport} -> '
             f'{self.dst}:{self.dport} length={self.length}')
 
+    def __eq__(self, other):
+        "Comparison operator needed when dealing with dupe packets"
+        return self.records == other.records
+
+    def __lt__(self, other):
+        "Comparison operator needed when dealing with dupe packets"
+        return self.records < other.records
+
 
 def pcap_file_to_records(fp):
     record = fp.read(PcapHeader.length)
@@ -329,11 +337,22 @@ class GelfRecordDefragmenter:
         if len(fragments) < seqcount:
             return
 
-        assert len(fragments) == fragments[0][1], 'dupe packets?'
         data = bytearray()
         pcap_records = []
+        last_seqno = -1
+        idx_skip = 0
         for idx, (fr_seqno, fr_seqcount, fragment) in enumerate(fragments):
-            assert fr_seqno == idx, (fr_seqno, idx)
+            if fr_seqno == last_seqno:
+                print(
+                    f'// dropping dupe chunk ({match_key}) '
+                    f'at seq {fr_seqno}/{fr_seqcount}', file=sys.stderr)
+                idx_skip += 1
+                fragments.pop(idx)
+                if len(fragments) - idx_skip < seqcount:
+                    return  # not gonna make it
+                continue
+            last_seqno = fr_seqno
+            assert fr_seqno == (idx - idx_skip), (fr_seqno, idx)
             assert fr_seqcount == seqcount, (fr_seqcount, seqcount)
             data.extend(fragment.data[12:])
             pcap_records.extend(fragment.records)
