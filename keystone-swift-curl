@@ -1,0 +1,118 @@
+#!/bin/sh
+# keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Helper shell script to do simple GET/PUT/DELETE in OpenStack Swift
+# after performing Keystone authentication.
+#
+# Dependencies: curl (for http requests), jq (to extract project url)
+#
+# To use this, you make a configuration file:
+#
+#   SWIFT_KEYSTONE_URL=https://keystone.example.com/v3
+#   SWIFT_AUTH_USER=username@domainname
+#   SWIFT_AUTH_PASSWORD=password
+#   SWIFT_PROJECT=projectname@domainname
+#   #SWIFT_PROJECT_URL=https://swift.example.com/projecturl
+#   SWIFT_CONTAINER=container
+#
+# Pass the configuration file as arg1, then method, then the remote file.
+#
+#   $ keystone-swift-curl path/to/config PUT remote/file/path < data
+#   $ keystone-swift-curl path/to/config GET remote/file/path > data
+#   $ keystone-swift-curl path/to/config DELETE remote/file/path
+#
+# Or, alternatively, load this into your script:
+#
+#   SWIFT_KEYSTONE_URL=https://keystone.example.com/v3
+#   # and the other variables..
+#   . /usr/bin/keystone-swift-curl  # source this script as a library
+#   swift_init                      # make sure you init
+#   swift_login                     # log in / fetch token
+#   if ! swift_get path/to/file 2>/dev/null; then
+#       echo data | swift_put path/to/file
+#   fi
+#
+
+swift_init() {
+    # Check variables before starting. Works if 'set -u' is called.
+    local var
+    for var in $SWIFT_KEYSTONE_URL $SWIFT_AUTH_USER $SWIFT_AUTH_PASSWORD \
+            $SWIFT_PROJECT $SWIFT_CONTAINER; do
+        true
+    done
+
+    # NOTE: We use a temp directory to store credentials. This is safer
+    # than passing these credentials on the command line, as they can be
+    # seen in 'ps' output. (We do pass credentials in a printf call, but
+    # because that is a shell builtin, no process is spawned for it.)
+    SWIFT_RUNDIR=$(mktemp -d)
+    trap 'rm -rf "$SWIFT_RUNDIR"' EXIT
+}
+
+swift_login() {
+    local user_domain user project_domain project password
+    user=${SWIFT_AUTH_USER%@*}; user_domain=${SWIFT_AUTH_USER#*@}
+    project=${SWIFT_PROJECT%@*}; project_domain=${SWIFT_PROJECT#*@}
+    password=$SWIFT_AUTH_PASSWORD
+
+    echo "\
+    {\"auth\": {\"identity\": {
+      \"methods\": [\"password\"],
+      \"password\": {\"user\": {
+        \"name\": \"$user\",
+        \"domain\": {\"name\": \"$user_domain\"},
+        \"project\": {\"name\": \"$project\", \"domain\": {
+          \"name\": \"$project_domain\"}},
+        \"password\": \"$password\"}}}}}" >"$SWIFT_RUNDIR/login"
+
+    local output
+    output=$(curl -fsS --max-time 4 --include \
+        -H "Content-Type: application/json" \
+        --data @"$SWIFT_RUNDIR/login" "$SWIFT_KEYSTONE_URL/auth/tokens")
+
+    printf '%s\n' "$output" |
+        sed -ne 's/^x-subject-token:[[:blank:]]*/X-Auth-Token: /ip' \
+          >"$SWIFT_RUNDIR/x-auth-token"
+    if test -z "$SWIFT_PROJECT_URL"; then
+        SWIFT_PROJECT_URL=$(\
+            printf '%s\n' "$output" | sed -e '1,/^[[:cntrl:]]*$/d' | jq -r '
+              .token.catalog[] |
+              select(.type=="object-store").endpoints[] |
+              select(.interface=="public").url')
+    fi
+}
+
+swift_do() {
+    local project_url="$SWIFT_PROJECT_URL"
+    local container="$SWIFT_CONTAINER"
+    local meth="$1"  # GET/DELETE/PUT
+    local file="$2"  # remote/path/to/file
+    shift; shift
+    curl -fsSX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
+        "$project_url/$container/$file" "$@"
+}
+
+swift_delete() { swift_do DELETE "$@"; }
+swift_get() { swift_do GET "$@"; }
+swift_put() { local file="$1"; shift
+    swift_do PUT "$file" --data-binary @- "$@"; }
+
+
+if test "${0##*/}" = 'keystone-swift-curl'; then
+    # We're the main script; we're not sourced by someone else.
+    case ${1:---help} in
+    -h|--help) echo "$0: usage: See $0 source" >&2; exit 1
+    esac
+
+    set -eu
+    . "$1"; shift       # source the config file ($1)
+    swift_init          # initialize temp dir
+    swift_login         # get token
+    method=$1; shift    # get method ($2)
+    case $method in
+    DELETE) swift_delete "$@";;
+    GET) swift_get "$@";;
+    PUT) swift_put "$@";;
+    *) echo "unkown method: $method" >&2; exit 1
+    esac
+fi

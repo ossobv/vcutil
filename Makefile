@@ -30,6 +30,7 @@ BINS = \
 	indirect-scp \
 	interfaces2netplan \
 	ipmikvm \
+	keystone-swift-curl \
 	kubectl-sh-bash \
 	kubectl-sh-secret \
 	kubectl-sh-wrapper \
