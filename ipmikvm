@@ -1,5 +1,5 @@
 #!/bin/sh
-# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2021 // Public Domain
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2022 // Public Domain
 #
 # A wrapper to call the SuperMicro iKVM console bypassing Java browser
 # plugins.
@@ -41,12 +41,24 @@ PASS=
 USERS='ADMIN '
 PASSES='ADMIN '
 
+# Alter this list with if you get more apparent ports when using ssh proxy:
+# http(80), https(443), ipmi(623), vnc(5900)
+PROXY_PORT_MAPPING='80:5980 443:5943 623:5923 5900:5959'
+PROXY_IP=  # dynamic?
+
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hu:P:' "$@")"
+eval set --"$(getopt -- 'hu:P:L:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
     echo "Usage: $0 [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS"
+    echo
+    echo "If you're setting up an ssh tunnel, you can specify a local IP"
+    echo "like 127.75.86.77 and do this:"
+    echo "  ssh -L 127.0.0.2:5980:IP.ADD.RE.SS:443 PROXY_HOST"
+    echo "  $0 -L 1 IP.ADD.RE.SS"
+    echo "  (or)"
+    echo "  $0 -L 127.0.0.2 IP.ADD.RE.SS"
     echo
     echo "Usernames, passwords and machine aliases may be specified in"
     echo "~/.config/ipmikvm/dict - as ALIAS ADDRESS USER PASS - one per"
@@ -59,11 +71,23 @@ as_http() {
     echo "$1" | sed -e 's#^https://\([^:/]*\):443#http://\1#;s#^https:#http:#'
 }
 
-while getopts 'hu:P:' OPTION; do
+curl() {
+    local url="$1"; shift
+    if test -n "$PROXY_IP"; then
+        url=$(echo "$url" | sed -e '
+            s#^http://\([^/]*\)#http://'$PROXY_IP$WITH_HTTP_PORT'#
+            s#^https://\([^/]*\)#https://'$PROXY_IP$WITH_HTTPS_PORT'#')
+    fi
+    command curl "$url" "$@"
+}
+
+while getopts 'hu:P:L:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
     u) USER=$OPTARG;;
     P) PASS=$OPTARG;;
+    L) PROXY_IP=$OPTARG;;
+    #v) PROXY_PORT_MAPPING=$OPTARG;;
     ?) usage 1;;
     esac
 done
@@ -94,7 +118,37 @@ fi
 test -n "$USER" && USERS="$USER "; USER=
 test -n "$PASS" && PASSES="$PASS "; PASS=
 
-#echo "$USERS\$ // $PASSES\$"; exit 5
+show_proxy_ssh() {
+    local ip="$1"; shift
+    local proxy_ip="$1"; shift;
+    echo "Please run the following in another shell:"
+    echo -n "# ssh"
+    for port in $PROXY_PORT_MAPPING; do
+        local real=${port%:*}
+        local proxy=${port#*:}
+        echo -n " -L $proxy_ip:$proxy:$ip:$real"
+    done
+    echo " PROXY_HOST"
+    echo -n "(press enter when ready)" >&2
+    local discard
+    read discard
+}
+
+if test -n "$PROXY_IP"; then
+    # Fix HTTP and HTTPS replacements
+    test "${PROXY_IP%.*}" = "$PROXY_IP" && PROXY_IP=127.75.86.77
+    for port in $PROXY_PORT_MAPPING; do
+        case ${port%:*} in
+        80) WITH_HTTP_PORT=:${port#80\:};;
+        443) WITH_HTTPS_PORT=:${port#443\:};;
+        esac
+    done
+    # Show and wait for proxy action
+    show_proxy_ssh $IP $PROXY_IP
+else
+    WITH_HTTP_PORT=
+    WITH_HTTPS_PORT=
+fi
 
 
 get_launch_jnlp() {
@@ -111,7 +165,7 @@ get_launch_jnlp() {
         local pass=${passes%% *}; passes=${passes#* }
         echo "attempting login on '$management_ip' with user $user" >&2
 
-        local data="$(curl --fail -LksS --cookie-jar "$temp" "$url")"
+        local data="$(curl "$url" --fail -LksS --cookie-jar "$temp")"
         if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
             echo "unexpected login page on address '$management_ip': $data" >&2
             data=
@@ -119,7 +173,7 @@ get_launch_jnlp() {
                 url=$(as_http "$url")
                 echo "retrying without ssl on $url" >&2
                 local_append='<!-- DISABLED_SSL -->'
-                data=$(curl --fail -LksS --cookie-jar "$temp" "$url")
+                data=$(curl "$url" --fail -LksS --cookie-jar "$temp")
                 if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
                     echo "sad times" >&2
                     data=
@@ -137,8 +191,8 @@ get_launch_jnlp() {
             pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
         fi
         data=$(test -n "$data" &&
-          curl --fail -LksS --cookie "$temp" --cookie-jar "$temp" \
-            -XPOST "$url/cgi/login.cgi" --data "name=$user&pwd=$pass&check=00")
+          curl "$url/cgi/login.cgi" --fail -LksS --cookie "$temp" \
+            --cookie-jar "$temp" -XPOST --data "name=$user&pwd=$pass&check=00")
         local ret=$?
         local fail_heur=0
         if test $ret -eq 0; then
@@ -164,9 +218,10 @@ get_launch_jnlp() {
 
     if test -n "$data"; then
         for url_name in man_ikvm ikvm; do
-            data=$(curl --fail -LksS --cookie "$temp" \
-                -H "Referer: $url/cgi/url_redirect.cgi?url_name=man_ikvm" \
-                "$url/cgi/url_redirect.cgi?url_name=$url_name&url_type=jwsk")
+            data=$(curl \
+                "$url/cgi/url_redirect.cgi?url_name=$url_name&url_type=jwsk" \
+                --fail -LksS --cookie "$temp" \
+                -H "Referer: $url/cgi/url_redirect.cgi?url_name=man_ikvm")
             test $? -ne 0 && echo "$data" | grep -q '^<jnlp spec=' && break
         done
         if ! echo "$data" | grep -q '^<jnlp spec='; then
@@ -232,22 +287,35 @@ get_arguments() {
 #   ${LF} variable is added, so we get a linefeed in the eval.
 # USAGE: LF=$'\n'; eval set -- $(get_arguments "$JNLP_DATA")
 
+replace_arguments() {
+    local sed_script=''
+    for port in "$@"; do
+        local real=${port%:*}
+        local proxy=${port#*:}
+        sed_script="${sed_script}s/^'$real'\$/'$proxy'/;"
+    done
+    sed -e "${sed_script%;}"  # s/^'5900'$/'5959'/ etc..
+}
+# SYNOPSIS: replace_arguments PORT_MAPPINGS
+# DESCRIPTION: replaces arguments
+# USAGE: get_arguments ... | replace_arguments 80:5980 443:5943 623:5923 ...
+
 exec_app() {
     local jar="$1"; shift
     local class="$1"; shift
     if test -z "$class"; then
-	class=$(unzip -c "$jar" META-INF/MANIFEST.MF |
-	    awk '/^Main-Class[[:blank:]]*:/{print $2}' |
-	    sed -e 's/[[:cntrl:][:space:]]//g')
-	echo "found Main-Class $class in $jar" >&2
+        class=$(unzip -c "$jar" META-INF/MANIFEST.MF |
+            awk '/^Main-Class[[:blank:]]*:/{print $2}' |
+            sed -e 's/[[:cntrl:][:space:]]//g')
+        echo "found Main-Class $class in $jar" >&2
     fi
     # iKVM
     #*/iKVM*.jar) class=tw.com.aten.ikvm.KVMMain;;
     # Redirection Viewer v1.46
     #*/JViewer.jar) class=com.ami.kvm.jviewer.JViewer;;
     if test -z "$class"; then
-	echo "Unknown entrypoint in $jar" >&2
-	exit 1
+        echo "Unknown entrypoint in $jar" >&2
+        exit 1
     fi
     set -x
     exec java -Djava.library.path="${jar%/*}" -cp "$jar" "$class" "$@"
@@ -281,16 +349,16 @@ install_ikvm_application() {
     cd "$destdir"
     for x in $jars $nativelibs; do
         test "${x%/*}" = "$x" || mkdir -p "${x%/*}"
-        if curl -sS --fail -ko "$x" "$codebase/$x" &&
-		file --brief --mime "$x" |
-		grep -E '^application/(java-archive|zip)'; then
+        if curl "$codebase/$x" -sS --fail -ko "$x" &&
+                file --brief --mime "$x" |
+                grep -E '^application/(java-archive|zip)'; then
             :
-        elif curl -sS --fail -ko "$x.pack.gz" "$codebase/$x.pack.gz" &&
-		file --brief --mime "$x.pack.gz" |
-		grep -E '^application/gzip' &&
-		gunzip "$x.pack.gz" &&
-		unpack200 "$x.pack" "$x"; then
-	    :
+        elif curl "$codebase/$x.pack.gz" -sS --fail -ko "$x.pack.gz" &&
+                file --brief --mime "$x.pack.gz" |
+                grep -E '^application/gzip' &&
+                gunzip "$x.pack.gz" &&
+                unpack200 "$x.pack" "$x"; then
+            :
         else
             echo "$launch_jnlp"
             false
@@ -316,8 +384,22 @@ test -z "$JAR" && echo "Failed to get iKVM*.jar/JViewer*.jar" >&2 && exit 1
 CLASS=$(get_app_class "$JNLP")  # might be blank
 
 # Load quoted arguments (including multiline args)
+# (Note that LF=$'\n' works with bash, but LF='\n' works with dash.)
 LF='
 '
-eval set -- $(get_arguments "$JNLP")
+if test -n "$PROXY_IP"; then
+    # Fetch likely ports. If they are not in the $PROXY_PORT_MAPPING
+    # then they may need to be added.
+    possible_ports=$(get_arguments "$JNLP" | sed -ne "
+        s/^'0'\$//;s/^'\([0-9]\+\)'$/\1/p" | sort -un )
+    echo "(remote probably uses" $possible_ports "for ports)" >&2
+    echo "(we remapped" $PROXY_PORT_MAPPING "ports)" >&2
+    # Replace IP with our selected IP.
+    # By using a regex instead of $IP, we can use a prefetched jnlp file here.
+    eval set -- $(get_arguments "$JNLP" | replace_arguments \
+        '\([0-9]\+[.]\)\{3\}[0-9]\+':$PROXY_IP $PROXY_PORT_MAPPING)
+else
+    eval set -- $(get_arguments "$JNLP")
+fi
 
 exec_app "$JAR" "$CLASS" "$@"
