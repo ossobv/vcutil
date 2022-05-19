@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+# multilb-sanity-check (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Internal tool. Used for sanity checks on load balancer machines.
+#
+# Checks:
+# - that all running nginx/haproxy have a systemd enabled symlink
+# - no processes are (still) running that should have a config
+# - that the processed appear reloaded after new certs have been uploaded
+#
+# Usage on machine with one or more nginx/haproxy instances configured
+# in a certain way:
+#
+#    $ multilb-sanity-check
+#
+from os import listdir, path, readlink
+from subprocess import check_output
+from time import time
+
+
+class Proc:
+    def __init__(self, procdir):
+        self.procdir = procdir
+        self.spid = procdir.rsplit('/', 1)[-1]
+        self.pid = int(self.spid)
+        try:
+            self.exe = readlink(path.join(procdir, 'exe'))
+        except FileNotFoundError:
+            self.exe = None
+
+    @property
+    def cmdline(self):
+        if not hasattr(self, '_cmdline'):
+            with open(path.join(self.procdir, 'cmdline')) as fp:
+                self._cmdline = fp.read().split('\0')
+        return self._cmdline
+
+    @property
+    def config(self):
+        if not hasattr(self, '_config'):
+            self._config = self.get_config()
+        return self._config
+
+    @property
+    def ssl_time(self):
+        """
+        Get the newest SSL cert time from the config
+
+        So we can compare that to when the process was started. And if the
+        process is older, we have likely forgot a reload.
+        """
+        if hasattr(self, '_ssl_time'):
+            return self._ssl_time
+
+        config = self.config
+        if not config:
+            self._ssl_time = None
+            return None
+
+        with open(config) as fp:
+            config = fp.read()
+
+        possible_certs = []
+
+        if self.exe == '/usr/sbin/haproxy':
+            lines = [
+                l.strip() for l in config.split('\n')
+                if not l.lstrip().startswith('#')]
+            for l in lines:
+                parts = l.rstrip().split()
+                for optkey, optval in zip(parts[:-1], parts[1:]):
+                    if optkey == 'crt':
+                        possible_certs.append(optval)
+        elif self.exe == '/usr/sbin/nginx':
+            lines = [
+                l.strip() for l in config.split('\n')
+                if not l.lstrip().startswith('#')]
+            for l in lines:
+                if l.startswith('ssl_certificate'):
+                    parts = l.split()
+                    if parts[0] == 'ssl_certificate':
+                        possible_certs.append(parts[1].rstrip(';'))
+        else:
+            raise NotImplementedError((self.exe, self.config))
+
+        if not possible_certs:
+            return None
+
+        # Take newest stat from all files.
+        self._ssl_time = max(path.getmtime(i) for i in possible_certs)
+        return self._ssl_time
+
+    @property
+    def stat(self):
+        if not hasattr(self, '_stat'):
+            with open(path.join(self.procdir, 'stat')) as fp:
+                stat = fp.read().split(' ')
+            # Pad, so we can count 1-based, like the proc(5) manual does.
+            self._stat = tuple(['0-pad'] + stat)
+            assert self._stat[1] == self.spid, (self._stat, self.spid)
+        return self._stat
+
+    @property
+    def ppid(self):
+        """
+        proc(5): (4) ppid %d The PID of the parent of this process.
+        """
+        return int(self.stat[4])
+
+    @property
+    def start_time(self):
+        """
+        proc(5): (22) starttime  %llu
+
+        The time the process started after system boot. The value is
+        expressed in clock ticks (divide by sysconf(_SC_CLK_TCK)).
+        """
+        if not hasattr(self, '_start_time'):
+            starttime = int(self.stat[22]) / _SC_CLK_TICK  # seconds after boot
+            self._start_time = SYSTEM_STARTED_AT + starttime
+        return self._start_time
+
+    @property
+    def systemd_enabled_file(self):
+        return '/etc/systemd/system/multi-user.target.wants/{}'.format(
+            self.systemd_service)
+
+    @property
+    def systemd_service(self):
+        config = self.config.split('/')
+        lastdir = config[-2]
+        file = config[-1].rsplit('.', 1)[0]
+        suffix = '{}-{}'.format(lastdir, file)
+        service = self.exe.rsplit('/', 1)[-1]
+        return '{}@{}.service'.format(service, suffix)
+
+    @property
+    def listenip(self):
+        if not hasattr(self, '_listenip'):
+            self._listenip = self.get_listenip()
+        return self._listenip
+
+    def is_parent(self, procs):
+        for proc in procs:
+            if self.pid == proc.ppid:
+                return True
+        return False
+
+    def get_listenip(self):
+        """
+        This is really slow.
+        """
+        try:
+            lsof = check_output([
+                'lsof', '-Pan', '-i', '-p', self.spid]).decode()
+        except Exception:
+            return ()
+
+        lsof = lsof.split('\n')[1:]
+        # COMMAND   PID    USER   FD   TYPE DEVICE S/O NODE NAME
+        # haproxy 21174 haproxy    5u  IPv4 302504 0t0  TCP <ip>:80 (LISTEN)
+        # haproxy 21174 haproxy    6u  IPv4 302505 0t0  TCP <ip>:443 (LISTEN)
+        # haproxy 21174 haproxy    7u  IPv4 302506 0t0  TCP <ip>:1984 (LISTEN)
+        listens = [
+            val[8] for val in [line.split() for line in lsof]
+            if len(val) >= 10 and val[9] == '(LISTEN)']
+        ips = set([val.split(':', 1)[0] for val in listens])
+        return tuple(sorted(ips))
+
+    def get_config(self):
+        if self.exe == '/usr/sbin/haproxy':
+            for optkey, optval in zip(self.cmdline[:-1], self.cmdline[1:]):
+                if optkey == '-f':
+                    return optval
+        elif self.exe == '/usr/sbin/nginx':
+            # nginx cmdline is a string, not NUL-joined
+            cmdline = ' '.join(self.cmdline).split(' ')
+            for optkey, optval in zip(cmdline[:-1], cmdline[1:]):
+                if optkey == '-c':
+                    return optval
+        return None
+
+
+def system_start_time():
+    now = time()
+    with open('/proc/uptime') as fp:
+        uptime, idletime = [float(i) for i in fp.read().strip().split()]
+    return (now - uptime)
+
+
+SYSTEM_STARTED_AT = system_start_time()
+_SC_CLK_TICK = 100  # getconf CLK_TCK
+MISSING_IP = IRRELEVANT_IP = 'IP.ADD.RE.SS'
+
+all_procs = [
+    Proc('/proc/{pid}'.format(pid=pid))
+    for pid in listdir('/proc') if pid.isdigit()]
+
+procs_with_config = [proc for proc in all_procs if proc.config]
+
+
+for proc in sorted(procs_with_config, key=(lambda x: x.config)):
+    # Check for processes that were started BEFORE the newest SSL certificate
+    # found in config was updated. For nginx and haproxy, the children of the
+    # main process are re-executed, so they should always be younger than the
+    # certificate file.
+    if proc.ssl_time and proc.start_time < proc.ssl_time:
+        if not proc.is_parent(all_procs):
+            print(
+                '{ip:15s} {proc.exe} (certificates) {proc.systemd_service!r} '
+                'certificate file newer than running process'.format(
+                    proc=proc, ip=proc.listenip[0]))
+
+    # Check that a configuration exists. IF there is no mention in
+    # systemd_enabled_file, then we're not auto-starting on boot.
+    if path.exists(proc.config):
+        if not path.exists(proc.systemd_enabled_file):
+            print(
+                '{ip:15s} {proc.exe} (systemd) {proc.systemd_enabled_file!r} '
+                'missing'.format(proc=proc, ip=MISSING_IP))
+
+    # If we have a listenip, but no configuration file, then we're likely
+    # running a stale process.
+    if not path.exists(proc.config) and proc.listenip:  # listenip is expensive
+        assert len(proc.listenip) == 1, (proc.config, proc.pid, proc.listenip)
+        print(
+            '{ip:15s} {proc.exe} (config) {proc.config!r} '
+            'missing: kill {proc.pid}'.format(proc=proc, ip=proc.listenip[0]))
+        if path.exists(proc.systemd_enabled_file):
+            print(
+                '{ip:15s} {proc.exe} (systemd) {proc.systemd_enabled_file!r} '
+                'exists'.format(proc=proc, ip=proc.listenip[0]))

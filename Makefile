@@ -36,6 +36,7 @@ BINS = \
 	kubectl-sh-wrapper \
 	linux-kernel-autoremove \
 	lldpscan \
+	multilb-sanity-check \
 	mysql2csv \
 	pdns-mysql-slave-prune \
 	psdiff \
