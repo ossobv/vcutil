@@ -18,15 +18,38 @@ from subprocess import check_output
 from time import time
 
 
+class ProcManager:
+    def __init__(self):
+        self._procs = {}
+
+    def add(self, proc):
+        self._procs[proc.pid] = proc
+
+    def get(self, pid):
+        if pid is None:
+            return None
+        assert isinstance(pid, int), pid
+        return self._procs[pid]
+
+    def has_children(self, pid):
+        for proc in self._procs.values():
+            if proc.ppid == pid:
+                return True
+        return False
+
+
 class Proc:
-    def __init__(self, procdir):
+    def __init__(self, procdir, procmgr):
         self.procdir = procdir
+        self.procmgr = procmgr
         self.spid = procdir.rsplit('/', 1)[-1]
         self.pid = int(self.spid)
         try:
             self.exe = readlink(path.join(procdir, 'exe'))
         except FileNotFoundError:
             self.exe = None
+
+        self.procmgr.add(self)
 
     @property
     def cmdline(self):
@@ -135,16 +158,21 @@ class Proc:
         return '{}@{}.service'.format(service, suffix)
 
     @property
+    def listenip_any(self):
+        ips = self.listenip
+        if len(ips) >= 1:
+            return ips[0]
+        # MISSING_IP = IRRELEVANT_IP = 'IP.ADD.RE.SS'
+        return '-'
+
+    @property
     def listenip(self):
         if not hasattr(self, '_listenip'):
             self._listenip = self.get_listenip()
         return self._listenip
 
-    def is_parent(self, procs):
-        for proc in procs:
-            if self.pid == proc.ppid:
-                return True
-        return False
+    def is_parent(self):
+        return self.procmgr.has_children(self.pid)
 
     def get_listenip(self):
         """
@@ -172,12 +200,27 @@ class Proc:
             for optkey, optval in zip(self.cmdline[:-1], self.cmdline[1:]):
                 if optkey == '-f':
                     return optval
+            assert False, cmdline
         elif self.exe == '/usr/sbin/nginx':
             # nginx cmdline is a string, not NUL-joined
             cmdline = ' '.join(self.cmdline).split(' ')
             for optkey, optval in zip(cmdline[:-1], cmdline[1:]):
                 if optkey == '-c':
                     return optval
+            # nginx has workers that do not list their info: get the parent
+            parent = self.get_same_parent()
+            if parent:
+                return parent.config
+            assert False, cmdline
+        return None
+
+    def get_parent(self):
+        return self.procmgr.get(self.ppid)
+
+    def get_same_parent(self):
+        parent = self.get_parent()
+        if parent and parent.exe == self.exe:
+            return parent
         return None
 
 
@@ -190,10 +233,12 @@ def system_start_time():
 
 SYSTEM_STARTED_AT = system_start_time()
 _SC_CLK_TICK = 100  # getconf CLK_TCK
-MISSING_IP = IRRELEVANT_IP = 'IP.ADD.RE.SS'
+
+
+proc_manager = ProcManager()
 
 all_procs = [
-    Proc('/proc/{pid}'.format(pid=pid))
+    Proc('/proc/{pid}'.format(pid=pid), procmgr=proc_manager)
     for pid in listdir('/proc') if pid.isdigit()]
 
 procs_with_config = [proc for proc in all_procs if proc.config]
@@ -205,11 +250,11 @@ for proc in sorted(procs_with_config, key=(lambda x: x.config)):
     # main process are re-executed, so they should always be younger than the
     # certificate file.
     if proc.ssl_time and proc.start_time < proc.ssl_time:
-        if not proc.is_parent(all_procs):
+        if not proc.is_parent():
             print(
                 '{ip:15s} {proc.exe} (certificates) {proc.systemd_service!r} '
                 'certificate file newer than running process'.format(
-                    proc=proc, ip=proc.listenip[0]))
+                    proc=proc, ip=proc.listenip_any))
 
     # Check that a configuration exists. IF there is no mention in
     # systemd_enabled_file, then we're not auto-starting on boot.
@@ -217,7 +262,7 @@ for proc in sorted(procs_with_config, key=(lambda x: x.config)):
         if not path.exists(proc.systemd_enabled_file):
             print(
                 '{ip:15s} {proc.exe} (systemd) {proc.systemd_enabled_file!r} '
-                'missing'.format(proc=proc, ip=MISSING_IP))
+                'missing'.format(proc=proc, ip=proc.listenip_any))
 
     # If we have a listenip, but no configuration file, then we're likely
     # running a stale process.
@@ -225,7 +270,7 @@ for proc in sorted(procs_with_config, key=(lambda x: x.config)):
         assert len(proc.listenip) == 1, (proc.config, proc.pid, proc.listenip)
         print(
             '{ip:15s} {proc.exe} (config) {proc.config!r} '
-            'missing: kill {proc.pid}'.format(proc=proc, ip=proc.listenip[0]))
+            'missing: kill {proc.pid}'.format(proc=proc, ip=proc.listenip_any))
         if path.exists(proc.systemd_enabled_file):
             print(
                 '{ip:15s} {proc.exe} (systemd) {proc.systemd_enabled_file!r} '
