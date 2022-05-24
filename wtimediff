@@ -24,6 +24,8 @@
 #
 #   * Matches time strings [H]H:MM:SS[.sss...] only and ignores date
 #     strings completely.
+#   * Alternatively, matches unixtime (1650218400), if only that is
+#     found on the line.
 #
 from datetime import datetime, timedelta
 import re
@@ -32,30 +34,37 @@ import sys
 
 # Match the first occurrence of H:MM:SS.sss...
 time_re = re.compile(r'(?:^|.*?[^\d])(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?')
+unixtime_re = re.compile(r'(?:^|.*?[^\d])([1-9][0-9]{9})(?:$|[^\d])')
 prevtime = None
 
 for line in sys.stdin:
     match = time_re.match(line)
     try:
-        if not match:
-            raise ValueError('No time found')
-
-        hour, min_, sec, usec = match.groups()
-        hour, min_, sec = int(hour), int(min_), int(sec)
-        usec = int(('%s000000' % (usec or 0,))[0:6])
+        if match:
+            hour, min_, sec, usec = match.groups()
+            hour, min_, sec = int(hour), int(min_), int(sec)
+            usec = int(('%s000000' % (usec or 0,))[0:6])
+            if prevtime:
+                curtime = datetime(
+                    prevtime.year, prevtime.month, prevtime.day,
+                    hour, min_, sec, usec)
+                if curtime < prevtime:
+                    curtime += timedelta(days=1)
+                assert (curtime - prevtime).days == 0
+            else:
+                # May fail for bad times with ValuError.
+                curtime = datetime(1970, 1, 1, hour, min_, sec, usec)
+        else:
+            match = unixtime_re.match(line)
+            if match:
+                curtime = datetime.fromtimestamp(int(match.groups()[0]))
+            else:
+                raise ValueError('No time found')
 
         if not prevtime:
-            curtime = datetime(1970, 1, 1,
-                               hour, min_, sec, usec)
             diff = '0.0' + (' ' * 5)
         else:
-            curtime = datetime(prevtime.year, prevtime.month, prevtime.day,
-                               hour, min_, sec, usec)
-            if curtime < prevtime:
-                curtime += timedelta(days=1)
-
             td = (curtime - prevtime)
-            assert td.days == 0
             diff = '%+6d.%-6s' % (  # 1+5+1+6=13
                 td.seconds,
                 ('%06d' % (td.microseconds,)).rstrip('0') or '0')
