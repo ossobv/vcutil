@@ -75,12 +75,26 @@ swift_login() {
     printf '%s\n' "$output" |
         sed -ne 's/^x-subject-token:[[:blank:]]*/X-Auth-Token: /ip' \
           >"$SWIFT_RUNDIR/x-auth-token"
-    if test -z "$SWIFT_PROJECT_URL"; then
-        SWIFT_PROJECT_URL=$(\
-            printf '%s\n' "$output" | sed -e '1,/^[[:cntrl:]]*$/d' | jq -r '
-              .token.catalog[] |
-              select(.type=="object-store").endpoints[] |
-              select(.interface=="public").url')
+    if test -z "${SWIFT_PROJECT_URL:-}"; then
+        output=$(printf '%s\n' "$output" | sed -e '1,/^[[:cntrl:]]*$/d')
+        if command -v jq >/dev/null; then
+            SWIFT_PROJECT_URL=$(\
+                printf '%s\n' "$output" | jq -r '
+                  .token.catalog[] |
+                  select(.type=="object-store").endpoints[] |
+                  select(.interface=="public").url')
+        else
+            echo 'SWIFT_PROJECT_URL not set but jq(1) not found' >&2
+            echo 'You can extract it from this manually:' >&2
+            if command -v json_pp >/dev/null; then
+                printf '%s\n' "$output" | json_pp >&2
+            else
+                printf '%s\n' "$output" >&2
+            fi
+            echo 'Look for the "url" of an "endpoint" in' >&2
+            echo 'an "object-store" catalog' >&2
+            exit 1
+        fi
     fi
 }
 
