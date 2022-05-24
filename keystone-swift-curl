@@ -105,7 +105,12 @@ swift_do() {
 swift_delete() { swift_do DELETE "$@"; }
 swift_get() { swift_do GET "$@"; }
 swift_put() { local file="$1"; shift
-    swift_do PUT "$file" --data-binary @- "$@"; }
+    if test -t 0; then
+        echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
+        exit 1
+    fi
+    swift_do PUT "$file" --data-binary @- "$@"
+}
 
 
 if test "${0##*/}" = 'keystone-swift-curl'; then
