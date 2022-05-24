@@ -120,7 +120,11 @@ if test "${0##*/}" = 'keystone-swift-curl'; then
     esac
 
     set -eu
-    . "$1"; shift       # source the config file ($1)
+    if test "${1#/}" = "$1"; then
+        . "./$1"; shift # source the config file ($1, must contain slash)
+    else
+        . "$1"; shift   # source the config file ($1)
+    fi
     swift_init          # initialize temp dir
     swift_login         # get token
     method=$1; shift    # get method ($2)
@@ -128,6 +132,6 @@ if test "${0##*/}" = 'keystone-swift-curl'; then
     DELETE) swift_delete "$@";;
     GET) swift_get "$@";;
     PUT) swift_put "$@";;
-    *) echo "unkown method: $method" >&2; exit 1
+    *) echo "unknown method: $method" >&2; exit 1
     esac
 fi
