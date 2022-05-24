@@ -123,7 +123,39 @@ swift_put() { local file="$1"; shift
         echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
         exit 1
     fi
-    swift_do PUT "$file" --data-binary @- "$@"
+    local size
+    local divide=false
+    if test -f /proc/self/fd/0; then
+        # Real file? Get size?
+        size=$(stat -Lc%s /proc/self/fd/0)
+        if test $size -gt $((4096 * 1024 * 1024)); then
+            divide=true
+        else
+            divide=false
+        fi
+    fi
+    if $divide; then
+        # Dynamic Large Objects
+        # https://docs.openstack.org/swift/latest/overview_large_objects.html
+        local n=0
+        local mb=$((1024 * 1024))
+        local chunk_mbs=1024
+        local chunk_last=$(( (size - 1) / $mb ))
+        local chunks=$(seq 0 $chunk_mbs $chunk_last | wc -l)
+        if test "${QUIET:-0}" = 0; then
+            echo "$file -- uploading $chunks x 1GB chunks" >&2
+        fi
+        for chunk_off in $(seq 0 $chunk_mbs $chunk_last); do
+            n=$((n + 1))
+            dd if=/proc/self/fd/0 bs=$mb skip=$chunk_off count=$chunk_mbs \
+                status=none | swift_do PUT "$file/$(printf %08d $n)" \
+                    --data-binary @- "$@"
+        done
+        swift_do PUT "$file" -H "X-Object-Manifest: $SWIFT_CONTAINER/$file" \
+            --data-binary ''
+    else
+        swift_do PUT "$file" --data-binary @- "$@"
+    fi
 }
 
 
