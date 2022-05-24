@@ -13,9 +13,109 @@
 #
 #    $ multilb-sanity-check
 #
+from base64 import b16decode
 from os import listdir, path, readlink
-from subprocess import check_output
+from socket import AF_INET, AF_INET6, inet_ntop, ntohl
 from time import time
+
+
+class ProcNetBase:
+    def __init__(self):
+        if ntohl(0x12345678) == 0x78563412:
+            self._bswap = (lambda x: x[::-1])
+        else:
+            self._bswap = (lambda x: x)
+
+        with open(path.join('/proc/net', self.FILE)) as fp:
+            self.data = fp.read()
+
+    def get_listen(self, ino):
+        # # cat /proc/net/tcp | head
+        #   sl  local_address rem_address   st ... timeout inode
+        #    0: 00000000:00B3 00000000:0000 0A ...       0 19819 1 ffff90...
+        #    1: 3500007F:0035 00000000:0000 0A ...       0 34963 1 ffff90...
+        if not hasattr(self, '_get_listen'):
+            listen = {}
+            lines = self.data.split('\n')
+            lo_addr_pos = lines[0].index('local_address')
+            try:
+                rem_addr_pos = lines[0].index('rem_address')
+            except ValueError:
+                rem_addr_pos = lines[0].index('remote_address')
+            inode_pos = lines[0].index('inode')
+            for line in lines[1:]:
+                if line.startswith(self.REMOTE_LISTEN, rem_addr_pos):
+                    local = line[lo_addr_pos:rem_addr_pos - 1]
+                    inode = int(line[inode_pos:].split(' ', 1)[0])
+                    assert inode not in listen, (inode, local, listen)
+                    ip, port = local.split(':')
+                    ip = inet_ntop(
+                        self.ADDRESS_FAMILY,
+                        self._bswap(b16decode(ip)))
+                    port = int(port, 16)
+                    listen[inode] = (ip, port)
+            self._get_listen = listen
+
+        if ino in self._get_listen:
+            return [self._get_listen[ino]]
+        return []
+
+
+class ProcNetTcp(ProcNetBase):
+    FILE = 'tcp'
+    ADDRESS_FAMILY = AF_INET
+    REMOTE_LISTEN = '00000000:0000'
+
+
+class ProcNetTcp6(ProcNetBase):
+    FILE = 'tcp6'
+    ADDRESS_FAMILY = AF_INET6
+    REMOTE_LISTEN = '00000000000000000000000000000000:0000'
+
+
+class ProcNetUdp(ProcNetBase):
+    FILE = 'udp'
+    ADDRESS_FAMILY = AF_INET
+    REMOTE_LISTEN = '00000000:0000'
+
+
+class ProcNetUdp6(ProcNetBase):
+    FILE = 'udp6'
+    ADDRESS_FAMILY = AF_INET6
+    REMOTE_LISTEN = '00000000000000000000000000000000:0000'
+
+
+class NetManager:
+    @property
+    def tcp(self):
+        if not hasattr(self, '_tcp'):
+            self._tcp = ProcNetTcp()
+        return self._tcp
+
+    @property
+    def tcp6(self):
+        if not hasattr(self, '_tcp6'):
+            self._tcp6 = ProcNetTcp6()
+        return self._tcp6
+
+    @property
+    def udp(self):
+        if not hasattr(self, '_udp'):
+            self._udp = ProcNetUdp()
+        return self._udp
+
+    @property
+    def udp6(self):
+        if not hasattr(self, '_udp6'):
+            self._udp6 = ProcNetUdp6()
+        return self._udp6
+
+    def get_listen(self, ino):
+        return (
+            self.tcp.get_listen(ino) +
+            self.tcp6.get_listen(ino) +
+            self.udp.get_listen(ino) +
+            self.udp6.get_listen(ino))
 
 
 class ProcManager:
@@ -32,7 +132,6 @@ class ProcManager:
         return self._procs[pid]
 
     def has_children(self, pid):
-        assert isinstance(pid, int), pid
         for proc in self._procs.values():
             if proc.ppid == pid:
                 return True
@@ -40,9 +139,10 @@ class ProcManager:
 
 
 class Proc:
-    def __init__(self, procdir, procmgr):
+    def __init__(self, procdir, procmgr, netmgr):
         self.procdir = procdir
         self.procmgr = procmgr
+        self.netmgr = netmgr
         self.spid = procdir.rsplit('/', 1)[-1]
         self.pid = int(self.spid)
         try:
@@ -172,36 +272,69 @@ class Proc:
             self._listenip = self.get_listenip()
         return self._listenip
 
+    @property
+    def open_inodes(self):
+        if not hasattr(self, '_open_inodes'):
+            self._open_inodes = self.get_open_inodes()
+        return self._open_inodes
+
     def is_parent(self):
         return self.procmgr.has_children(self.pid)
 
-    def get_listenip(self):
+    def get_open_inodes(self):
         """
-        This is really slow.
+        Read /proc/PID/fdinfo/* and get ino:HEX.
         """
-        try:
-            lsof = check_output([
-                'lsof', '-Pan', '-i', '-p', self.spid]).decode()
-        except Exception:
-            return ()
+        fdinfo = path.join(self.procdir, 'fdinfo')
+        fds = [fd for fd in listdir(fdinfo) if fd.isdigit()]
+        ret = set()
+        for fd in fds:
+            # $ cat /proc/711079/fdinfo/4
+            # pos:     0
+            # flags:  02
+            # mnt_id: 15
+            # tfd:     9 events: 2019 data: 9 pos:0 ino:47e0beac sdev:9
+            # tfd:    10 events: 2019 data: a pos:0 ino:47e0bead sdev:9
+            with open(path.join(fdinfo, fd)) as fp:
+                data = fp.read()
+            if 'ino:' not in data:
+                continue
+            lines = data.split('\n')
+            for line in lines:
+                if line.startswith('tfd:'):
+                    hex_ino = line.split('ino:', 1)[1].lstrip().split()[0]
+                    ret.add(int(hex_ino, 16))
+        return ret
 
-        lsof = lsof.split('\n')[1:]
-        # COMMAND   PID    USER   FD   TYPE DEVICE S/O NODE NAME
-        # haproxy 21174 haproxy    5u  IPv4 302504 0t0  TCP <ip>:80 (LISTEN)
-        # haproxy 21174 haproxy    6u  IPv4 302505 0t0  TCP <ip>:443 (LISTEN)
-        # haproxy 21174 haproxy    7u  IPv4 302506 0t0  TCP <ip>:1984 (LISTEN)
-        listens = [
-            val[8] for val in [line.split() for line in lsof]
-            if len(val) >= 10 and val[9] == '(LISTEN)']
-        ips = set([val.split(':', 1)[0] for val in listens])
-        return tuple(sorted(ips))
+    def get_listenip(self):
+        listens = []
+        for ino in self.open_inodes:
+            listens.extend(self.netmgr.get_listen(ino))
+        return tuple(sorted(set(i[0] for i in listens)))
+
+        # This is the olden way, which was slow:
+        # try:
+        #     lsof = check_output([
+        #         'lsof', '-Pan', '-i', '-p', self.spid]).decode()
+        # except Exception:
+        #     return ()
+        # lsof = lsof.split('\n')[1:]
+        # # COMMAND   PID    USER   FD   TYPE DEVICE S/O NODE NAME
+        # # haproxy 21174 haproxy    5u  IPv4 302504 0t0  TCP <ip>:80 (LISTEN)
+        # # haproxy 21174 haproxy    6u  IPv4 302505 0t0  TCP <ip>:443 (LISTEN)
+        # # haproxy 21174 haproxy    7u  IPv4 302506 0t0  TCP <ip>:1984 (LISTE.
+        # listens = [
+        #     val[8] for val in [line.split() for line in lsof]
+        #     if len(val) >= 10 and val[9] == '(LISTEN)']
+        # ips = set([val.split(':', 1)[0] for val in listens])
+        # return tuple(sorted(ips))
 
     def get_config(self):
         if self.exe == '/usr/sbin/haproxy':
             for optkey, optval in zip(self.cmdline[:-1], self.cmdline[1:]):
                 if optkey == '-f':
                     return optval
-            assert False, cmdline
+            assert False, self.cmdline
         elif self.exe == '/usr/sbin/nginx':
             # nginx cmdline is a string, not NUL-joined
             cmdline = ' '.join(self.cmdline).split(' ')
@@ -237,15 +370,18 @@ _SC_CLK_TICK = 100  # getconf CLK_TCK
 
 
 proc_manager = ProcManager()
+net_manager = NetManager()
 
 all_procs = [
-    Proc('/proc/{pid}'.format(pid=pid), procmgr=proc_manager)
+    Proc(
+        '/proc/{pid}'.format(pid=pid), procmgr=proc_manager,
+        netmgr=net_manager)
     for pid in listdir('/proc') if pid.isdigit()]
 
 procs_with_config = [proc for proc in all_procs if proc.config]
 
 
-for proc in sorted(procs_with_config, key=(lambda x: x.config)):
+for proc in sorted(procs_with_config, key=(lambda x: (x.config, x.pid))):
     # Check for processes that were started BEFORE the newest SSL certificate
     # found in config was updated. For nginx and haproxy, the children of the
     # main process are re-executed, so they should always be younger than the
