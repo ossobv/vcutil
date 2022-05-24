@@ -32,6 +32,7 @@ class ProcManager:
         return self._procs[pid]
 
     def has_children(self, pid):
+        assert isinstance(pid, int), pid
         for proc in self._procs.values():
             if proc.ppid == pid:
                 return True
@@ -274,4 +275,4 @@ for proc in sorted(procs_with_config, key=(lambda x: x.config)):
         if path.exists(proc.systemd_enabled_file):
             print(
                 '{ip:15s} {proc.exe} (systemd) {proc.systemd_enabled_file!r} '
-                'exists'.format(proc=proc, ip=proc.listenip[0]))
+                'exists'.format(proc=proc, ip=proc.listenip_any))
