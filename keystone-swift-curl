@@ -32,6 +32,8 @@
 #       echo data | swift_put path/to/file
 #   fi
 #
+# Put QUIET=1 in the environment to silence any up/down progress.
+#
 
 swift_init() {
     # Check variables before starting. Works if 'set -u' is called.
@@ -88,8 +90,16 @@ swift_do() {
     local meth="$1"  # GET/DELETE/PUT
     local file="$2"  # remote/path/to/file
     shift; shift
-    curl -fsSX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
-        "$project_url/$container/$file" "$@"
+    if test "$meth" = PUT && test "${QUIET:-0}" = 0; then
+        # To get a progress bar, we must redirect stdout to /dev/null. cURL
+        # feature..
+        echo -n "$file " >&2
+        curl --progress-bar -fX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
+            "$project_url/$container/$file" "$@" >/dev/null
+    else
+        curl -fsSX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
+            "$project_url/$container/$file" "$@"
+    fi
 }
 
 swift_delete() { swift_do DELETE "$@"; }
