@@ -1,7 +1,7 @@
 #!/bin/sh
 # keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
 #
-# Helper shell script to do simple GET/PUT/DELETE in OpenStack Swift
+# Helper shell script to do simple GET/PUT/HEAD/DELETE in OpenStack Swift
 # after performing Keystone authentication.
 #
 # Dependencies: curl (for http requests), jq (to extract project url)
@@ -18,6 +18,7 @@
 # Pass the configuration file as arg1, then method, then the remote file.
 #
 #   $ keystone-swift-curl path/to/config PUT remote/file/path < data
+#   $ keystone-swift-curl path/to/config HEAD remote/file/path
 #   $ keystone-swift-curl path/to/config GET remote/file/path > data
 #   $ keystone-swift-curl path/to/config DELETE remote/file/path
 #
@@ -101,7 +102,7 @@ swift_login() {
 swift_do() {
     local project_url="$SWIFT_PROJECT_URL"
     local container="$SWIFT_CONTAINER"
-    local meth="$1"  # GET/DELETE/PUT
+    local meth="$1"  # GET|DELETE|HEAD|PUT
     local file="$2"  # remote/path/to/file
     shift; shift
     if test "$meth" = PUT && test "${QUIET:-0}" = 0; then
@@ -118,6 +119,13 @@ swift_do() {
 
 swift_delete() { swift_do DELETE "$@"; }
 swift_get() { swift_do GET "$@"; }
+swift_head() {
+    # BEWARE: The etag holds the md5sum of the file, except when the file is
+    # re-assembled from a large object (DLO).
+    echo "$1"
+    swift_do HEAD "$@" -v -H 'Connection: close' 2>&1 |
+        sed -e '/^</!d;s/</ /'
+}
 swift_put() { local file="$1"; shift
     if test -t 0; then
         echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
@@ -177,6 +185,7 @@ if test "${0##*/}" = 'keystone-swift-curl'; then
     case $method in
     DELETE) swift_delete "$@";;
     GET) swift_get "$@";;
+    HEAD) swift_head "$@";;
     PUT) swift_put "$@";;
     *) echo "unknown method: $method" >&2; exit 1
     esac
