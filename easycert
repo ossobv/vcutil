@@ -1,5 +1,5 @@
 #!/bin/sh
-# easycert (part of ossobv/vcutil) // wdoekes/2012-2020 // Public Domain
+# easycert (part of ossobv/vcutil) // wdoekes/2012-2022 // Public Domain
 #
 # Wrapper around openssl to create basic KEY+CSR pairs for submittal to
 # a certificate authority.
@@ -78,6 +78,12 @@ run_test() {
             echo >&2
             input=$(echo "$input" | sed -e '
   /-----BEGIN RSA PRIVATE KEY-----/,/-----END RSA PRIVATE KEY-----/d')
+        elif test "$(echo "$input" | head -n1)" \
+                = "-----BEGIN PRIVATE KEY-----"; then
+            echo "(skipped private key)" >&2
+            echo >&2
+            input=$(echo "$input" | sed -e '
+  /-----BEGIN PRIVATE KEY-----/,/-----END PRIVATE KEY-----/d')
         fi
         echo "$input" | show_certchain || exit $?
         echo "Expires in $(cat "$1" | get_expiry_days) days"
