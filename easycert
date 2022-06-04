@@ -124,8 +124,10 @@ show_certchain() {
         # to the extended_key_usage list.
         sid=$(echo "$out" | grep '^X509v3 Subject Key Identifier' -A1 |
               sed -ne '2s/ *\(.*\)/\1/p')
+        # In openssl 1.x the authorityKeyIdentifier was prefixed by "keyid:".
+        # In openssl 3.x it's gone.
         iid=$(echo "$out" | grep '^X509v3 Authority Key Identifier' -A1 |
-              sed -ne '2s/ *keyid:\(.*\)/\1/p')
+              sed -ne '2s/ *\(keyid:\)\?\(.*\)/\2/p')
         test $n -eq 0 && echo 'Certificate chain'
         echo " $n s: {${sid:-x509v3-subject-key-not-provided}} [$shash] $subj"
         echo "   i: {${iid:-x509v3-issuer-key--not-provided}} [$ihash] $issuer"
