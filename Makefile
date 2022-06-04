@@ -62,6 +62,7 @@ BINS = \
 	zabdig
 
 SBINS = \
+	fwdiff \
 	mount.zfs-non-legacy
 
 OTHER = \

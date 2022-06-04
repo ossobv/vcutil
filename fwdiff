@@ -1,0 +1,68 @@
+#!/bin/sh
+# fwdiff (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Generic (coarse) monitoring of iptables rules.
+#
+set -eu
+DB=/var/lib/fwdiff.db
+LSMOD=$(lsmod 2>/dev/null)
+if test $? -ne 0 -o $(id -u) -ne 0; then
+    echo "Failed to get modules or root status; root perms required" >&2
+    exit 1
+fi
+
+dump_iptables() {
+    local tables="$(echo "$LSMOD" |
+        sed '/^iptable_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
+        sort)"
+    for table in $tables; do
+        iptables -t $table -S | sed -e "s/^/iptables -t $table /"
+    done
+}
+
+dump_ip6tables() {
+    local tables="$(echo "$LSMOD" |
+        sed '/^ip6table_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
+        sort)"
+    for table in $tables; do
+        ip6tables -t $table -S | sed -e "s/^/ip6tables -t $table /"
+    done
+}
+
+dump() {
+    dump_iptables
+    dump_ip6tables
+}
+
+TEMP=$(mktemp)
+trap 'rm $TEMP' EXIT
+
+case ${1:-show} in
+show)
+    dump >"$TEMP"
+    CHANGES=$(diff -NU0 "$DB" "$TEMP" | sed -e '1,3d')
+    if test -n "$CHANGES"; then
+        printf '%s\n' "$CHANGES"
+        exit 1
+    fi
+    exit 0
+    ;;
+write)
+    dump >"$DB.new"
+    cp -a "$DB" "$DB.old" 2>/dev/null || true
+    mv "$DB.new" "$DB"
+    echo "Wrote to $DB"
+    if test "${2:-}" = "-v"; then
+        diff -NU0 "$DB.old" "$DB" | sed -e '1,3d'
+    fi
+    exit 0
+    ;;
+dump)
+    dump
+    exit 0
+    ;;
+*)
+    echo 'Usage: fwdiff show|write|dump' >&2
+    exit 1
+    ;;
+esac
