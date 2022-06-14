@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2021
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2022
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -25,6 +25,7 @@ enum_all_certs() {
     (
         enum_apache2_certs
         enum_dovecot_certs
+        enum_gitlab_certs
         enum_haproxy_certs
         enum_kuberstuff_certs
         enum_nginx_certs
@@ -48,6 +49,13 @@ enum_dovecot_certs() {
         -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne '
         s/^ssl_cert_file[[:blank:]]*=[[:blank:]]*\([^[:blank:]]\+\).*/\1/p'
+}
+
+enum_gitlab_certs() {
+    sed -e '
+        /^nginx[[].ssl_certificate.[]]/!d
+        s/[^=]*=[[:blank:]]*["'\'']\([^"'\'']*\)["'\''].*/\1/
+    ' /etc/gitlab/gitlab.rb 2>/dev/null
 }
 
 enum_haproxy_certs() {
