@@ -1,3 +1,29 @@
+vcutil (1.32) stable; urgency=low
+
+  * Added:
+    - fwdiff: Complement to psdiff, recording ip(6)tables status.
+    - gelf-payload-decode: Decode GELF streams in pcaps. (Also serves as an
+      example of how to read pcaps and reassemble TCP streams.)
+    - keystone-swift-curl: Shell script to GET/PUT/DELETE data in OpenStack
+      Swift using Keystone authentication. Python-swift simply has too
+      many dependencies when you want to do simple things.
+    - make-master-secret-log: Create Wireshark keylog file from haproxy logs.
+    - multilb-sanity-check: A tool for internal LB machine check. Checks nginx
+      and haproxy config status on load balancers where multiple of those are
+      running.
+
+  * Improvements:
+    - cert-expiry-finder: Add gitlab.rb search for certificates
+    - easycert: Fix authorityKeyIdentifier extraction on openssl 3.x (Ubuntu/Jammy)
+    - easycert: Skip over haproxy bundle style (RSA) key in -T test mode
+    - efibootmirrorsetup: Use mkfs.fat instead of deprecated mkfs wrapper.
+    - ikvmocr: Add debug info when grid detection fails
+    - ipmikvm: Add initial ssh proxy support
+    - wgrep: Also search j2 jinja files.
+    - wtimediff: Also do timediff on unixtime if there is no HH:MM:SS.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 14 Jun 2022 11:26:13 +0200
+
 vcutil (1.31) stable; urgency=low
 
   * Added:
