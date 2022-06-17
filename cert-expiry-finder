@@ -32,6 +32,7 @@ enum_all_certs() {
         enum_openvpn_certs
         enum_postfix_certs
         enum_ser_certs
+        enum_vault_certs
     ) | LC_ALL=C sort -u
 }
 
@@ -121,6 +122,12 @@ enum_ser_certs() {
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
         s/^$w*modparam(\"tls\(_mgm\)\?\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\2/p"
+}
+
+enum_vault_certs() {
+    find /etc/vault.d/ -type f -name '*.hcl' -print0 2>/dev/null |
+    xargs --no-run-if-empty -0 sed -ne '
+        s/^[[:blank:]]*tls_cert_file[[:blank:]]*=[[:blank:]]*"\([^"]*\)"/\1/p'
 }
 
 list_cert_expiry_days() {
