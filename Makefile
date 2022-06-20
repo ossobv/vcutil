@@ -37,7 +37,6 @@ BINS = \
 	linux-kernel-autoremove \
 	lldpscan \
 	make-master-secret-log \
-	multilb-sanity-check \
 	mysql2csv \
 	pdns-mysql-slave-prune \
 	psdiff \
@@ -63,7 +62,8 @@ BINS = \
 
 SBINS = \
 	fwdiff \
-	mount.zfs-non-legacy
+	mount.zfs-non-legacy \
+	multilb-sanity-check
 
 OTHER = \
 	.gitignore \
