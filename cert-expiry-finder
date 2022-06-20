@@ -127,7 +127,7 @@ enum_ser_certs() {
 enum_vault_certs() {
     find /etc/vault.d/ -type f -name '*.hcl' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne '
-        s/^[[:blank:]]*tls_cert_file[[:blank:]]*=[[:blank:]]*"\([^"]*\)"/\1/p'
+        s/^[[:blank:]]*tls_cert_file[[:blank:]]*=[[:blank:]]*"\([^"]*\)".*/\1/p'
 }
 
 list_cert_expiry_days() {
