@@ -17,7 +17,8 @@
 #
 # Pass the configuration file as arg1, then method, then the remote file.
 #
-#   $ keystone-swift-curl path/to/config PUT remote/file/path < data
+#   $ keystone-swift-curl path/to/config PUT remote/file/path \
+#       -H 'Content-Type: application/octet-stream' < data
 #   $ keystone-swift-curl path/to/config HEAD remote/file/path
 #   $ keystone-swift-curl path/to/config GET remote/file/path > data
 #   $ keystone-swift-curl path/to/config DELETE remote/file/path
@@ -29,8 +30,9 @@
 #   . /usr/bin/keystone-swift-curl  # source this script as a library
 #   swift_init                      # make sure you init
 #   swift_login                     # log in / fetch token
-#   if ! swift_get path/to/file 2>/dev/null; then
-#       echo data | swift_put path/to/file
+#   if ! swift_head path/to/file 2>/dev/null; then
+#       echo data | swift_put path/to/file \
+#         -H 'Content-Type: application/octet-stream'
 #   fi
 #
 # Put QUIET=1 in the environment to silence any up/down progress.
@@ -126,11 +128,12 @@ swift_head() {
     swift_do HEAD "$@" -v -H 'Connection: close' 2>&1 |
         sed -e '/^</!d;s/</ /'
 }
-swift_put() { local file="$1"; shift
+swift_put() {
     if test -t 0; then
         echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
         exit 1
     fi
+    local file="$1"; shift
     local size
     local divide=false
     if test -f /proc/self/fd/0; then
