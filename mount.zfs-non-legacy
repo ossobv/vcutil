@@ -94,7 +94,7 @@ no|yes)
 esac
 
 # So.. it wasn't mounted? Try that then.
-if test "$mounted" = no && zfs mount "$name"; then
+if test "$mounted" = no && ! zfs mount "$name"; then
     echo "zfs-non-legacy: failed to mount $name" >&2
     exit 1
 fi
