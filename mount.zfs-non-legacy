@@ -1,5 +1,5 @@
 #!/bin/sh
-# mount.zfs-non-legacy (part of ossobv/vcutil) // wdoekes/2021
+# mount.zfs-non-legacy (part of ossobv/vcutil) // wdoekes/2021-2022
 #  // Public Domain
 #
 # This script is a mount wrapper that adds the 'zfs-non-legacy' type for
@@ -24,9 +24,8 @@
 # After=zfs-mount.service
 # Requires=zfs-mount.service
 # [Mount]
-# Where=/var/lib/docker
-# What=data/docker
 # Type=zfs-non-legacy
+# What=data/docker
 #
 # >>> Fix in /etc/systemd/system/docker.service.d/override.conf <<<
 # [Unit]
