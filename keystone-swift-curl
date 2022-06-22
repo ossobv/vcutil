@@ -37,6 +37,17 @@
 #
 # Put QUIET=1 in the environment to silence any up/down progress.
 #
+# Tips:
+#
+#   Get a file listing:
+#   $ keystone-swift-curl path/to/config GET '' \
+#       [-H 'Content-Type: application/json']
+#
+#   When using a filename from the listing, be sure to urlencode it when
+#   using it in a new URL.
+#   $ perl -e 'sub R{$n=ord($1);if($n<=32||$n==37||$n>=127){
+#       sprintf("%%%02X",$n)}else{$1}};' -pe 's/(.)/R($1)/ge'
+#
 
 swift_init() {
     # Check variables before starting. Works if 'set -u' is called.
