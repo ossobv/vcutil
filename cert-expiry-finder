@@ -83,6 +83,7 @@ enum_kuberstuff_certs() {
 enum_nginx_certs() {
     find /etc/nginx/nginx.conf \
          /etc/nginx/conf.d/ \
+         /etc/nginx/configs/ \
          /etc/nginx/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne '
