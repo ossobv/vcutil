@@ -41,6 +41,11 @@ from tempfile import TemporaryFile
 
 MAX_DISPLAY = 100
 
+CAT_LOCAL_ONLY = '(local only)'
+CAT_RC_ONLY = '(rc only)'
+CAT_UPDATES_AVAILABLE = '(updates available)'
+CAT_NON_URL = (CAT_LOCAL_ONLY, CAT_RC_ONLY, CAT_UPDATES_AVAILABLE)
+
 
 class VersionState(object):
     def __init__(self, version, list_urls, latest_version=None):
@@ -187,39 +192,49 @@ def apt_cache_policy(package_names):
         yield (name, blob)
 
 
-packages = OrderedDict(dpkg_l())
-policies = dict(apt_cache_policy(packages.keys()))
-lists = defaultdict(list)
+def get_packages_per_list():
+    packages = OrderedDict(dpkg_l())
+    policies = dict(apt_cache_policy(packages.keys()))
+    lists = defaultdict(list)
 
-for pkg_name in packages.keys():
-    p = Package(pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
-    state = p.get_state()
+    for pkg_name in packages.keys():
+        p = Package(
+            pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
+        state = p.get_state()
 
-    if p.state not in ('ii', 'hi'):
-        assert p.state == 'rc', (p.name, p.state)
-        lists['(rc only)'].append(p)
-    elif state.list_urls:
-        # May still have newer, but we don't care..
-        for list_ in state.list_urls:
-            lists[list_].append(p)
-    elif state.has_newer:
-        lists['(updates available)'].append(p)
-    else:
-        lists['(local only)'].append(p)
+        if p.state not in ('ii', 'hi'):
+            assert p.state == 'rc', (p.name, p.state)
+            lists[CAT_RC_ONLY].append(p)
+        elif state.list_urls:
+            # May still have newer, but we don't care..
+            for list_ in state.list_urls:
+                lists[list_].append(p)
+        elif state.has_newer:
+            lists[CAT_UPDATES_AVAILABLE].append(p)
+        else:
+            lists[CAT_LOCAL_ONLY].append(p)
+
+    return lists
 
 
-print('Lists with corresponding package counts:')
-min_count = len(packages)
-for key in sorted(lists.keys()):
-    print('  {}\t{}'.format(len(lists[key]), key))
-    min_count = min(len(lists[key]), min_count)
+def main():
+    lists = get_packages_per_list()
 
-if min_count <= MAX_DISPLAY or any(
-        key.startswith('(') for key in lists.keys()):
-    print('')
-    print('Lists with very few packages (or with remarks):')
+    print('Lists with corresponding package counts:')
+    has_short_list = False
     for key in sorted(lists.keys()):
-        if len(lists[key]) <= MAX_DISPLAY or key.startswith('('):
-            print('  {}'.format(key))
-            for package in lists[key]:
-                print('    - {}'.format(package.name))
+        print('  {}\t{}'.format(len(lists[key]), key))
+        has_short_list = (has_short_list or len(lists[key]) <= MAX_DISPLAY)
+
+    if has_short_list or any(key in CAT_NON_URL for key in lists.keys()):
+        print('')
+        print('Lists with very few packages (or with remarks):')
+        for key in sorted(lists.keys()):
+            if len(lists[key]) <= MAX_DISPLAY or key in CAT_NON_URL:
+                print('  {}'.format(key))
+                for package in lists[key]:
+                    print('    - {}'.format(package.name))
+
+
+if __name__ == '__main__':
+    main()
