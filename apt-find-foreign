@@ -32,9 +32,14 @@ Output example:
         - packagex
         - packagey
 
+Another usage example:
+
+    apt-get remove --purge `apt-find-foreign --rc --local | grep -v SOMETHING`
+
 Because apt-cache policy has to do a lot of work, it takes more than 2 seconds
 to run on my desktop.
 """
+from argparse import ArgumentParser
 from collections import OrderedDict, defaultdict
 from subprocess import check_output
 from tempfile import TemporaryFile
@@ -43,16 +48,20 @@ MAX_DISPLAY = 100
 
 CAT_LOCAL_ONLY = '(local only)'
 CAT_RC_ONLY = '(rc only)'
+CAT_DOWNGRADES_AVAILABLE = '(downgrades available)'
 CAT_UPDATES_AVAILABLE = '(updates available)'
-CAT_NON_URL = (CAT_LOCAL_ONLY, CAT_RC_ONLY, CAT_UPDATES_AVAILABLE)
+CAT_NON_URL = (
+    CAT_LOCAL_ONLY, CAT_RC_ONLY,
+    CAT_DOWNGRADES_AVAILABLE, CAT_UPDATES_AVAILABLE)
 
 
 class VersionState(object):
-    def __init__(self, version, list_urls, latest_version=None):
+    def __init__(self, version, list_urls, version_in_list=None,
+                 version_direction=0):
         self.version = version
         self.list_urls = tuple(sorted(list_urls))
-        self.has_newer = (latest_version and latest_version != version)
-        self.latest_version = latest_version or version
+        self.version_direction = version_direction
+        self.version_in_list = version_in_list
 
 
 class Package(object):
@@ -87,7 +96,7 @@ class Package(object):
             self.policy = out
         return self.policy
 
-    def get_state(self):
+    def get_version_state(self):
         """
         Return dpkg source version state from the policy.
 
@@ -95,10 +104,10 @@ class Package(object):
 
             VersionState('1.2.3', ('http://example.com/ubuntu',), '1.2.4')
         """
-        if not hasattr(self, '_state'):
-            self._state = self._extract_source_urls(
+        if not hasattr(self, '_version_state'):
+            self._version_state = self._extract_source_urls(
                 self.name, self.state, self.get_policy())
-        return self._state
+        return self._version_state
 
     @staticmethod
     def _extract_source_urls(name, state, policy):
@@ -108,47 +117,62 @@ class Package(object):
             if line.startswith('  Version table:'):
                 break
 
-        latest = None
-        current = None
+        local_version = None
+        local_urls = set()
+        list_version = None
+        local_list_version_cmp = None
 
         current_version_prio = next(outiter).split()
-        while True:
+        while current_version_prio:
             urls = set()
 
             # ' *** 1.11 500'
             if len(current_version_prio) == 3:
                 current, version, prio = current_version_prio
                 assert current == '***', current_version_prio
-                current = version
+                local_version = version
+                current = True
             elif len(current_version_prio) == 2:
                 version, prio = current_version_prio
                 current = False
             else:
                 assert False, current_version_prio
 
-            if latest is None:
-                latest = version
-
             # '      500 http://example.com/ubuntu bionic/osso amd64 Packages'
             # '      100 /var/lib/dpkg/status'
             for line in outiter:
                 if not line.startswith(' ' * 8):
                     break
-                urls.add(line.split()[1])
+                url = line.split()[1]
+                if url != '/var/lib/dpkg/status':
+                    urls.add(url)
             else:
-                assert current or state == 'rc', (name, state, urls)
-                break  # at EOF
+                line = ''  # at EOF, but complete the while
+            if current:  # found the URLs with '***'
+                local_urls = urls
 
-            # This was with '***'. We're done here.
-            if current:
+            # We did not have a list_version yet, but here it is.
+            if list_version is None and urls:
+                list_version = version
+                if local_version == list_version:
+                    local_list_version_cmp = 0
+                elif local_version:  # local is newer?
+                    local_list_version_cmp = -1
+                else:
+                    local_list_version_cmp = 1
+
+            # Short circuit in case we have enough info.
+            if None not in (local_version, list_version):
                 break
 
             # Restart loop with the next (older) version.
             current_version_prio = line.split()
 
-        assert current is not None, (name, state, current)
-        urls.remove('/var/lib/dpkg/status')
-        return VersionState(current, list_urls=urls, latest_version=latest)
+        assert bool(local_version) ^ bool(state == 'rc'), (name, state, policy)
+        # list_version and local_list_version_tmp are None when local_only
+        return VersionState(
+            local_version, list_urls=local_urls, version_in_list=list_version,
+            version_direction=local_list_version_cmp)
 
     def __repr__(self):
         return self.name
@@ -200,24 +224,27 @@ def get_packages_per_list():
     for pkg_name in packages.keys():
         p = Package(
             pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
-        state = p.get_state()
+        vstate = p.get_version_state()
 
         if p.state not in ('ii', 'hi'):
             assert p.state == 'rc', (p.name, p.state)
             lists[CAT_RC_ONLY].append(p)
-        elif state.list_urls:
-            # May still have newer, but we don't care..
-            for list_ in state.list_urls:
-                lists[list_].append(p)
-        elif state.has_newer:
-            lists[CAT_UPDATES_AVAILABLE].append(p)
-        else:
+        elif vstate.version_in_list is None:  # exists in NO list
             lists[CAT_LOCAL_ONLY].append(p)
+        elif vstate.list_urls:  # exists in a list, may not be newest though
+            for list_ in vstate.list_urls:
+                lists[list_].append(p)
+        elif vstate.version_direction == 1:  # local version is older
+            lists[CAT_UPDATES_AVAILABLE].append(p)
+        elif vstate.version_direction == -1:  # local version is newer(!)
+            lists[CAT_DOWNGRADES_AVAILABLE].append(p)
+        else:
+            assert False, (p.name, vstate.version, vstate.version_in_list)
 
     return lists
 
 
-def main():
+def show():
     lists = get_packages_per_list()
 
     print('Lists with corresponding package counts:')
@@ -234,6 +261,48 @@ def main():
                 print('  {}'.format(key))
                 for package in lists[key]:
                     print('    - {}'.format(package.name))
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument('--local-only', action='store_true')
+    parser.add_argument('--rc-only', action='store_true')
+    parser.add_argument('--downgrades-available', action='store_true')
+    parser.add_argument('--updates-available', action='store_true')
+    args = parser.parse_args()
+
+    if args.local_only or args.rc_only:
+        assert not args.downgrades_available, 'mutually exclusive'
+        assert not args.updates_available, 'mutually exclusive'
+        # apt-find-foreign --rc --local | xargs apt-get remove --purge
+        lists = get_packages_per_list()
+        if args.local_only:
+            for package in lists[CAT_LOCAL_ONLY]:
+                print(package.name)
+        if args.rc_only:
+            for package in lists[CAT_RC_ONLY]:
+                print(package.name)
+    elif args.downgrades_available:
+        assert not any([
+            args.local_only, args.rc_only, args.updates_available])
+        lists = get_packages_per_list()
+        for package in lists[CAT_DOWNGRADES_AVAILABLE]:
+            vstate = package.get_version_state()
+            print('{:22s}  {:22s} >> {:s}'.format(
+                package.name, vstate.version, vstate.version_in_list))
+    elif args.updates_available:
+        assert not any([
+            args.local_only, args.rc_only, args.downgrades_available])
+        lists = get_packages_per_list()
+        for package in lists[CAT_UPDATES_AVAILABLE]:
+            vstate = package.get_version_state()
+            print('{:22s}  {:22s} << {:s}'.format(
+                package.name, vstate.version, vstate.version_in_list))
+    else:
+        assert not any([
+            args.local_only, args.rc_only,
+            args.downgrades_available, args.updates_available])
+        show()
 
 
 if __name__ == '__main__':
