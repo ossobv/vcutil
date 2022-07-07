@@ -52,6 +52,11 @@ if test "${name#/}" != "$name"; then  # fileset has a leading slash
     name=${name#/}
 fi
 
+if ! command -v zpool >/dev/null || ! command -v zfs >/dev/null; then
+    echo "No ZFS installed?" >&2
+    exit 1
+fi
+
 # Get mounted state, but tries to import the zpool if it was not found.
 # Implemented in a function so we can retry this during boot. During boot
 # several jobs may be attempting to mount/import stuff, causing intermittent
