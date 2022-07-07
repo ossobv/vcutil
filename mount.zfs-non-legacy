@@ -45,8 +45,10 @@ name="$1"  # data/docker
 path="$2"  # /var/lib/docker
 
 if test "${name#/}" != "$name"; then  # fileset has a leading slash
-    echo "Looks like https://github.com/systemd/systemd/issues/23795 is not\
- fixed: args=[$*] -- removing slash from \$1" >&2
+    echo "Looks like systemd/systemd#23795 or systemd/systemd#18188 or\
+ util-linux/util-linux#1231 is not fixed satisfactorily (we want a\
+ --no-canonicalize mount option): args=[$*] -- removing slash from\
+ \$1" >&2
     name=${name#/}
 fi
 
