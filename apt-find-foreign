@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-# apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018 // Public Domain
+# apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018,2022 //
+#   Public Domain
 """
 Script to find Debian/Ubuntu packages from "foreign" archives.
 
@@ -15,15 +16,18 @@ Output example:
 
     Lists with corresponding package counts:
       269     (local only)
+      1       (updates available)
       3075    http://ubuntuserver.com/ubuntu
       2       http://custom-ppa.com/ubuntu
 
-    Lists with very few packages (or local only):
+    Lists with very few packages (or with remarks):
       (local only)
         - libswresample-ffmpeg1
         - libquvi-scripts
         - qml-module-ubuntu-performancemetrics
         ...
+      (updates available)
+        - gpg
       http://custom-ppa.com/ubuntu
         - packagex
         - packagey
@@ -32,12 +36,18 @@ Because apt-cache policy has to do a lot of work, it takes more than 2 seconds
 to run on my desktop.
 """
 from collections import OrderedDict, defaultdict
-from io import BytesIO
 from subprocess import check_output
 from tempfile import TemporaryFile
-import sys
 
 MAX_DISPLAY = 100
+
+
+class VersionState(object):
+    def __init__(self, version, list_urls, latest_version=None):
+        self.version = version
+        self.list_urls = tuple(sorted(list_urls))
+        self.has_newer = (latest_version and latest_version != version)
+        self.latest_version = latest_version or version
 
 
 class Package(object):
@@ -72,34 +82,68 @@ class Package(object):
             self.policy = out
         return self.policy
 
-    def get_lists(self):
+    def get_state(self):
         """
-        Return dpkg source lists from the policy.
+        Return dpkg source version state from the policy.
 
         For example::
 
-            ('http://example.com/ubuntu',)
+            VersionState('1.2.3', ('http://example.com/ubuntu',), '1.2.4')
         """
-        if not hasattr(self, '_lists'):
-            out = self.get_policy().split('\n')
-            outiter = iter(out)
-            lists = []
-            for l in outiter:
-                if l.startswith(' *** '):
-                    for l2 in outiter:
-                        if not l2.startswith(' ' * 8):
-                            break
-                        lists.append(l2)
-            lists = list(sorted(set(i.split()[1] for i in lists)))
+        if not hasattr(self, '_state'):
+            self._state = self._extract_source_urls(
+                self.name, self.state, self.get_policy())
+        return self._state
 
-            if lists and lists[0] == '/var/lib/dpkg/status':
-                lists.pop(0)
+    @staticmethod
+    def _extract_source_urls(name, state, policy):
+        out = policy.split('\n')
+        outiter = iter(out)
+        for line in outiter:
+            if line.startswith('  Version table:'):
+                break
+
+        latest = None
+        current = None
+
+        current_version_prio = next(outiter).split()
+        while True:
+            urls = set()
+
+            # ' *** 1.11 500'
+            if len(current_version_prio) == 3:
+                current, version, prio = current_version_prio
+                assert current == '***', current_version_prio
+                current = version
+            elif len(current_version_prio) == 2:
+                version, prio = current_version_prio
+                current = False
             else:
-                # probably state is 'rc'?
-                assert self.state == 'rc', (self.name, lists)
+                assert False, current_version_prio
 
-            self._lists = tuple(lists)
-        return self._lists
+            if latest is None:
+                latest = version
+
+            # '      500 http://example.com/ubuntu bionic/osso amd64 Packages'
+            # '      100 /var/lib/dpkg/status'
+            for line in outiter:
+                if not line.startswith(' ' * 8):
+                    break
+                urls.add(line.split()[1])
+            else:
+                assert current or state == 'rc', (name, state, urls)
+                break  # at EOF
+
+            # This was with '***'. We're done here.
+            if current:
+                break
+
+            # Restart loop with the next (older) version.
+            current_version_prio = line.split()
+
+        assert current is not None, (name, state, current)
+        urls.remove('/var/lib/dpkg/status')
+        return VersionState(current, list_urls=urls, latest_version=latest)
 
     def __repr__(self):
         return self.name
@@ -149,24 +193,33 @@ lists = defaultdict(list)
 
 for pkg_name in packages.keys():
     p = Package(pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
-    if p.get_lists():
-        for list_ in p.get_lists():
+    state = p.get_state()
+
+    if p.state not in ('ii', 'hi'):
+        assert p.state == 'rc', (p.name, p.state)
+        lists['(rc only)'].append(p)
+    elif state.list_urls:
+        # May still have newer, but we don't care..
+        for list_ in state.list_urls:
             lists[list_].append(p)
+    elif state.has_newer:
+        lists['(updates available)'].append(p)
     else:
-        lists[''].append(p)
+        lists['(local only)'].append(p)
 
 
 print('Lists with corresponding package counts:')
 min_count = len(packages)
 for key in sorted(lists.keys()):
-    print('  {}\t{}'.format(len(lists[key]), key or '(local only)'))
+    print('  {}\t{}'.format(len(lists[key]), key))
     min_count = min(len(lists[key]), min_count)
 
-if min_count <= MAX_DISPLAY or len(lists['']):
+if min_count <= MAX_DISPLAY or any(
+        key.startswith('(') for key in lists.keys()):
     print('')
-    print('Lists with very few packages (or local only):')
+    print('Lists with very few packages (or with remarks):')
     for key in sorted(lists.keys()):
-        if len(lists[key]) <= MAX_DISPLAY or key == '':
-            print('  {}'.format(key or '(local only)'))
+        if len(lists[key]) <= MAX_DISPLAY or key.startswith('('):
+            print('  {}'.format(key))
             for package in lists[key]:
                 print('    - {}'.format(package.name))
