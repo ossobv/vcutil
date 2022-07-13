@@ -5,6 +5,7 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 SBINDIR = $(PREFIX)/sbin
 SYSCONFDIR = /etc
+SYSSBINDIR = /sbin
 
 BINS = \
 	apt-find-foreign \
@@ -62,8 +63,10 @@ BINS = \
 
 SBINS = \
 	fwdiff \
-	mount.zfs-non-legacy \
 	multilb-sanity-check
+
+SYSSBINS = \
+	mount.zfs-non-legacy
 
 OTHER = \
 	.gitignore \
@@ -97,6 +100,8 @@ install:
 	install $(BINS) $(DESTDIR)$(BINDIR)
 	install -d $(DESTDIR)$(SBINDIR)
 	install $(SBINS) $(DESTDIR)$(SBINDIR)
+	install -d $(DESTDIR)$(SYSSBINDIR)
+	install $(SYSSBINS) $(DESTDIR)$(SYSSBINDIR)
 	#install -D -T tcpdump247 $(DESTDIR)$(SYSCONFDIR)/init.d/tcpdump247
 	#install -m0600 -D -T \
 	#  tcpdump247.default $(DESTDIR)$(SYSCONFDIR)/default/tcpdump247
@@ -109,7 +114,8 @@ hashes: $(HASHES)
 
 make_has_all_files:
 	@bash -c "diff -pu <(git ls-files | grep -vF / | sort -V) \
-		<(echo $(BINS) $(SBINS) $(OTHER) | tr ' ' '\n' | sort -V)"
+	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) | \
+	    tr ' ' '\n' | sort -V)"
 
 %.hash: % Makefile
 	sha256sum $< > $@
