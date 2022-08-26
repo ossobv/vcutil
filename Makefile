@@ -44,6 +44,7 @@ BINS = \
 	pve-macaddr-security \
 	sadfscheck \
 	sh-c \
+	snap-autoremove \
 	sys-is-vm \
 	tls-sniff-ciphers \
 	udiff \

@@ -1,0 +1,41 @@
+#!/bin/sh
+# snap-autoremove (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Automatically remove old unused snap packages on Ubuntu platforms.
+#
+# If you keep more than 2 snap revisions lying around, because you've
+# been bitten by Snapcraft's poor management [1] and do not trust that two
+# versions are enough to get a bug-free version of something, then those
+# many revisions may accumulate and take up useful disk space.
+#
+# Keeping more than 2 versions around, because the snap ecosystem is stupid:
+#
+#   snap set system refresh.retain=12
+#
+# Do not silently auto-update:
+#
+#   snap set system experimental.refresh-app-awareness=true
+#
+# [1] https://bugs.launchpad.net/ubuntu/+source/chromium-browser/+bug/1956838/comments/7
+# > Personally, I think it's a waste of space to setup timeshift just
+# > because Ubuntu snapcraft cannot keep more than two versions alive... I
+# > think there is something wrong in the snap ecosystem if we cannot
+# > choose between more than two versions which are both broken.
+
+for app in $(snap list | awk '{if(NR>1)print $1}'); do
+    current=$(readlink /snap/$app/current); current=${current%/}
+    revisions=$(
+        find /snap/$app -maxdepth 1 -type d \
+            -regex '.*/[0-9]+$' -regextype posix-extended |
+        sed -e 's#.*/##' | sort -V)
+    without_current_or_last=$(
+        echo "$revisions" | grep -v "${current##*/}" | sed -e '$d')
+    if test -n "$without_current_or_last"; then
+        echo "[$app] @$current, pruning" $without_current_or_last...
+        for version in $without_current_or_last; do
+            snap remove --revision=$version $app
+        done
+    fi
+done
+
+# vim: set ts=8 sw=4 sts=4 et ai:
