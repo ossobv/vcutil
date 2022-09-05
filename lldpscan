@@ -15,7 +15,7 @@
 #
 # # lldpscan
 #
-# > Please wait at last 30 seconds for LLDP frames to arrive...
+# > Please wait at least 30 seconds for LLDP frames to arrive...
 # > (seconds elapsed: 14)
 # >
 # > t = 1642688890 918891 on ens2f1 00:30:11:22:33:44 -> 01:80:c2:00:00:0e
@@ -451,7 +451,7 @@ poller.register(s.sock, select.POLLIN)
 
 
 print(
-    'Please wait at last 30 seconds for LLDP frames to arrive...',
+    'Please wait at least 30 seconds for LLDP frames to arrive...',
     file=sys.stderr)
 t0 = time.time()
 try:
