@@ -45,6 +45,16 @@ name="$1"  # data/docker
 path="$2"  # /var/lib/docker
 
 if test "${name#/}" != "$name"; then  # fileset has a leading slash
+    # https://github.com/util-linux/util-linux/commit/
+    #   372ce5b74e79470b1bda1fc284c19a313a422361
+    # is a fix for fstype = "zfs" only. Here we have
+    # fstype = "zfs-non-legacy", so it suffers from the same issue as:
+    # https://github.com/openzfs/zfs/pull/11295#issuecomment-757889868
+    # > mount -t zfs foo /foo
+    # > # will run 'mount.zfs /foo /foo' internally because /foo exists
+    # A satisfactory solution to this problem was if we could tell
+    # systemd to add the --no-canonicalize mount option:
+    # https://github.com/systemd/systemd/issues/18188
     echo "Looks like systemd/systemd#23795 or systemd/systemd#18188 or\
  util-linux/util-linux#1231 is not fixed satisfactorily (we want a\
  --no-canonicalize mount option): args=[$*] -- removing slash from\
