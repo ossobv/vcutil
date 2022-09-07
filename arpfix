@@ -11,7 +11,7 @@
 #   another.
 # - This involves a 'net del int OLDIFACE ip address 1.2.3.4/31' and a
 #   'net add int NEWIFACE ip address 1.2.3.4/31'.
-# - After committing the changes, the reachable machine(s) still have stale
+# - After committing the changes, the moved machines still have stale
 #   arp entries: 1.2.3.5 at OLDIFACE.
 # - The switch has also seen an arp entry at the NEWIFACE,
 # - but the switching component still sends all traffic destined for 1.2.3.5
@@ -19,6 +19,10 @@
 # - A run of this script finds these duplicate IP entries and removes the lot.
 # - Future layer 2 communication will recreate the only the wanted arp entries
 #   (the one on NEWIFACE).
+#
+# Alternative fixes:
+# - Wait for the ARP timer to expire the entries (120(?) seconds).
+# - Bring OLDIFACE down (and up).
 #
 # Usage (as root):
 #

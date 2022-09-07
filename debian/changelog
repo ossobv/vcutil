@@ -1,3 +1,30 @@
+vcutil (1.33) stable; urgency=low
+
+  * Added:
+    - arpfix: Tool to quickly expire stale arp entries on Linux switches after
+      moving (virtual) machines from one physical port to another.
+    - snap-autoremove: Tool to prune snap revisions. Needed when you use
+      refresh.retain=12 because Snapcraft refuses to serve old (non-buggy)
+      versions of an app.
+
+  * Improvements:
+    - apt-find-foreign: Add rc-only, local-only, update-available and
+      downgrade-available categories. Now you can safely run this before
+      upgrading to the latest packages.
+    - cert-expiry-finder: Also look in /etc/nginx/configs/ for multilb
+      configs; remove trailing whitespaces/comments for vault; add vault
+      hcl files for certificates.
+    - keystone-swift-curl: Add tips on using the file listing / urlencode;
+      suggest adding a Content-Type for PUT.
+    - lldpscan: Fix typo in output
+    - mount.zfs-non-legacy: Move from /usr/sbin to /sbin; quit early if there
+      is no ZFS; undo mount canonicalization that breaks for some paths; fix
+      repo file permissions; fix mounting when pool was available already;
+      alter docs.
+    - multilb-sanity-check: Move to /usr/sbin, we need root for it
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 07 Sep 2022 14:23:49 +0200
+
 vcutil (1.32) stable; urgency=low
 
   * Added:
