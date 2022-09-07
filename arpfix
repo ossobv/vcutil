@@ -1,0 +1,92 @@
+#!/bin/sh
+# arpfix (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Moving IP addresses on Layer 3 switches can cause stale arp entries to
+# get precedence. Calling arpfix will check for duplicate MAC-addresses
+# and release both, so that the stale one is gone.
+#
+# The use case where this was necessary:
+# - Cumulus Linux switches,
+# - where a (virtual) machine is moved from behind one physical port to
+#   another.
+# - This involves a 'net del int OLDIFACE ip address 1.2.3.4/31' and a
+#   'net add int NEWIFACE ip address 1.2.3.4/31'.
+# - After committing the changes, the reachable machine(s) still have stale
+#   arp entries: 1.2.3.5 at OLDIFACE.
+# - The switch has also seen an arp entry at the NEWIFACE,
+# - but the switching component still sends all traffic destined for 1.2.3.5
+#   to OLDIFACE.
+# - A run of this script finds these duplicate IP entries and removes the lot.
+# - Future layer 2 communication will recreate the only the wanted arp entries
+#   (the one on NEWIFACE).
+#
+# Usage (as root):
+#
+#   # arpfix
+#   2022-09-07 13:52:51: ip neigh del 10.1.2.3 dev swp40.1
+#   2022-09-07 13:52:51: ip neigh del 10.1.2.3 dev swp40.2
+#
+# Or, if you want to run it before there even was a duplicate:
+#
+#   # arpfix -f
+#   (checking and clearing, ^C to stop)
+#   2022-09-07 13:52:51: ip neigh del 10.1.2.3 dev swp40.1
+#   2022-09-07 13:52:51: ip neigh del 10.1.2.3 dev swp40.2
+#   ^C
+#
+set -eu
+
+show_ip4_arp() {
+    ip neigh show nud reachable
+}
+
+show_ip4_arp_example() {
+    printf '%s\n' \
+        '10.1.2.3 dev swp40.1 lladdr de:ad:be:ef:13:37 REACHABLE' \
+        '5.5.5.5 dev swp40.2 lladdr 00:11:22:33:44:55 REACHABLE' \
+        '4.4.4.4 dev swp45.1 lladdr 11:22:33:44:55:66 REACHABLE' \
+        '10.1.2.3 dev swp40.2 lladdr 00:c0:ff:ee:ba:55 REACHABLE'
+}
+
+process_duplicates() {
+    local get_func=show_ip4_arp #_example
+    local buf dupes dupe ifaces problems=0
+    buf=$($get_func)
+    dupes=$(\
+        printf '%s\n' "$buf" |
+        awk '/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+ /{print $1}' |
+        sort -V | uniq -c | awk '!/^ *1 /{print $2}')
+    for dupe in $dupes; do
+        ifaces=$(\
+            printf '%s\n' "$buf" | sed -ne '
+            s/^'"$dupe"'\( [^ ]\+\)* dev \([^ ]*\).*/\2/p')
+        process_duplicate "$dupe" $ifaces || problems=1
+    done
+    test $problems -eq 0
+}
+
+process_duplicate() {
+    local ip iface now problems=0
+    ip=$1; shift
+    now=$(LC_ALL=C date +'%Y-%m-%d %H:%M:%S')
+    for iface in $*; do
+        echo "$now: ip neigh del $ip dev $iface"
+        ip neigh del "$ip" dev "$iface" || problems=1
+    done
+    test $problems -eq 0
+}
+
+case "${1:-}" in
+'')
+    process_duplicates
+    ;;
+'-f')
+    echo '(checking and clearing, ^C to stop)' >&2
+    while true; do process_duplicates; sleep 1 || break; done || true
+    ;;
+*)
+    echo 'Usage: arpfix [-f]' >&2
+    echo 'Checks arp (neighbor) table and removes duplicates' >&2
+    exit 1
+    ;;
+esac

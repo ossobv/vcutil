@@ -63,6 +63,7 @@ BINS = \
 	zabdig
 
 SBINS = \
+	arpfix \
 	fwdiff \
 	multilb-sanity-check
 
