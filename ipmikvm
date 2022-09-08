@@ -305,8 +305,8 @@ exec_app() {
     local class="$1"; shift
     if test -z "$class"; then
         class=$(unzip -c "$jar" META-INF/MANIFEST.MF |
-            awk '/^Main-Class[[:blank:]]*:/{print $2}' |
-            sed -e 's/[[:cntrl:][:space:]]//g')
+            tr -d '\r' | tr '\t' ' ' |
+            awk '/^Main-Class *:/{print $2}')
         echo "found Main-Class $class in $jar" >&2
     fi
     # iKVM
