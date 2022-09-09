@@ -335,8 +335,8 @@ install_ikvm_application() {
     test "${codebase%/}" = "$codebase" || codebase="${codebase%/}"
     local jars="$(get_jars "$launch_jnlp")"
     case "$(uname -s)" in
-        Linux) local libprefix=liblinux;;
-        Darwin) local libprefix=libmac;;
+        Linux) local libprefix='\(liblinux\|Linux\)';;
+        Darwin) local libprefix='\(libmac\|Mac\)';;
         *) echo "Unknown platform: $(uname -s)" >&2; exit 1;;
     esac
     local nativelibs=$(
@@ -364,8 +364,14 @@ install_ikvm_application() {
             false
         fi
     done
-    test ! -f "$libprefix"*.jar || unzip -o $libprefix*.jar
-    rm -rf META-INF
+    local nativelib
+    for nativelib in $nativelibs; do
+        if test -f "$nativelib"; then
+	    ( cd "$(dirname "$nativelib")" &&
+                unzip -o "$(basename "$nativelib")" )
+            rm -rf META-INF
+        fi
+    done
     set +x
     set +e
 }
