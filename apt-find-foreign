@@ -126,17 +126,23 @@ class Package(object):
         while current_version_prio:
             urls = set()
 
+            # ' *** 3.20220809.0ubuntu0.22.04.1 500 (phased 10%)'
+            if (len(current_version_prio) > 3 and
+                    current_version_prio[-2] == '(phased' and
+                    current_version_prio[-1].endswith(')')):
+                current_version_prio = current_version_prio[0:-2]
+
             # ' *** 1.11 500'
             if len(current_version_prio) == 3:
                 current, version, prio = current_version_prio
-                assert current == '***', current_version_prio
+                assert current == '***', (name, current_version_prio)
                 local_version = version
                 current = True
             elif len(current_version_prio) == 2:
                 version, prio = current_version_prio
                 current = False
             else:
-                assert False, current_version_prio
+                assert False, (name, current_version_prio)
 
             # '      500 http://example.com/ubuntu bionic/osso amd64 Packages'
             # '      100 /var/lib/dpkg/status'
