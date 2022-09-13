@@ -31,8 +31,11 @@ enum_all_certs() {
         enum_nginx_certs
         enum_openvpn_certs
         enum_postfix_certs
+        enum_promtail_certs
         enum_ser_certs
+        enum_systemd_certs
         enum_vault_certs
+        enum_zabbix_certs
     ) | LC_ALL=C sort -u
 }
 
@@ -109,6 +112,12 @@ enum_postfix_certs() {
     sed -e 's/.* = *//'
 }
 
+enum_promtail_certs() {
+    find /etc/promtail/ -name *.yaml -print0 2>/dev/null |
+        xargs --no-run-if-empty -0 sed -ne '
+            s/^[[:blank:]]*cert_file[[:blank:]]*:[[:blank:]]*\([^0-9]*\).*/\1/p'
+}
+
 enum_ser_certs() {
     w='[[:blank:]]'
     W='[^[:blank:]]'
@@ -125,10 +134,22 @@ enum_ser_certs() {
         s/^$w*modparam(\"tls\(_mgm\)\?\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\2/p"
 }
 
+enum_systemd_certs() {
+    find /etc/systemd/ -maxdepth 2 -name *.conf -print0 2>/dev/null |
+        xargs --no-run-if-empty -0 sed -ne '
+            s/^ServerCertificateFile[[:blank:]]*=[[:blank:]]*\([^0-9]*\).*/\1/p'
+}
+
 enum_vault_certs() {
     find /etc/vault.d/ -type f -name '*.hcl' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne '
         s/^[[:blank:]]*tls_cert_file[[:blank:]]*=[[:blank:]]*"\([^"]*\)".*/\1/p'
+}
+
+enum_zabbix_certs() {
+    find /etc/zabbix/ -maxdepth 2 -name *.conf -print0 2>/dev/null |
+        xargs --no-run-if-empty -0 sed -ne '
+            s/^TLSCertFile[[:blank:]]*=[[:blank:]]*\([^0-9]*\).*/\1/p'
 }
 
 list_cert_expiry_days() {
