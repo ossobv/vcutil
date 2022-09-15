@@ -19,7 +19,7 @@
 # Amend the PATH so we're more likely to.
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-set -eu
+set -u  # skip -e; we do want some results in case of failure
 s='[[:blank:]]'
 S='[^[:blank:]]'
 
@@ -63,7 +63,7 @@ enum_gitlab_certs() {
     sed -e "
         /^nginx[[].ssl_certificate.[]]/!d
         s/[^=]*=$s*[\"']\([^\"']*\)[\"'].*/\1/
-    " /etc/gitlab/gitlab.rb 2>/dev/null
+    " /etc/gitlab/gitlab.rb 2>/dev/null || true
 }
 
 enum_haproxy_certs() {
@@ -98,8 +98,10 @@ enum_nginx_certs() {
 }
 
 enum_openvpn_certs() {
+    local f
     find /etc/openvpn /etc/openvpn-nl -maxdepth 2 -name '*.conf' 2>/dev/null |
     while read -r f; do
+        local fpath certs cert
         certs=$(cat "$f" | sed -ne "
             s/^$s*\(ca\|cert\|crl-verify\)$s\+\([^[:blank:]#]*\).*/\2/p")
         fpath=${f%/*}
@@ -154,6 +156,7 @@ enum_zabbix_certs() {
 }
 
 list_cert_expiry_days() {
+    local file expiry
     for file in "$@"; do
         expiry=$(expiry_after "$file")
         if test -n "$expiry"; then
@@ -166,6 +169,7 @@ list_cert_expiry_days() {
 }
 
 expiry_after() {
+    local file date tn td
     file=$1
     case $file in
     *.crl|*/crl.pem)
