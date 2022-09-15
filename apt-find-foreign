@@ -147,7 +147,7 @@ class Package(object):
             # '      500 http://example.com/ubuntu bionic/osso amd64 Packages'
             # '      100 /var/lib/dpkg/status'
             for line in outiter:
-                if not line.startswith(' ' * 8):
+                if not line.startswith(' ' * 7):  # 7 for prio >999 else 8
                     break
                 url = line.split()[1]
                 if url != '/var/lib/dpkg/status':
