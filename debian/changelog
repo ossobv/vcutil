@@ -1,3 +1,14 @@
+vcutil (1.34) stable; urgency=low
+
+  * Improvements:
+    - apt-find-foreign: Cope with "(phase N%)" in apt-cache policy
+      (but don't do anything with it yet).
+    - cert-expiry-finder: extensions to find more certificates: promtail,
+      systemd, zabbix.
+    - ipmikvm: Improvements for older systems (X9 and older Ubuntu/Debian).
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 15 Sep 2022 11:17:37 +0200
+
 vcutil (1.33) stable; urgency=low
 
   * Added:
