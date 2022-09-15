@@ -19,6 +19,10 @@
 # Amend the PATH so we're more likely to.
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+set -eu
+s='[[:blank:]]'
+S='[^[:blank:]]'
+
 global_t0=$(date +%s)  # cache the "now" value
 
 enum_all_certs() {
@@ -44,30 +48,30 @@ enum_apache2_certs() {
          /etc/apache2/mods-enabled/ssl.conf \
          /etc/apache2/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 sed -ne '
-        s/^[[:blank:]]*SSLCertificateFile[[:blank:]]\+\([^[:blank:]]*\).*/\1/p'
+    xargs --no-run-if-empty -0 sed -ne "
+        s/^$s*SSLCertificateFile$s\+\($S*\).*/\1/p"
 }
 
 enum_dovecot_certs() {
     find /etc/dovecot/ '(' -type f -o -type l ')' '!' -name '.*' \
         -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 sed -ne '
-        s/^ssl_cert_file[[:blank:]]*=[[:blank:]]*\([^[:blank:]]\+\).*/\1/p'
+    xargs --no-run-if-empty -0 sed -ne "
+        s/^ssl_cert_file$s*=$s*\($S\+\).*/\1/p"
 }
 
 enum_gitlab_certs() {
-    sed -e '
+    sed -e "
         /^nginx[[].ssl_certificate.[]]/!d
-        s/[^=]*=[[:blank:]]*["'\'']\([^"'\'']*\)["'\''].*/\1/
-    ' /etc/gitlab/gitlab.rb 2>/dev/null
+        s/[^=]*=$s*[\"']\([^\"']*\)[\"'].*/\1/
+    " /etc/gitlab/gitlab.rb 2>/dev/null
 }
 
 enum_haproxy_certs() {
     find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 sed -e '
-        /^[[:blank:]]*bind[[:blank:]].*[[:blank:]]ssl\($\|[[:blank:]]\)/!d
-        s/[[:blank:]]crt\(-list\)\?[[:blank:]]\+/\n|/g' |
-    sed -e '/^|/!d;s/^.//;s/[[:blank:]].*//' | while read f; do
+    xargs --no-run-if-empty -0 sed -e "
+        /^$s*bind$s.*${s}ssl\($\|$s\)/!d
+        s/${s}crt\(-list\)\?$s\+/\n|/g" |
+    sed -e "/^|/!d;s/^.//;s/$s.*//" | while read f; do
       test -d "$f" && find "$f" -maxdepth 1 -type f || echo "$f"; done
 }
 
@@ -89,16 +93,15 @@ enum_nginx_certs() {
          /etc/nginx/configs/ \
          /etc/nginx/sites-enabled/ \
         '(' -type f -o -type l ')' '!' -name '.*' -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 sed -ne '
-        s/^[[:blank:]]*ssl_certificate[[:blank:]]\+\([^[:blank:]]*\).*;.*/\1/p'
+    xargs --no-run-if-empty -0 sed -ne "
+        s/^$s*ssl_certificate$s\+\($S*\).*;.*/\1/p"
 }
 
 enum_openvpn_certs() {
     find /etc/openvpn /etc/openvpn-nl -maxdepth 2 -name '*.conf' 2>/dev/null |
     while read -r f; do
         certs=$(cat "$f" | sed -ne "
-            s/^[[:blank:]]*\\(ca\\|cert\\|crl-verify\\)[[:blank:]]\\+\
-\\([^[:blank:]#]*\\).*/\\2/p")
+            s/^$s*\(ca\|cert\|crl-verify\)$s\+\([^[:blank:]#]*\).*/\2/p")
         fpath=${f%/*}
         for cert in $certs; do
             test "${cert#/}" = "${cert}" && cert=$fpath/$cert
@@ -119,19 +122,17 @@ enum_promtail_certs() {
 }
 
 enum_ser_certs() {
-    w='[[:blank:]]'
-    W='[^[:blank:]]'
-    # tls_certificate = XYZ
+    # tls_certificate = "XYZ"
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
-        s/^$w*tls_certificate$w*=$w*\"\($W*\)\".*/\1/p"
+        s/^$s*tls_certificate$s*=$s*\"\($S*\)\".*/\1/p"
 
     # modparam("tls", "certificate", "XYZ")
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
-        s/^$w*modparam(\"tls\(_mgm\)\?\",$w*\"certificate\"$w*,$w*\"\([^\"]*\)\".*/\2/p"
+        s/^$s*modparam(\"tls\(_mgm\)\?\",$s*\"certificate\"$s*,$s*\"\([^\"]*\)\".*/\2/p"
 }
 
 enum_systemd_certs() {
@@ -142,8 +143,8 @@ enum_systemd_certs() {
 
 enum_vault_certs() {
     find /etc/vault.d/ -type f -name '*.hcl' -print0 2>/dev/null |
-    xargs --no-run-if-empty -0 sed -ne '
-        s/^[[:blank:]]*tls_cert_file[[:blank:]]*=[[:blank:]]*"\([^"]*\)".*/\1/p'
+    xargs --no-run-if-empty -0 sed -ne "
+        s/^$s*tls_cert_file$s*=$s*\"\([^\"]*\)\".*/\1/p"
 }
 
 enum_zabbix_certs() {
