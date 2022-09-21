@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017-2020 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2022 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
@@ -64,6 +64,7 @@ import requests
 import sys
 
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from warnings import warn
 
 
@@ -81,6 +82,29 @@ class ZLoginError(ZInterfaceError):
 
 class ZDataError(ZInterfaceError):
     pass
+
+
+class Needle(object):
+    "Needle is used for hostname searches"
+    def __init__(self, glob_pattern):
+        self._exact_glob_pattern = glob_pattern
+        self._contains_glob_pattern = '*{}*'.format(glob_pattern)
+
+    def as_string(self):
+        "Return the longest part that can be used in a 'contains' search"
+        # So if pve?.dr.osso.cloud is passed, we'll split it into longer
+        # matches and pre-search on the longest part: return ".dr.osso.cloud"
+        static_parts = self._exact_glob_pattern.replace('?', '*').split('*')
+        static_parts.sort(key=(lambda x: (-len(x), x)))
+        return static_parts[0]  # longest non-magic part
+
+    def is_exactly(self, string):
+        "Return True if needle matches string exactly"
+        return fnmatch(string, self._exact_glob_pattern)
+
+    def is_found_in(self, string):
+        "Return True if needle is found somewhere in string"
+        return fnmatch(string, self._contains_glob_pattern)
 
 
 class ZAlert(object):
@@ -204,6 +228,10 @@ class ZAlert(object):
 
 
 class ZBaseHost(object):
+    @classmethod
+    def matches_needle(cls, hostinfo, needle):
+        return needle.matches(hostinfo['name'])
+
     def __init__(self, hostinfo):
         self._hostinfo = hostinfo
         self.name = hostinfo['name']
@@ -437,7 +465,7 @@ class ZInterface(object):
 
         return alerts
 
-    def get_hosts(self, hostname_search):
+    def get_hosts(self, hostname_needle):
         self._login()
 
         hosts = self._zabbix_call(
@@ -451,11 +479,12 @@ class ZInterface(object):
              'selectInterfaces': 'extend',
              'selectGroups': 'extend',
              'search': {
-                'name': hostname_search}})
+                'name': hostname_needle.as_string()}})
 
         for host in hosts:
             try:
-                yield ZHost(host, self.get_proxies())
+                if hostname_needle.is_found_in(host['name']):
+                    yield ZHost(host, self.get_proxies())
             except Exception as e:
                 raise ZDataError('got err {} for hostinfo {}'.format(
                     e, host))
@@ -573,8 +602,8 @@ if __name__ == '__main__':
             '-x', '--with-ip', help=(
                 'Filter by IP-address'))  # compare 'dig -x'
         parser.add_argument(
-            'search', nargs='?', help=(
-                'Hostname to search for'))
+            'search', nargs='?', type=Needle, help=(
+                'Hostname to search for (* and ? are allowed)'))
 
         args = parser.parse_args()
 
@@ -628,8 +657,9 @@ if __name__ == '__main__':
 
         # Unless the user supplied --all, if there is a single match, use that.
         exact_match = False
-        if not args.all and not args.with_ip:
-            exact_hosts = [host for host in hosts if str(host) == args.search]
+        if not args.all and not args.with_ip and len(hosts) == 1:
+            exact_hosts = [
+                host for host in hosts if args.search.is_exactly(host.name)]
             if len(exact_hosts) == 1:
                 exact_match = True
                 hosts = exact_hosts
