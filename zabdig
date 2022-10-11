@@ -234,7 +234,11 @@ class ZBaseHost(object):
 
     def __init__(self, hostinfo):
         self._hostinfo = hostinfo
-        self.name = hostinfo['name']
+        try:
+            self.name = hostinfo['name']
+        except KeyError:
+            assert 'proxy_address' in hostinfo, hostinfo
+            self.name = hostinfo['host']  # proxies do not have a name
 
     def get_name(self):
         return (
@@ -310,12 +314,23 @@ class ZHost(ZBaseHost):
         return self._hostinfo.get('inventory', {}).get('host_router', None)
 
     def is_available(self):
-        assert self._hostinfo['available'] in ('0', '1', '2'), self._hostinfo
-        return self._hostinfo['available'] == '1'  # 0=unseen, 2=down
+        availables = [
+            iface.get('available') for iface in self._hostinfo['interfaces']]
+        if not availables:
+            return False  # no interfaces? then it's down
+
+        # available not set on the interfaces? then this is zabbix-server<6.0
+        if all(available is None for available in availables):
+            availables = [self._hostinfo.get('available')]
+
+        availables.sort(reverse=True)
+        available = availables[0]  # '2', '1', '0', None
+        assert available in ('0', '1', '2'), self._hostinfo
+        return available == '1'  # 0=unseen, 2=down
 
     def is_enabled(self):
-        assert self._hostinfo['status'] in ('0', '1'), self._hostinfo
-        return self._hostinfo['status'] == '0'  # 1 is Disabled
+        assert self._hostinfo.get('status') in ('0', '1'), self._hostinfo
+        return self._hostinfo.get('status') == '0'  # 1 is Disabled
 
     def __str__(self):
         if not self.is_enabled():
@@ -497,9 +512,11 @@ class ZInterface(object):
         if not hasattr(self, '_get_proxies'):
             self._login()
 
+            # zabbix-server >= 6.0 does not have a proxy.name anymore. Use the
+            # host instead.
             proxies = self._zabbix_call(
                 'proxy.get',
-                {'output': ['name', 'host']})
+                {'output': ['host', 'proxy_address']})
 
             try:
                 self._get_proxies = dict(
