@@ -325,6 +325,15 @@ class ZHost(ZBaseHost):
 
         availables.sort(reverse=True)
         available = availables[0]  # '2', '1', '0', None
+
+        # zabbix-server>=6.0 has active check polling. if the proxies haven't
+        # sent any active updates, then the state is "unseen"
+        if available == '0':
+            warn(
+                'one or more hosts have unknown state; '
+                'if you have zabbix-proxy<6.0 this is expected')
+            available = '1'  # make it 1=up
+
         assert available in ('0', '1', '2'), self._hostinfo
         return available == '1'  # 0=unseen, 2=down
 
