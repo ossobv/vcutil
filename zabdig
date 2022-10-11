@@ -468,22 +468,24 @@ class ZInterface(object):
     def get_hosts(self, hostname_needle):
         self._login()
 
-        hosts = self._zabbix_call(
-            'host.get',
-            {'output': [
+        params = {
+            'output': [
                 'name', 'host', 'interfaces', 'proxy_hostid',
                 'status', 'available'],
-             # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
-             #            'status'],
-             'selectInventory': ['host_router'],  # or 'extend' for _all_
-             'selectInterfaces': 'extend',
-             'selectGroups': 'extend',
-             'search': {
-                'name': hostname_needle.as_string()}})
+            # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
+            #            'status'],
+            'selectInventory': ['host_router'],  # or 'extend' for _all_
+            'selectInterfaces': 'extend',
+            'selectGroups': 'extend',
+        }
+        if hostname_needle:
+            params['search'] = {'name': hostname_needle.as_string()}
 
+        hosts = self._zabbix_call('host.get', params)
         for host in hosts:
             try:
-                if hostname_needle.is_found_in(host['name']):
+                if (not hostname_needle or
+                        hostname_needle.is_found_in(host['name'])):
                     yield ZHost(host, self.get_proxies())
             except Exception as e:
                 raise ZDataError('got err {} for hostinfo {}'.format(
