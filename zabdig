@@ -487,8 +487,10 @@ class ZInterface(object):
                 if (not hostname_needle or
                         hostname_needle.is_found_in(host['name'])):
                     yield ZHost(host, self.get_proxies())
+            except ZInterfaceError:
+                raise
             except Exception as e:
-                raise ZDataError('got err {} for hostinfo {}'.format(
+                raise ZDataError('got err {!r} for hostinfo {}'.format(
                     e, host))
 
     def get_proxies(self):
@@ -499,9 +501,16 @@ class ZInterface(object):
                 'proxy.get',
                 {'output': ['name', 'host']})
 
-            self._get_proxies = dict(
-                (proxy['proxyid'], ZBaseHost(proxy))
-                for proxy in proxies)
+            try:
+                self._get_proxies = dict(
+                    (proxy['proxyid'], ZBaseHost(proxy))
+                    for proxy in proxies)
+            except ZInterfaceError:
+                raise
+            except Exception as e:
+                raise ZDataError('got err {!r} for proxies {}'.format(
+                    e, proxies))
+
         return self._get_proxies
 
 
