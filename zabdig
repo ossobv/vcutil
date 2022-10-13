@@ -314,28 +314,39 @@ class ZHost(ZBaseHost):
         return self._hostinfo.get('inventory', {}).get('host_router', None)
 
     def is_available(self):
-        availables = [
-            iface.get('available') for iface in self._hostinfo['interfaces']]
-        if not availables:
-            return False  # no interfaces? then it's down
+        if not hasattr(self, '_is_available'):
+            availables = [
+                iface.get('available')
+                for iface in self._hostinfo['interfaces']]
 
-        # available not set on the interfaces? then this is zabbix-server<6.0
-        if all(available is None for available in availables):
-            availables = [self._hostinfo.get('available')]
+            if availables:
+                # Available not set on the interfaces? Then this is
+                # zabbix-server<6.0
+                if all(available is None for available in availables):
+                    availables = [self._hostinfo.get('available')]
 
-        availables.sort(reverse=True)
-        available = availables[0]  # '2', '1', '0', None
+                availables.sort(reverse=True)
+                available = availables[0]  # '2', '1', '0', None
+            else:
+                available = '0'  # no interfaces, no state
 
-        # zabbix-server>=6.0 has active check polling. if the proxies haven't
-        # sent any active updates, then the state is "unseen"
-        if available == '0':
-            warn(
-                'one or more hosts have unknown state; '
-                'if you have zabbix-proxy<6.0 this is expected')
-            available = '1'  # make it 1=up
+            # zabbix-server>=6.0 has active check polling. if the proxies
+            # haven't sent any active updates, then the state is "unseen"
+            if available == '0':
+                if self.get_zabbix_addr() in ('127.0.0.1', ''):
+                    pass
+                else:
+                    warn(
+                        'one or more hosts have unknown state; '
+                        'if you have zabbix-proxy<6.0 this is expected')
+                    available = '1'  # make it 1=up
 
-        assert available in ('0', '1', '2'), self._hostinfo
-        return available == '1'  # 0=unseen, 2=down
+            assert available in ('0', '1', '2'), self._hostinfo
+            self._is_available = available
+
+        if self._is_available == '0':       # 0=unseen
+            return None
+        return (self._is_available == '1')  # 1=up, 2=down
 
     def is_enabled(self):
         assert self._hostinfo.get('status') in ('0', '1'), self._hostinfo
@@ -344,7 +355,9 @@ class ZHost(ZBaseHost):
     def __str__(self):
         if not self.is_enabled():
             return '{}--OFF'.format(self.get_name())
-        elif not self.is_available():
+        elif self.is_available() is None:
+            return '{}--UNKNOWN'.format(self.get_name())
+        elif self.is_available() is False:
             return '{}--DOWN'.format(self.get_name())
         return self.get_name()
 
