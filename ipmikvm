@@ -234,11 +234,18 @@ get_launch_jnlp() {
 }
 # SYNOPSIS: get_launch_jnlp 10.x.x.x USERNAME PASSWORD
 
+make_local_path() {
+    local path="$1"
+    echo "$path" | sed -e 's#.*://##;s#^/*##;s#:#%3A#g;s#[.][.]*#.#g;'
+}
+# SYNOPSIS: make_local_path PATH_MAYBE_WITH_HTTPS
+
 get_app_jar() {
     local launch_jnlp="$1"
     local app_cache_dir="$2"
 
-    local app_jar="$(get_jars "$launch_jnlp" | head -n1)"  # first jar
+    local app_jar="$(get_jars "$launch_jnlp" | head -n1)"   # first jar
+    app_jar=$(make_local_path "$app_jar")                   # as local path
     if test -z "$app_jar"; then
         echo "cannot find application jar name in jnlp: $launch_jnlp" >&2
         exit 1
@@ -335,41 +342,46 @@ install_ikvm_application() {
     test "${codebase%/}" = "$codebase" || codebase="${codebase%/}"
     local jars="$(get_jars "$launch_jnlp")"
     case "$(uname -s)" in
-        Linux) local libprefix='\(liblinux\|Linux\)';;
-        Darwin) local libprefix='\(libmac\|Mac\)';;
+        Linux) local libprefix='\(liblinux.*x86_64\|Linux.*x86_64\|Linux64\)';;
+        Darwin) local libprefix='\(libmac.*x86_64\|Mac.*x86_64\|Mac64\)';;
         *) echo "Unknown platform: $(uname -s)" >&2; exit 1;;
     esac
     local nativelibs=$(
       echo "$launch_jnlp" | sed -e '
-        /<nativelib.*'$libprefix'.*x86_64/!d
+        /<nativelib.*'$libprefix'/!d
         s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
         s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
     set -x
     mkdir -p "$destdir"
     cd "$destdir"
-    for x in $jars $nativelibs; do
-        test "${x%/*}" = "$x" || mkdir -p "${x%/*}"
-        if curl "$codebase/$x" -sS --fail -ko "$x" &&
-                file --brief --mime "$x" |
+    local path local_path remote_path
+    for path in $jars $nativelibs; do
+        local_path="$(make_local_path "$path")"
+        remote_path=$path
+        if test "${remote_path%//*}" = "$remote_path"; then
+            remote_path="$codebase/$remote_path"  # add "https://" to path
+        fi
+        test "${local_path%/*}" = "$local_path" || mkdir -p "${local_path%/*}"
+        if curl "$remote_path" -sS --fail -ko "$local_path" &&
+                file --brief --mime "$local_path" |
                 grep -E '^application/(java-archive|zip)'; then
             :
-        elif curl "$codebase/$x.pack.gz" -sS --fail -ko "$x.pack.gz" &&
-                file --brief --mime "$x.pack.gz" |
+        elif curl "$remote_path.pack.gz" -sS --fail -ko "$local_path.pack.gz" &&
+                file --brief --mime "$local_path.pack.gz" |
                 grep -E '^application/gzip' &&
-                gunzip "$x.pack.gz" &&
-                unpack200 "$x.pack" "$x"; then
+                gunzip "$local_path.pack.gz" &&
+                unpack200 "$local_path.pack" "$local_path"; then
             :
         else
             echo "$launch_jnlp"
             false
         fi
     done
-    local nativelib
-    for nativelib in $nativelibs; do
-        if test -f "$nativelib"; then
-	    ( cd "$(dirname "$nativelib")" &&
-                unzip -o "$(basename "$nativelib")" )
-            rm -rf META-INF
+    for path in $nativelibs; do
+        local_path="$(make_local_path "$path")"
+        if test -f "$local_path"; then
+            ( cd "$(dirname "$local_path")" &&
+                unzip -o "$(basename "$local_path")" -x 'META-INF/*' )
         fi
     done
     set +x
