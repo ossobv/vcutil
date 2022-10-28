@@ -15,6 +15,11 @@ dump_iptables() {
     local tables="$(echo "$LSMOD" |
         sed '/^iptable_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
         sort)"
+    if test -z "$tables"; then
+        #echo 'fwdiff: no ip4 tables found, error?' >&2
+	# I guess, nftables? Does not add modules for nothing.
+	tables='filter nat mangle raw'
+    fi
     for table in $tables; do
         iptables -t $table -S | sed -e "s/^/iptables -t $table /"
     done
@@ -24,6 +29,11 @@ dump_ip6tables() {
     local tables="$(echo "$LSMOD" |
         sed '/^ip6table_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
         sort)"
+    if test -z "$tables"; then
+        #echo 'fwdiff: no ip6 tables found, error?' >&2
+	# I guess, nftables? Does not add modules for nothing.
+	tables='filter nat mangle raw'
+    fi
     for table in $tables; do
         ip6tables -t $table -S | sed -e "s/^/ip6tables -t $table /"
     done
