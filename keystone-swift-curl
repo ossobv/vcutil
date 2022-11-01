@@ -67,8 +67,8 @@ swift_init() {
 
 swift_login() {
     local user_domain user project_domain project password
-    user=${SWIFT_AUTH_USER%@*}; user_domain=${SWIFT_AUTH_USER#*@}
-    project=${SWIFT_PROJECT%@*}; project_domain=${SWIFT_PROJECT#*@}
+    user=${SWIFT_AUTH_USER%@*}; user_domain=${SWIFT_AUTH_USER##*@}
+    project=${SWIFT_PROJECT%@*}; project_domain=${SWIFT_PROJECT##*@}
     password=$SWIFT_AUTH_PASSWORD
 
     # Choose project scoped token. (For single-project accounts we could
