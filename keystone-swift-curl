@@ -71,15 +71,25 @@ swift_login() {
     project=${SWIFT_PROJECT%@*}; project_domain=${SWIFT_PROJECT#*@}
     password=$SWIFT_AUTH_PASSWORD
 
+    # Choose project scoped token. (For single-project accounts we could
+    # skip the scope. For multi-project or sysadmin accounts, we can
+    # access /auth/domains and /auth/projects but not /project and
+    # (thus) not swift.)
     echo "\
-    {\"auth\": {\"identity\": {
-      \"methods\": [\"password\"],
-      \"password\": {\"user\": {
-        \"name\": \"$user\",
-        \"domain\": {\"name\": \"$user_domain\"},
-        \"project\": {\"name\": \"$project\", \"domain\": {
-          \"name\": \"$project_domain\"}},
-        \"password\": \"$password\"}}}}}" >"$SWIFT_RUNDIR/login"
+    {\"auth\": {
+      \"identity\": {
+       \"methods\": [\"password\"],
+       \"password\": {\"user\": {
+         \"name\": \"$user\",
+         \"domain\": {\"name\": \"$user_domain\"},
+         \"project\": {\"name\": \"$project\", \"domain\": {
+           \"name\": \"$project_domain\"}},
+         \"password\": \"$password\"}}},
+      \"scope\":{
+       \"project\":{
+        \"name\":\"$project\",
+        \"domain\":{\"name\":\"$project_domain\"}}}
+    }}" >"$SWIFT_RUNDIR/login"
 
     local output
     output=$(curl -fsS --max-time 4 --include \
@@ -91,15 +101,12 @@ swift_login() {
           >"$SWIFT_RUNDIR/x-auth-token"
     if test -z "${SWIFT_PROJECT_URL:-}"; then
         output=$(printf '%s\n' "$output" | sed -e '1,/^[[:cntrl:]]*$/d')
-        if command -v jq >/dev/null; then
-            SWIFT_PROJECT_URL=$(\
-                printf '%s\n' "$output" | jq -r '
-                  .token.catalog[] |
-                  select(.type=="object-store").endpoints[] |
-                  select(.interface=="public").url')
+        if command -v jq >/dev/null && SWIFT_PROJECT_URL=$(
+                    _swift_get_project_url_from_tokens "$output"); then
+            true
         else
-            echo 'SWIFT_PROJECT_URL not set but jq(1) not found' >&2
-            echo 'You can extract it from this manually:' >&2
+            echo 'SWIFT_PROJECT_URL not set but jq(1) call failed/missing' >&2
+            echo 'You can probably extract it from this manually:' >&2
             if command -v json_pp >/dev/null; then
                 printf '%s\n' "$output" | json_pp >&2
             else
@@ -109,6 +116,30 @@ swift_login() {
             echo 'an "object-store" catalog' >&2
             exit 1
         fi
+    fi
+}
+
+_swift_get_project_url_from_tokens() {
+    # {"token": {
+    #   "user": {...}
+    #   "project": {"domain":{...},"id":"...","name":"..."}
+    #   ...
+    #   "catalog": [
+    #    {"type":"identity","name":"keystone","endpoints":[{...}]},
+    #    {"type":"object-store","name":"swift","endpoints":[{
+    #      "id":"...","interface":"public","region_id":"NL1",
+    #      "url": "https://...","region":"NL1"}]}],
+    # }}
+    local tokens_js="$1"
+    local ret
+    if ret=$(
+        printf '%s\n' "$tokens_js" | jq -r '
+            .token.catalog[] |
+            select(.type=="object-store").endpoints[] |
+            select(.interface=="public").url') && test -n "$ret"; then
+        printf '%s\n' "$ret"
+    else
+        false
     fi
 }
 
