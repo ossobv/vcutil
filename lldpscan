@@ -43,8 +43,15 @@ Parts taken from:
 gist.githubusercontent.com/gteissier/4e076b2645e1754c99c8278cd4a6a987/
   raw/73036826e820f6192480f7a9a9a2d8785260de20/tcpdump.py
 
-Promiscuous mode is not needed for LLDP because it's sent to a multicast
-address.
+Note that promiscuous mode is generally not needed because the packets are sent
+to a multicast address. But if the interface has no configuration at all, it
+will listen to nothing. If you have an empty interface and want to check for
+LLDP there, do:
+
+    ip link set up promisc on dev DEV
+
+If you omit the 'promisc on', you'll see the traffic on the interface directly,
+but not in cooked mode on the "any" interface.
 """
 import ctypes
 import mmap
@@ -460,8 +467,9 @@ poller.register(s.sock, select.POLLIN)
 
 
 print(
-    'Please wait at least 30 seconds for LLDP frames to arrive...',
-    file=sys.stderr)
+    'Please wait at least 30 seconds for LLDP frames to arrive...\n'
+    'Hint: use "ip link set up promisc on dev DEV" for unused devices\n\n',
+    end='', file=sys.stderr)
 t0 = time.time()
 try:
     while True:
