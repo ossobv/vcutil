@@ -30,7 +30,6 @@
 # Todo:
 # - Fix prettier output.
 # - Fix non-verbose vs. verbose output (don't show unnecessary fields).
-# - Store received messages and don't show already recieved ones.
 # - Remove unused code/constants.
 # - Make TLV code more data/lookup-driven and extensible.
 # - Proper shutdown/unmmap code.
@@ -60,6 +59,7 @@ import select
 import socket
 import sys
 import time
+from datetime import datetime
 from pprint import pformat
 from struct import pack
 
@@ -471,6 +471,7 @@ print(
     'Hint: use "ip link set up promisc on dev DEV" for unused devices\n\n',
     end='', file=sys.stderr)
 t0 = time.time()
+shown = set()
 try:
     while True:
         seconds = int(time.time() - t0)
@@ -485,13 +486,20 @@ try:
             for (ifname, ts, pkt) in s.recv_packets():
                 (tv_sec, tv_usec) = ts
                 if ifname:
+                    tm = datetime.fromtimestamp(tv_sec).strftime('%H:%M:%S')
+                    dt = f'{tm}.{tv_usec:06}'
                     src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
+                    shown_key = f'{ifname} {src_mac} {dst_mac} {proto} {tlvs}'
                     print('\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
-                    print(
-                        't =', tv_sec, tv_usec, 'on', ifname, src_mac, '->',
-                        dst_mac)
-                    print(pformat(tlvs))
-                    print()
+                    message = f'{dt} {src_mac} -> {dst_mac} [{ifname}]'
+
+                    if shown_key in shown:
+                        print(f'{message} (already shown)')
+                    else:
+                        shown.add(shown_key)
+                        print(message)
+                        print(pformat(tlvs))
+                        print()
                     n_packets += 1
 except KeyboardInterrupt:
     print('\r\x1b[K', file=sys.stderr, end='')
