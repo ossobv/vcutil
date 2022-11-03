@@ -48,19 +48,13 @@ address.
 """
 import ctypes
 import mmap
+import os
 import select
 import socket
 import sys
 import time
 from pprint import pformat
 from struct import pack
-
-try:
-    from netifaces import interfaces
-except ImportError:
-    # XXX: or we could check /sys/class/net/*/ifindex
-    def interfaces():
-        return []
 
 
 # tcpdump -dd ether proto 0x88cc
@@ -235,7 +229,7 @@ class BaseSniffer:
             ifname = None
         else:
             try:
-                ifname = interfaces()[sll.sll_ifindex - 1]
+                ifname = interfaces()[sll.sll_ifindex]
             except IndexError:
                 ifname = 'ifIndex{sll.sll_ifindex}'.format(sll=sll)
 
@@ -286,6 +280,21 @@ class Sniffer(BaseSniffer):
         # set properties
         self.sock = s
         self.tpacket_hdr_sizeof = TPACKET_ALIGN(ctypes.sizeof(tpacket_hdr()))
+
+
+def interfaces():
+    "Return {9: 'ens1f0np0.325', ..., 5: 'eno1', 1: 'lo'}"
+    devices = os.listdir('/sys/class/net')
+    ret = {}
+    for device in devices:
+        try:
+            with open(os.path.join('/sys/class/net', device, 'ifindex')) as fp:
+                ifindex = int(fp.read())
+        except NotADirectoryError:  # "device" was not a (link to a) dir
+            pass
+        else:
+            ret[ifindex] = device
+    return ret
 
 
 def get_tlv(pkt):
