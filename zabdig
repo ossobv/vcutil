@@ -707,7 +707,7 @@ if __name__ == '__main__':
 
         # Unless the user supplied --all, if there is a single match, use that.
         exact_match = False
-        if not args.all and not args.with_ip and len(hosts) == 1:
+        if args.search and not args.all and not args.with_ip:
             exact_hosts = [
                 host for host in hosts if args.search.is_exactly(host.name)]
             if len(exact_hosts) == 1:
