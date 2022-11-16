@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Standards-Version: 3.9.6
 Build-Depends: debhelper (>= 9)
-Build-Depends-Indep: python:any, python3:any, dh-python
+Build-Depends-Indep: python:any | python3:any, dh-python
 
 Package: vcutil
 Architecture: all

@@ -1,3 +1,29 @@
+vcutil (1.35) stable; urgency=low
+
+  * Fixes:
+    - apt-find-foreign: Fix policy reading for pin prio >999.
+    - fwdiff: For nftables we do not see loaded iptables modules; fix so it
+      works on Jammy.
+
+  * Improvements:
+    - ipmikvm: Improve viewer.jnlp (avctKVM.jar) Dell drac support.
+    - keystone-swift-curl: Allow '@' in SWIFT_AUTH_USER usernames.
+    - keystone-swift-curl: Log in with project scoped token.
+    - lldpscan: Explain how/why you should enable promiscuous mode.
+    - lldpscan: Fix ifname listing by reading /sys/class/net/*/ifindex.
+    - lldpscan: Prettier output, eliding duplicates.
+    - zabdig: Add --show=ahist for alert history.
+    - zabdig: Allow globbing chars * and ? in hostname search.
+    - zabdig: Do not mark agents behind older proxies as down.
+    - zabdig: Don't mask get_proxies() errors.
+    - zabdig: Fix single exact match when not using -a.
+    - zabdig: Fix so zabdig without hostname search works again.
+    - zabdig: Fix zabbix-server 6.0+ compatibility.
+    - zabdig: Improve alerts/ahist output, stripping newlines.
+    - zabdig: Silence warning about UNKNOWN hosts for not-real-machines.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 16 Nov 2022 13:00:25 +0100
+
 vcutil (1.34) stable; urgency=low
 
   * Improvements:
