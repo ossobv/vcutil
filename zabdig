@@ -62,6 +62,7 @@ import json
 import os
 import requests
 import sys
+import time
 
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -222,9 +223,51 @@ class ZAlert(object):
         return repr(self)
 
     def __repr__(self):
+        begin = self.begin.strftime('%Y-%m-%dT%H:%M:%S')
         return (
-            'alert:{0.severity:4s} {0.begin}: {0.description} '
-            '({0.hostname})'.format(self))
+            'alert:{0.severity:4s} {1}: {0.description} '
+            '({0.hostname})'.format(self, begin))
+
+
+class ZHistoricAlert(ZAlert):
+    def __init__(self, problem, trigger):
+        hacked_trigger_value, trigger['value'] = trigger['value'], '1'
+        super().__init__(problem, trigger)
+        trigger['value'] = hacked_trigger_value
+
+        resolved = problem['relatedObject']
+        del problem['relatedObject']
+        assert resolved['triggerid'] == trigger['triggerid'], (
+            problem, trigger, resolved)
+        self._end_timestamp = resolved['lastchange']
+        self._end_value = resolved['value']
+
+        # self._opdatas = (problem['opdata'], resolved['opdata'])
+
+    @property
+    def end(self):
+        if not hasattr(self, '_end'):
+            assert self._problem['value'] == '1'
+            if self._end_value == '1':
+                self._end = None
+            else:
+                ts = int(self._end_timestamp)
+                tz = timezone.utc if False else None  # FIXME?
+                self._end = datetime.fromtimestamp(ts, tz=tz)
+        return self._end
+
+    def __repr__(self):
+        begin = self.begin.strftime('%Y-%m-%dT%H:%M:%S')
+        if self.end:
+            end = self.end.strftime('%Y-%m-%dT%H:%M:%S')
+            offset = (self.end - self.begin)
+            offset = '({0:6.2f}h)'.format(offset.total_seconds() / 3600.0)
+        else:
+            end = '--..-..-..T..:..:..'
+            offset = '(  -.--h)'
+        return (
+            'alert:{0.severity:4s} {1}..{2} {3}: {0.description} '
+            '({0.hostname})'.format(self, begin, end, offset))
 
 
 class ZBaseHost(object):
@@ -440,12 +483,12 @@ class ZInterface(object):
         problems = self._zabbix_call(
             'problem.get',
             {'output': [
-                'eventid', 'objectid', 'clock', 'ns', 'severity',
+                'eventid', 'r_eventid', 'objectid', 'clock', 'ns', 'severity',
                 'suppressed', 'name'],
              'source': 0,  # 0=trigger
              'object': 0,  # 0=trigger
+             # 'groupids': [...],
              # 'hostids': [10884],
-             # 'hostids': [12108],
              'recent': False,  # only UNRESOLVED
              'severities': ZAlert.severity_mask_to_zabbix(severity)})
 
@@ -499,6 +542,80 @@ class ZInterface(object):
                 pprint.pprint(alert._trigger)
                 pprint.pprint(alert._host)
                 pprint.pprint(alert._items)
+
+        return alerts
+
+    def get_alert_history(self, severity):
+        self._login()
+
+        # Search between -1d and now.
+        now = int(time.time())
+        then = now - 86400
+
+        # value 0=OK, 1=problem
+        # We need the RelatedObject to get the event-close state.
+        problems = self._zabbix_call(
+            'event.get',
+            {'output': [
+                'acknowledged', 'r_eventid', 'eventid', 'clock', 'ns',
+                'objectid', 'value', 'severity', 'suppressed', 'name',
+                # 'opdata',
+                ],
+             'source': 0,  # 0=trigger
+             'object': 0,  # 0=trigger
+             # 'groupids': [...],
+             # 'hostids': [11343],
+             # 'acknowledged': True,    # only ACKed
+             'suppressed': False,       # normal state events only
+             'selectRelatedObject': [
+                 'triggerid', 'lastchange', 'value',
+                 # 'opdata'
+                 ],
+             # This may not be very efficient. We could look into
+             # fetching the hosts manually...
+             'selectHosts': ['hostid', 'host', 'status'],
+             'problem_time_from': then,
+             'problem_time_till': now,
+             'severities': ZAlert.severity_mask_to_zabbix(severity)})
+
+        # Prune the list of problems. Keep only if:
+        # - if there is a relatedObject, or
+        # - the start time is fresh enough
+        problems = [
+            i for i in problems
+            if i['relatedObject'] or int(i['clock']) > then]
+
+        triggerids = list(set([i['objectid'] for i in problems]))
+        triggers_by_triggerid = dict(
+            (i['triggerid'], i) for i in self._zabbix_call(
+                'trigger.get',
+                {'output': [
+                    'triggerid', 'status', 'error', 'suppressed',
+                    'flags', 'value'],
+                 'selectHosts': ['hostid', 'host', 'status'],
+                 'selectItems': ['hostid', 'status'],
+                 'triggerids': triggerids}))
+
+        alerts = []
+        for problem in problems:
+            trigger = triggers_by_triggerid.get(problem['objectid'])
+            if not trigger:
+                warn('no trigger for alert {!r}'.format(problem))
+                continue
+
+            # Copy trigger dict so the ZHistoricAlert gets to own/mutate it.
+            trigger_copy = dict(trigger)
+
+            alert = ZHistoricAlert(problem, trigger_copy)
+            if not alert.host_enabled:
+                # host is disabled, skip
+                continue
+
+            assert alert.all_items_enabled, alert
+            alerts.append(alert)
+
+        alerts.sort(key=(lambda x: (
+            x.begin, x._problem['severity'], x.description, x.hostname)))
 
         return alerts
 
@@ -646,8 +763,8 @@ if __name__ == '__main__':
                 'Show info about current alerts, use bitmask: 0=all, '
                 '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
         parser.add_argument(
-            '--show', choices=('host', 'alerts'), help=(
-                'Show info about host, alerts'))
+            '--show', choices=('host', 'alerts', 'ahist'), help=(
+                'Show info about host, alerts, alert history'))
         parser.add_argument(
             '-x', '--with-ip', help=(
                 'Filter by IP-address'))  # compare 'dig -x'
@@ -681,10 +798,13 @@ if __name__ == '__main__':
                 file=sys.stderr)
             sys.exit(1)
 
-        if args.show == 'alerts':
+        if args.show in ('alerts', 'ahist'):
             if args.search:
                 raise NotImplementedError()  # not yet
-            alerts = zint.get_alerts(args.alert_severity)
+            alerts = {
+                'alerts': zint.get_alerts,
+                'ahist': zint.get_alert_history,
+            }[args.show](args.alert_severity)
             for alert in alerts:
                 print(alert)
             print(len(alerts))
