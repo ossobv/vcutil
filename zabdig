@@ -175,10 +175,15 @@ class ZAlert(object):
 
     @property
     def description(self):
-        if self._trigger['error']:
-            return '{} [{}]'.format(
-                self._problem['name'], self._trigger['error'])
-        return self._problem['name']
+        if not hasattr(self, '_description'):
+            if self._trigger['error']:
+                self._description = '{} [{}]'.format(
+                    self._problem['name'], self._trigger['error'])
+            else:
+                self._description = self._problem['name']
+            self._description = (
+                self._description.replace('\n', ' ').replace('\r', ''))
+        return self._description
 
     @property
     def hostname(self):
