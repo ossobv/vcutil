@@ -210,14 +210,21 @@ swift_put() {
         fi
         for chunk_off in $(seq 0 $chunk_mbs $chunk_last); do
             n=$((n + 1))
+            # We could like to use --data-binary @- but that causes curl to run
+            # out of memory on some systems. Using -T /dev/stdin does not. But
+            # now curl does not "know" the filesize. The progress bar is now
+            # not very informative.
             dd if=/proc/self/fd/0 bs=$mb skip=$chunk_off count=$chunk_mbs \
                 status=none | swift_do PUT "$file/$(printf %08d $n)" \
-                    --data-binary @- "$@"
+                    -H "Transfer-Encoding: chunked" -T /dev/stdin "$@"
+            printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
         done
         swift_do PUT "$file" -H "X-Object-Manifest: $SWIFT_CONTAINER/$file" \
             --data-binary ''
     else
-        swift_do PUT "$file" --data-binary @- "$@"
+        swift_do PUT "$file" -H "Transfer-Encoding: chunked" \
+            -T /proc/self/fd/0 "$@"
+        printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
     fi
 }
 
