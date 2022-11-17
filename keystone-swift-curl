@@ -175,6 +175,16 @@ swift_put() {
         echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
         exit 1
     fi
+
+    local arg has_content_type=false
+    for arg in "$@"; do
+        test "${arg%%:*}" != 'Content-Type' || has_content_type=true
+    done
+    if ! $has_content_type; then
+        echo "$0: Did you forget -H 'Content-Type: application/binary' ?" >&2
+        echo "$0: Maybe use: file --mime-type FILE" >&2
+    fi
+
     local file="$1"; shift
     local size
     local divide=false
