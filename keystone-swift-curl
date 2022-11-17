@@ -186,23 +186,39 @@ swift_put() {
     fi
 
     local file="$1"; shift
-    local size
-    local divide=false
-    if test -f /proc/self/fd/0; then
+    local size='?'
+    local divide
+
+    if test -b /proc/self/fd/0; then
+        # Block device; cannot get file size, is likely large.
+        divide=true
+    elif test -f /proc/self/fd/0; then
         # Real file? Get size?
         size=$(stat -Lc%s /proc/self/fd/0)
         if test $size -gt $((4096 * 1024 * 1024)); then
+            # Larger than 4GB.
             divide=true
         else
             divide=false
         fi
+    else
+        # Not a real file. A stream? Cannot easily cut it up.
+        divide=false
     fi
+
     if $divide; then
         # Dynamic Large Objects
         # https://docs.openstack.org/swift/latest/overview_large_objects.html
         local n=0
         local mb=$((1024 * 1024))
         local chunk_mbs=1024
+        if test $size = '?'; then
+            # Bah. This can be slow...
+            echo "$(date -Iseconds): full read of $(
+                readlink /proc/self/fd/0) for size..." >&2
+            size=$(wc -c < /proc/self/fd/0)
+            echo "$(date -Iseconds): size $size" >&2
+        fi
         local chunk_last=$(( (size - 1) / $mb ))
         local chunks=$(seq 0 $chunk_mbs $chunk_last | wc -l)
         if test "${QUIET:-0}" = 0; then
