@@ -321,7 +321,7 @@ def parse_defaults_file(filename):
         config.read_file(fp)
 
     sections = config.sections()
-    for possible_section in ('mysql2csv', 'client'):
+    for possible_section in ('mysql2csv', 'mysql', 'client'):
         if possible_section in sections:
             break
     else:
@@ -407,7 +407,8 @@ Supply --prune as argument to immediately prune the data after dumping it.
         '-f', '--defaults-file',
         help=("a defaults-file in mysql-client fashion to set the username, "
               "password or any of the other long options; checks the "
-              "[mysql2csv] section or [client] if the former doesn't exist"))
+              "[mysql2csv] section (or [mysql] or [client] if the former "
+              "doesn't exist)"))
     parser.add_argument(
         'database',
         help='the database to connect to')
