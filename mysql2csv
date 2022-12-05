@@ -61,8 +61,8 @@ except ImportError:  # python2-
 
 
 DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
-DEFAULT_UNTIL_DATE = datetime(2035, 1, 1)
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
+EXAMPLE_UNTIL_DATE = datetime(2035, 1, 1)
 
 
 def _make_conversion_safe(orig_conversion):
@@ -164,11 +164,12 @@ def dump2csv_and_prune(db_connection, kwargs):
     rows = describe_table(db_connection, table_name)
     begin_date = min_column_value(
         db_connection, table_name, date_column, extra_where)
-    if not begin_date or begin_date > until:
+    if not begin_date or (until and begin_date > until):
         return
     begin_date = begin_date.replace(minute=0, second=0)
+    date1 = ("'%s'" % (until.strftime('%Y-%m-%d'),) if until else None)
     last_date = max_column_value(
-        db_connection, table_name, date_column, until, extra_where)
+        db_connection, table_name, date_column, extra_where, date1=date1)
     last_date = (last_date.replace(minute=0, second=0) + timedelta(hours=1))
 
     # Create cursor. Increment in 1 hour steps.
@@ -230,7 +231,7 @@ def dump2csv_and_prune(db_connection, kwargs):
             begin_date = min_column_value(
                 db_connection, table_name, date_column, extra_where,
                 date0="'%s'" % (end_date.strftime('%Y-%m-%d %H:%M:%S'),))
-            if not begin_date or begin_date > until:
+            if not begin_date or (until and begin_date > until):
                 break
             begin_date = begin_date.replace(minute=0, second=0)
             end_date = begin_date + period
@@ -288,13 +289,16 @@ def min_column_value(db_connection, table_name, column, extra_where,
     return ret[0][0]
 
 
-def max_column_value(db_connection, table_name, column, max_date,
-                     extra_where):
+def max_column_value(db_connection, table_name, column, extra_where,
+                     date1=None):
     cursor = db_connection.cursor()
+    if date1:
+        where = '(%s < %s)' % (column, date1)
+    else:
+        where = '(1 = 1)'
     cursor.execute(
-        "SELECT MAX(%s) FROM %s WHERE %s < '%s' %s" % (
-            column, table_name, column, max_date.strftime('%Y-%m-%d'),
-            extra_where))
+        "SELECT MAX(%s) FROM %s WHERE %s %s" % (
+            column, table_name, where, extra_where))
     ret = cursor.fetchall()
     return ret[0][0]
 
@@ -355,7 +359,7 @@ def parse_date(date_):
 if __name__ == '__main__':
     example_filename = DEFAULT_FILENAME % {
         'database': '<DATABASE>', 'table': '<TABLE>'}
-    example_until = DEFAULT_UNTIL_DATE.strftime('%Y-%m-%d')
+    example_until = EXAMPLE_UNTIL_DATE.strftime('%Y-%m-%d')
 
     parser = argparse.ArgumentParser(
         prog='mysql2csv',
@@ -404,8 +408,8 @@ Supply --prune as argument to immediately prune the data after dumping it.
         help="the filename template to use instead of '%s'" % (
             example_filename.replace('%', '%%'),))
     parser.add_argument(  # not through defaults-file
-        '--until', type=parse_date, default=DEFAULT_UNTIL_DATE,
-        help='stop when arriving at this date')
+        '--until', type=parse_date, default=None,
+        help='stop when arriving at this date (do not set for int columns)')
     parser.add_argument(
         '-q', '--quiet', action='store_true',
         help='be quiet, apart from showing errors')
@@ -482,9 +486,12 @@ Supply --prune as argument to immediately prune the data after dumping it.
             kwargs['user'] or '<nobody>',
             kwargs['socket'] or kwargs['host'] or '<local>',
             kwargs['database']))
+        if kwargs['until']:
+            until = kwargs['until'].strftime('%Y-%m-%d')
+        else:
+            until = 'end'
         print('Table to dump: %s (ordered by %s, from begin to %s)' % (
-            kwargs['table'], kwargs['date_column'],
-            kwargs['until'].strftime('%Y-%m-%d')))
+            kwargs['table'], kwargs['date_column'], until))
         print('Filename template: "%s"' % (kwargs['template'],))
         print('Processing %s.%s (ordered by %s)' % (
             my_kwargs['db'], kwargs['table'], kwargs['date_column']))
