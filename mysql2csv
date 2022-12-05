@@ -152,7 +152,7 @@ CONVERSIONS[converters.FIELD_TYPE.TIMESTAMP] = _make_timestamp_conversion(
 
 class Interval(object):
     def __init__(self, db_connection, table_name, seq_column,
-                 until=None, extra_where=None):
+                 period_size, until=None, extra_where=None):
         self._db = db_connection
         self._table_name = table_name
         self._seq_column = seq_column
@@ -162,18 +162,18 @@ class Interval(object):
         self._set_min()
         self._set_max()
 
-        if self.type == None:
+        if self.type is None:
             self.period = None
             self.begin = 2
             self.end = None  # no data
             self.last = 1    # no data, end before we start
         elif self.type == datetime:
-            self.period = timedelta(seconds=3600)
+            self.period = timedelta(seconds=period_size)
             self.begin = self._min_seq.replace(minute=0, second=0)
             self.end = self.begin + self.period
             self.last = self._max_seq  # inclusive!
         elif self.type == int:
-            self.period = 10000
+            self.period = period_size
             self.begin = self._min_seq - (self._min_seq % self.period)
             self.end = self.begin + self.period
             self.last = self._max_seq  # inclusive!
@@ -237,10 +237,11 @@ class Interval(object):
 
 def dump2csv_and_prune(db_connection, kwargs):
     # Get relevant args.
-    table_name, date_column, until, template, quiet, sleep, prune = tuple(
+    (table_name, date_column, until, template, period_size, quiet, sleep,
+     prune) = tuple(
         kwargs[i] for i in (
-            'table', 'date_column', 'until', 'template', 'quiet',
-            'sleep', 'prune'))
+            'table', 'date_column', 'until', 'template', 'period_size',
+            'quiet', 'sleep', 'prune'))
 
     extra_where = (kwargs.get('extra_where') or '').strip()
     if extra_where:
@@ -249,7 +250,8 @@ def dump2csv_and_prune(db_connection, kwargs):
     rows = describe_table(db_connection, table_name)
 
     interval = Interval(
-        db_connection, table_name, date_column, until, extra_where)
+        db_connection, table_name, date_column,
+        period_size, until, extra_where)
 
     # Create cursor. Increment in 1 hour steps.
     cursor = db_connection.cursor()
@@ -292,11 +294,13 @@ def dump2csv_and_prune(db_connection, kwargs):
             end_date_sql = interval.end
 
         # Query a bit of data and write to file.
-        cursor.execute(
+        sql = (
             "SELECT * FROM %s WHERE %s <= %s AND %s < %s %s "
             "ORDER BY %s" % (
                 table_name, begin_date_sql, date_column,
                 date_column, end_date_sql, extra_where, date_column))
+        # #print(sql)
+        cursor.execute(sql)
 
         row = None
         cursorit = iter(cursor)
@@ -469,6 +473,10 @@ Supply --prune as argument to immediately prune the data after dumping it.
     parser.add_argument(
         '-q', '--quiet', action='store_true',
         help='be quiet, apart from showing errors')
+    parser.add_argument(
+        '--period-size', type=int, metavar='PERIOD', default=3600,
+        help=('interval size in seconds or in integers if dealing with a '
+              'sequence'))
     parser.add_argument(  # not through defaults-file
         '--prune', action='store_true', default=False,
         help='prunes the data after writing the csv (DESTRUCTIVE!)')
@@ -510,7 +518,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
     # Copy command line args.
     for arg in ('host', 'port', 'user', 'socket', 'template',
                 'database', 'table', 'date_column', 'until',
-                'quiet', 'sleep', 'extra_where'):
+                'period_size', 'quiet', 'sleep', 'extra_where'):
         value = getattr(args, arg)
         if value is not None or arg not in kwargs:
             kwargs[arg] = value
