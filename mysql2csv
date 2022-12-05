@@ -356,7 +356,7 @@ def parse_date(date_):
         time.mktime(time.strptime(date_, '%Y-%m-%d')))
 
 
-if __name__ == '__main__':
+def main():
     example_filename = DEFAULT_FILENAME % {
         'database': '<DATABASE>', 'table': '<TABLE>'}
     example_until = EXAMPLE_UNTIL_DATE.strftime('%Y-%m-%d')
@@ -504,4 +504,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
     if not kwargs['quiet']:
         print()
 
+
+if __name__ == '__main__':
+    main()
 # vim: set ts=8 sw=4 sts=4 et ai:
