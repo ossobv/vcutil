@@ -150,6 +150,91 @@ CONVERSIONS[converters.FIELD_TYPE.TIMESTAMP] = _make_timestamp_conversion(
     CONVERSIONS[converters.FIELD_TYPE.TIMESTAMP])
 
 
+class Interval(object):
+    def __init__(self, db_connection, table_name, seq_column,
+                 until=None, extra_where=None):
+        self._db = db_connection
+        self._table_name = table_name
+        self._seq_column = seq_column
+        self._until = until
+        self._extra_where = extra_where
+
+        self._set_min()
+        self._set_max()
+
+        if self.type == None:
+            self.period = None
+            self.begin = 2
+            self.end = None  # no data
+            self.last = 1    # no data, end before we start
+        elif self.type == datetime:
+            self.period = timedelta(seconds=3600)
+            self.begin = self._min_seq.replace(minute=0, second=0)
+            self.end = self.begin + self.period
+            self.last = self._max_seq  # inclusive!
+        elif self.type == int:
+            self.period = 10000
+            self.begin = self._min_seq - (self._min_seq % self.period)
+            self.end = self.begin + self.period
+            self.last = self._max_seq  # inclusive!
+
+    def _set_min(self):
+        self._min_seq = self._find_min('(1 = 1)')
+        if self._min_seq is None:
+            self.type = None
+        elif isinstance(self._min_seq, datetime):
+            self.type = datetime
+        elif isinstance(self._min_seq, int):
+            self.type = int
+        else:
+            raise NotImplementedError('Unhandled %s.%s type %r (%s)' % (
+                self._table_name, self._seq_column, self._min_seq,
+                type(self._min_seq).__name__))
+
+    def _set_max(self):
+        if self._until is None:
+            where = '(1 = 1)'
+        elif isinstance(self._until, date):
+            where = "(%s < '%s')" % (self._seq_column, self._until.strftime(
+                '%Y-%m-%d'))
+        elif isinstance(self._until, datetime):
+            where = "(%s < '%s')" % (self._seq_column, self._until.strftime(
+                '%Y-%m-%d %H:%M:%S'))
+        elif isinstance(self._until, int):
+            where = "(%s < %s)" % (self._seq_column, self._until)
+        else:
+            raise NotImplementedError(self._until)
+
+        cursor = self._db.cursor()
+        cursor.execute(
+            "SELECT MAX(%s) FROM %s WHERE %s %s" % (
+                self._seq_column, self._table_name, where, self._extra_where))
+        ret = cursor.fetchall()
+        self._max_seq = ret[0][0]  # inclusive!
+
+    def _find_min(self, where):
+        cursor = self._db.cursor()
+        cursor.execute(
+            "SELECT MIN(%s) FROM %s WHERE %s %s" % (
+                self._seq_column, self._table_name, where, self._extra_where))
+        ret = cursor.fetchall()
+        return ret[0][0]
+
+    def make_filename(self, template):
+        if self.type == datetime:
+            return self.begin.strftime(template)
+        assert '%' not in template, 'Maybe set template without strftime?'
+        return template
+
+    def set_next(self):
+        self.begin, self.end = self.end, self.end + self.period
+
+    def seek_next(self):
+        self.begin = self._find_min("(%s >= '%s')" % (
+            self._seq_column, self.end.strftime('%Y-%m-%d %H:%M:%S'),))
+        self.end = self.begin + self.period
+
+
 def dump2csv_and_prune(db_connection, kwargs):
     # Get relevant args.
     table_name, date_column, until, template, quiet, sleep, prune = tuple(
@@ -162,63 +247,63 @@ def dump2csv_and_prune(db_connection, kwargs):
         extra_where = 'AND (%s)' % (extra_where.replace('%', '%%'),)
 
     rows = describe_table(db_connection, table_name)
-    begin_date = min_column_value(
-        db_connection, table_name, date_column, extra_where)
-    if not begin_date or (until and begin_date > until):
-        return
-    begin_date = begin_date.replace(minute=0, second=0)
-    date1 = ("'%s'" % (until.strftime('%Y-%m-%d'),) if until else None)
-    last_date = max_column_value(
-        db_connection, table_name, date_column, extra_where, date1=date1)
-    last_date = (last_date.replace(minute=0, second=0) + timedelta(hours=1))
+
+    interval = Interval(
+        db_connection, table_name, date_column, until, extra_where)
 
     # Create cursor. Increment in 1 hour steps.
     cursor = db_connection.cursor()
-    period = timedelta(seconds=3600)
-    end_date = begin_date + period
     dest_file = None
     dest_file_name = ''
 
-    rotate = 0
-    while begin_date < last_date:
+    caret_angle = 0
+    while interval.begin <= interval.last:
         # Check if we need to open a new file.
-        if dest_file and begin_date.strftime(template) != dest_file_name:
+        if dest_file and interval.make_filename(template) != dest_file_name:
             if dest_file:
                 dest_file.close()
                 dest_file = None
 
-        # For certain columns, string/time comparisons can fail during
-        # DST changes, for example:
-        #   TABLE auth (ts timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)
-        #   mysql> SELECT MIN(ts) FROM auth\G
-        #   min(ts): 2014-10-26 02:00:02
-        #   mysql> SELECT COUNT(*) FROM auth WHERE '2014-10-26 02:00:00' <= ts
-        #            AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
-        #   COUNT(*): 0
-        #   mysql> SELECT COUNT(*) FROM auth WHERE '2014-10-26 01:59:59' <= ts
-        #            AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
-        #   COUNT(*): 256
-        # For DATETIME columns, the problem does not occur.
-        # As a workaround we'll have to do an extra check to see if we've just
-        # crossed a DST line and add more time to the query.
-        extra_seconds = has_crossed_dst(db_connection, begin_date)
-        begin_date_hack = (begin_date - timedelta(seconds=extra_seconds))
+        if interval.type == datetime:
+            # For certain columns, string/time comparisons can fail during
+            # DST changes, for example:
+            #   TABLE auth (ts timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)
+            #   mysql> SELECT MIN(ts) FROM auth\G
+            #   min(ts): 2014-10-26 02:00:02
+            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 02:00:00' <= ts
+            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+            #   COUNT(*): 0
+            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 01:59:59' <= ts
+            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+            #   COUNT(*): 256
+            # For DATETIME columns, the problem does not occur.
+            # As a workaround we'll have to do an extra check to see if
+            # we've just crossed a DST line and add more time to the
+            # query.
+            extra_seconds = has_crossed_dst(db_connection, interval.begin)
+            begin_date_hack = (
+                interval.begin - timedelta(seconds=extra_seconds))
+            begin_date_sql = "'%s'" % (
+                begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'),)
+            end_date_sql = "'%s'" % (
+                interval.end.strftime('%Y-%m-%d %H:%M:%S'),)
+        else:
+            begin_date_sql = interval.begin
+            end_date_sql = interval.end
 
         # Query a bit of data and write to file.
         cursor.execute(
-            "SELECT * FROM %s WHERE '%s' <= %s AND %s < '%s' %s "
+            "SELECT * FROM %s WHERE %s <= %s AND %s < %s %s "
             "ORDER BY %s" % (
-                table_name,
-                begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-                date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
-                extra_where, date_column))
+                table_name, begin_date_sql, date_column,
+                date_column, end_date_sql, extra_where, date_column))
 
         row = None
         cursorit = iter(cursor)
         try:
             row = next(cursorit)
             if dest_file is None:
-                dest_file_name = begin_date.strftime(template)
+                dest_file_name = interval.make_filename(template)
                 dest_file = open(dest_file_name, 'a')
                 dest_file.write('%s\n' % (','.join(rows),))
 
@@ -228,13 +313,7 @@ def dump2csv_and_prune(db_connection, kwargs):
         except StopIteration:
             # No data! Seek to first data now. Otherwise we might keep
             # scanning and scanning.
-            begin_date = min_column_value(
-                db_connection, table_name, date_column, extra_where,
-                date0="'%s'" % (end_date.strftime('%Y-%m-%d %H:%M:%S'),))
-            if not begin_date or (until and begin_date > until):
-                break
-            begin_date = begin_date.replace(minute=0, second=0)
-            end_date = begin_date + period
+            interval.seek_next()
             continue
 
         # Write data (first row, and the rest).
@@ -244,11 +323,13 @@ def dump2csv_and_prune(db_connection, kwargs):
 
         # Prune immediately in equal sized chunks.
         if prune and row is not None:
+            if interval.type != datetime:
+                raise NotImplementedError(interval.type)
             cursor.execute(
                 "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
                     table_name,
                     begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-                    date_column, end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    date_column, interval.end.strftime('%Y-%m-%d %H:%M:%S'),
                     extra_where))
             db_connection.commit()
             if not quiet:
@@ -256,11 +337,11 @@ def dump2csv_and_prune(db_connection, kwargs):
                 sys.stdout.flush()
 
         # Increase dates.
-        begin_date, end_date = end_date, end_date + period
+        interval.set_next()
         if not quiet:
-            sys.stdout.write('%s\b' % (r'\|/-'[rotate],))
+            sys.stdout.write('%s\b' % (r'\|/-'[caret_angle],))
             sys.stdout.flush()
-            rotate = (rotate + 1) % 4
+            caret_angle = (caret_angle + 1) % 4
         if sleep:
             time.sleep(sleep)
 
@@ -276,31 +357,6 @@ def describe_table(db_connection, table_name):
     for row in cursor.fetchall():
         ret.append(row[0])
     return ret
-
-
-def min_column_value(db_connection, table_name, column, extra_where,
-                     date0="'1970-01-02'"):
-    cursor = db_connection.cursor()
-    # We use 2 jan because 1 jan fails if the timezone is positive.
-    cursor.execute(
-        "SELECT MIN(%s) FROM %s WHERE %s >= %s %s" % (
-            column, table_name, column, date0, extra_where))
-    ret = cursor.fetchall()
-    return ret[0][0]
-
-
-def max_column_value(db_connection, table_name, column, extra_where,
-                     date1=None):
-    cursor = db_connection.cursor()
-    if date1:
-        where = '(%s < %s)' % (column, date1)
-    else:
-        where = '(1 = 1)'
-    cursor.execute(
-        "SELECT MAX(%s) FROM %s WHERE %s %s" % (
-            column, table_name, where, extra_where))
-    ret = cursor.fetchall()
-    return ret[0][0]
 
 
 def has_crossed_dst(db_connection, begin_date):
@@ -438,7 +494,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
         help='the table to dump and/or prune')
     parser.add_argument(
         'date_column',
-        help='the column that holds the indexed date')
+        help='the column that holds the indexed date (or a simple sequence)')
 
     # Extract args and merge with defaults. If a defaults-file is set,
     # use that and have the command line overrule it.
