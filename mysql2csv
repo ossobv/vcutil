@@ -213,7 +213,9 @@ def dump2csv_and_prune(db_connection, kwargs):
                 extra_where, date_column))
 
         row = None
-        for row in cursor:
+        cursorit = iter(cursor)
+        try:
+            row = next(cursorit)
             if dest_file is None:
                 dest_file_name = begin_date.strftime(template)
                 dest_file = open(dest_file_name, 'a')
@@ -222,7 +224,21 @@ def dump2csv_and_prune(db_connection, kwargs):
                 if not quiet:
                     sys.stdout.write('+')
                     sys.stdout.flush()
+        except StopIteration:
+            # No data! Seek to first data now. Otherwise we might keep
+            # scanning and scanning.
+            begin_date = min_column_value(
+                db_connection, table_name, date_column, extra_where,
+                date0="'%s'" % (end_date.strftime('%Y-%m-%d %H:%M:%S'),))
+            if not begin_date or begin_date > until:
+                break
+            begin_date = begin_date.replace(minute=0, second=0)
+            end_date = begin_date + period
+            continue
 
+        # Write data (first row, and the rest).
+        dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
+        for row in cursorit:
             dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
 
         # Prune immediately in equal sized chunks.
@@ -261,12 +277,13 @@ def describe_table(db_connection, table_name):
     return ret
 
 
-def min_column_value(db_connection, table_name, column, extra_where):
+def min_column_value(db_connection, table_name, column, extra_where,
+                     date0="'1970-01-02'"):
     cursor = db_connection.cursor()
     # We use 2 jan because 1 jan fails if the timezone is positive.
     cursor.execute(
-        "SELECT MIN(%s) FROM %s WHERE %s >= '1970-01-02' %s" % (
-            column, table_name, column, extra_where))
+        "SELECT MIN(%s) FROM %s WHERE %s >= %s %s" % (
+            column, table_name, column, date0, extra_where))
     ret = cursor.fetchall()
     return ret[0][0]
 
