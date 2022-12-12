@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+# ipmiscrape (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+#
+# Fetching power usage from multiple IPMI boards in parallel.
+#
+# TODO: more documentation :)
+#
+import os
+import sys
+from collections import defaultdict, namedtuple
+from multiprocessing import Process, Queue
+from subprocess import PIPE, CalledProcessError, Popen, TimeoutExpired
+
+POOL_SIZE = 30
+PROCESS_TIMEOUT = 1.5
+IPMI_USER_PASS_BY_ALIAS = {'*': ('ADMIN', 'ADMIN')}  # ~/.config/ipmikvm/dict
+IPMI_USER_PASS_BY_IP = {'*': ('ADMIN', 'ADMIN')}     # ~/.config/ipmikvm/dict
+
+
+Machine = namedtuple('Machine', 'hostname ipmi_ip')
+Reading = namedtuple(
+    'Reading',
+    'cur_watt max_watt min_watt avg_watt sample_duration power_state')
+Result = namedtuple('Result', 'machine reading')
+
+
+def check_output(command, env, timeout):
+    with Popen(command, env=env, stdout=PIPE, stderr=PIPE) as p:
+        output, error = p.communicate(timeout=timeout)
+        if p.returncode != 0:
+            raise CalledProcessError(p.returncode, (command, output, error))
+    return output
+
+
+def get_machines(filename):
+    # Provide machines as a CSV:
+    # hostname,ipmi-ip
+    with open(sys.argv[1]) as fp:
+        lines = [line.strip() for line in fp.read().strip().split('\n')]
+        lines = [line for line in lines if line and not line.startswith('#')]
+        if lines[0] == 'hostname,ipmi-ip':
+            lines.pop(0)
+        machines = [Machine(*line.split(',', 1)) for line in lines]
+    return machines
+
+
+def get_ipmitool_power(ip):
+    first_error = None
+    user_pass = IPMI_USER_PASS_BY_IP.get(ip, IPMI_USER_PASS_BY_IP['*'])
+    for user, password in user_pass:
+        try:
+            env = os.environ.copy()
+            env['IPMI_PASSWORD'] = password  # using -E
+            res = check_output((
+                'ipmitool', '-I', 'lan', '-H', ip, '-U', user, '-E',
+                'dcmi', 'power', 'reading'), timeout=PROCESS_TIMEOUT, env=env)
+            res = res.decode('ascii', 'replace')
+        except CalledProcessError as e:  # invalid username??
+            if not first_error:
+                first_error = e
+        else:
+            break
+    else:
+        raise first_error
+
+    #     Instantaneous power reading:                   102 Watts
+    #     Minimum during sampling period:                 22 Watts
+    #     Maximum during sampling period:                166 Watts
+    #     Average power reading over sample period:       71 Watts
+    #     IPMI timestamp:                           Thu Dec  1 10:27:15 2022
+    #     Sampling period:                          03698843 Seconds.
+    #     Power reading state is:                   activated
+    return res.strip()
+
+
+def get_reading(machine):
+    try:
+        ipmi_power = get_ipmitool_power(machine.ipmi_ip)
+    except CalledProcessError as e:
+        return e
+    except TimeoutExpired as e:
+        return e
+    except Exception as e:
+        return e  # XXX
+
+    lines = [line.strip() for line in ipmi_power.split('\n')]
+    lines = [line.split(':', 1) for line in lines if line]
+    kv = dict((k.rstrip(), v.lstrip()) for k, v in lines)
+    return Reading(
+        cur_watt=int(kv['Instantaneous power reading'].split()[0]),
+        min_watt=int(kv['Minimum during sampling period'].split()[0]),
+        max_watt=int(kv['Maximum during sampling period'].split()[0]),
+        avg_watt=int(
+            kv['Average power reading over sample period'].split()[0]),
+        sample_duration=int(kv['Sampling period'].split()[0]),
+        power_state=kv['Power reading state is'],
+    )
+
+
+def run(jobq, resq):
+    while not jobq.empty():
+        machine = jobq.get()
+        result = Result(machine=machine, reading=get_reading(machine))
+        resq.put(result)
+
+
+def dump_results(results):
+    valid, invalid = [], []
+    for res in results:
+        if isinstance(res.reading, Reading):
+            valid.append(res)
+        else:
+            invalid.append(res)
+
+    dump_invalid(invalid)
+    dump_valid(valid)
+
+
+def dump_valid(results):
+    print('hostname,ipmi-ip,avg_watt')
+    for res in results:
+        print(','.join([
+            res.machine.hostname, res.machine.ipmi_ip,
+            str(res.reading.avg_watt)]))
+
+
+def dump_invalid(invalid):
+    if not invalid:
+        return
+    print('-- there were some problems, see below --')
+    for res in invalid:
+        print(res)
+    print('-- there were some problems, see above --')
+    print()
+
+
+def read_config_ipmikvm_dict():
+    by_alias = defaultdict(list)
+    by_ip = defaultdict(list)
+    # <alias> <ip> <user> <pass>
+    # * * ADMIN SIMPLEPASS
+    # * * ADMIN OTHERPASS
+    # machinex 1.2.3.4 ROOT ROOTPASS
+    with open(os.path.expanduser('~/.config/ipmikvm/dict')) as fp:
+        for line in fp:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                components = line.split()
+                if len(components) >= 4:
+                    alias, ip, user, password = components[0:4]
+                    by_alias[alias].append((user, password))
+                    by_ip[ip].append((user, password))
+    return dict(by_alias), dict(by_ip)
+
+
+def main(machines_filename):
+    machines = get_machines(sys.argv[1])
+    job_queue = Queue()
+    [job_queue.put(machine) for machine in machines]
+    res_queue = Queue()
+    pool = []
+    results = []
+
+    for n in range(POOL_SIZE):
+        p = Process(target=run, args=(job_queue, res_queue))
+        p.start()
+        pool.append(p)
+
+    for n in range(len(machines)):
+        res = res_queue.get()
+        results.append(res)
+        # #print(res)
+
+    assert len(machines) == len(results), (len(machines), len(results))
+    for p in pool:
+        p.terminate()  # bonus.. otherwise things stall sometimes
+        p.join()
+    # #print()
+
+    dump_results(results)
+
+
+if __name__ == '__main__':
+    IPMI_USER_PASS_BY_ALIAS, IPMI_USER_PASS_BY_IP = read_config_ipmikvm_dict()
+    # #print(IPMI_USER_PASS_BY_ALIAS)
+    # #print(IPMI_USER_PASS_BY_IP)
+    main(sys.argv[1])  # machines.csv
