@@ -27,4 +27,15 @@ ARGS_LIST=(
 
 fi # --skipped above if not enabled--
 # =====================================================================
+
+# TCP flags mnemonic:
+#   'tcp[13] & 32 != 0'  # URG "Unskilled"
+#   'tcp[13] & 16 != 0'  # ACK "Attackers"
+#   'tcp[13] &  8 != 0'  # PSH "Pester"
+#   'tcp[13] &  4 != 0'  # RST "Real"
+#   'tcp[13] &  2 != 0'  # SYN "Security"
+#   'tcp[13] &  1 != 0'  # FIN "Folk"
+# Or, use constants, e.g.:
+#   'tcp[tcpflags]&(tcp-syn|tcp-rst)!=0'
+#
 # vim: set syn=sh ts=8 sw=4 sts=4 et ai:
