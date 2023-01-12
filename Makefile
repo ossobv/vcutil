@@ -40,6 +40,7 @@ BINS = \
 	lldpscan \
 	make-master-secret-log \
 	mysql2csv \
+	mysqlparseslow \
 	pdns-mysql-slave-prune \
 	psdiff \
 	pve-macaddr-security \

@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+# mysqlparseslow (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Parse and summarize the MySQL slow query log.
+#
+# USAGE
+#   mysqlparseslow /var/log/mysql/mysql-slow.log
+#
+# NOTES
+#   - This tool is rather unpolished.
+#   - mysqldumpslow has some advantages (strict value "abstraction"), but that
+#     strictness comes with the disadvantage that certain queries are not
+#     grouped even though they should.
+#   - This one is more easily extensible (because it's a small script) and
+#     features (more useful) median values instead of averages.
+#
+# TODO
+#   - Needs tests, so we won't break on changing file formats.
+#
+# SEE ALSO
+#   mysqldumpslow(1)
+#
+from argparse import ArgumentParser
+from collections import namedtuple
+from warnings import warn
+
+
+WITH_FILESORT = 1
+WITH_FULLSCAN = 2
+SlowLogEntry = namedtuple(
+    'SlowLogEntry',
+    'timestamp query_duration lock_duration rows_examined schema bits data')
+
+
+def meta_to_misc(meta):
+    schema = None
+    bits = 0
+    for line in meta:
+        if line.startswith(b'# Query_time: '):
+            # Query_time: 1.19  Lock_time: 0.03  Rows_sent: 1  Rows_examined: 1
+            components = line.split()
+            assert components[1] == b'Query_time:', components
+            assert components[3] == b'Lock_time:', components
+            assert components[7] == b'Rows_examined:', components
+            query_duration = float(components[2])
+            lock_duration = float(components[4])
+            rows_examined = int(components[8])
+
+        elif b'  Schema: ' in line:
+            schema = line.split(b'  Schema: ', 1)[-1].split(b' ')[0].decode()
+            assert schema not in ('QC_hit:',), schema
+
+        elif b'Filesort: Yes' in line or b'Filesort_on_disk: Yes' in line:
+            bits |= WITH_FILESORT
+
+        elif b'Full_scan: Yes' in line or b'Full_join: Yes' in line:
+            bits |= WITH_FULLSCAN
+
+    # assert schema is not None, meta  # we don't always have a schema..?
+    if not schema:
+        schema = None
+
+    return {
+        'query_duration': query_duration,
+        'lock_duration': lock_duration,
+        'rows_examined': rows_examined,
+        'bits': bits,
+        'schema': schema,
+    }
+
+
+def fetch_entries(fp):
+    it = iter(fp)
+
+    # Skip past headers
+    while True:
+        line = next(it)
+        if line.startswith(b'#'):
+            break
+    assert line.startswith(b'#'), line
+
+    # Loop over entries that start with comments
+    not_eof = True
+    while not_eof:
+        assert line.startswith(b'#'), line
+        timestamp = None
+        schema = None
+        meta = [line]
+
+        while True:
+            if line.startswith(b'#'):
+                meta.append(line)
+            else:
+                break
+            line = next(it)
+        assert not line.startswith(b'#'), line
+
+        data = []
+        while True:
+            if line.startswith((b'use ', b'USE ')):
+                schema = line.split(b' ', 1)[1].decode().strip()
+            elif line.startswith(b'SET timestamp='):
+                timestamp = int(line.split(b'=', 1)[1].split(b';', 1)[0])
+            elif line.startswith(b'#'):
+                break
+            else:
+                data.append(line)
+
+            try:
+                line = next(it)
+            except StopIteration:
+                not_eof = False
+                break
+
+        assert meta and timestamp, (meta, data, timestamp)
+        misc = meta_to_misc(meta)
+        schema = (misc.pop('schema', None) or schema)
+        yield SlowLogEntry(
+            timestamp=timestamp, schema=schema,
+            data=b''.join(data), **misc)
+
+
+def to_time(ts):
+    s = (ts % 86400)
+    return '{h:02d}:{m:02d}:{s:02d}Z'.format(
+        h=(s // 3600), m=((s // 60) % 60), s=(s % 60))
+
+
+def median(list_):
+    if not list_:
+        raise ValueError('no values')
+    list_.sort()
+    mid = len(list_) // 2
+    if len(list_) % 2 == 0:  # 0 1 2 3 (mid == 2)
+        value = (list_[mid - 1] + list_[mid]) / 2  # 0 1 2 3 (mid == 2)
+    else:
+        value = list_[mid]  # 0 1 2 (mid == 1)
+    return value
+
+
+def main():
+    parser = ArgumentParser()
+    # #parser.add_argument('--period', default='hour', choices=('hour',))
+    parser.add_argument('filename', metavar='SLOWLOG')
+    args = parser.parse_args()
+
+    seen = dict()
+
+    with open(args.filename, 'rb') as fp:
+        for entry in fetch_entries(fp):
+            if entry.query_duration > 86400:
+                # "# Query_time: 18446744073709.550781" (uint64_max!)
+                warn(
+                    f'Record with absurd query time {entry.query_duration} '
+                    f'ignored: {entry.data}')
+                continue
+
+            subset = b' '.join(entry.data.split(None, 4)[0:-1]).decode()
+            key = (entry.schema, subset)
+
+            if key not in seen:
+                seen[key] = {
+                    'count': 0,
+                    'query_duration': [],
+                    'lock_duration': [],
+                    'rows_examined': [],
+                    'schema': entry.schema,
+                    'query': (
+                        entry.data[0:60].decode('ascii', 'replace') + '...'),
+                }
+
+            seen[key]['count'] += 1
+            seen[key]['query_duration'].append(entry.query_duration)
+            seen[key]['lock_duration'].append(entry.lock_duration)
+            seen[key]['rows_examined'].append(entry.rows_examined)
+
+    # Clean up some values
+    for row in seen.values():
+        row['med_query_duration'] = round(median(row['query_duration']), 3)
+        row['med_lock_duration'] = round(median(row['lock_duration']), 3)
+        row['med_rows_examined'] = int(median(row['rows_examined']))
+
+        row['total_query_duration'] = round(sum(row['query_duration']), 3)
+        row['total_lock_duration'] = round(sum(row['lock_duration']), 3)
+        row['total_rows_examined'] = sum(row['rows_examined'])
+
+        if row['schema'] is None:
+            del row['schema']
+
+    sort_keys = (
+        'count', 'total_query_duration', 'med_query_duration',
+        'total_lock_duration', 'med_lock_duration',
+        'total_rows_examined', 'med_rows_examined')
+    for sort_key in sort_keys:
+        print(f'### by {sort_key} ###')
+        seen_by = list(seen.values())
+        seen_by.sort(key=(lambda row: -row[sort_key]))
+        for row in seen_by[0:20]:
+            values = ' '.join(f'{k}={row[k]}' for k in sort_keys)
+            query = '\n  > '.join(row['query'].split('\n'))
+            print(f'- {values}\n  > {query}')
+        print()
+
+
+if __name__ == '__main__':
+    main()
