@@ -48,6 +48,25 @@
 #   $ perl -e 'sub R{$n=ord($1);if($n<=32||$n==37||$n>=127){
 #       sprintf("%%%02X",$n)}else{$1}};' -pe 's/(.)/R($1)/ge'
 #
+#   Getting CORS headers:
+#   $ keystone-swift-curl path/to/config HEAD '' | grep -i x-container-meta
+#       x-container-meta-access-control-allow-origin: https://...
+#
+#   Setting CORS headers:
+#   $ keystone-swift-curl path/to/config POST '' \
+#       -H 'X-Container-Meta-Access-Control-Allow-Origin:
+#             https://domain1.example.com/ https://domain2.example.com/'
+#
+#   Removing CORS headers:
+#   $ keystone-swift-curl path/to/config POST '' \
+#       -H 'X-Remove-Container-Meta-Access-Control-Allow-Origin: x'
+#
+#   Other useful headers:
+#   - X-Account-Meta-Temp-URL-Key (set SWIFT_CONTAINER=)
+#   - X-Account-Meta-Temp-URL-Key-2 (set SWIFT_CONTAINER=)
+#   - X-Container-Meta-Temp-URL-Key
+#   - X-Container-Meta-Temp-URL-Key-2
+#
 
 swift_init() {
     # Check variables before starting. Works if 'set -u' is called.
@@ -145,8 +164,9 @@ _swift_get_project_url_from_tokens() {
 
 swift_do() {
     local project_url="$SWIFT_PROJECT_URL"
-    local container="$SWIFT_CONTAINER"
-    local meth="$1"  # GET|DELETE|HEAD|PUT
+    local container="/$SWIFT_CONTAINER"
+    container=${container%/}
+    local meth="$1"  # GET|DELETE|HEAD|POST|PUT
     local file="$2"  # remote/path/to/file
     shift; shift
     if test "$meth" = PUT && test "${QUIET:-0}" = 0; then
@@ -154,10 +174,10 @@ swift_do() {
         # feature..
         echo -n "$file " >&2
         curl --progress-bar -fX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
-            "$project_url/$container/$file" "$@" >/dev/null
+            "$project_url$container/$file" "$@" >/dev/null
     else
         curl -fsSX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
-            "$project_url/$container/$file" "$@"
+            "$project_url$container/$file" "$@"
     fi
 }
 
@@ -170,6 +190,7 @@ swift_head() {
     swift_do HEAD "$@" -v -H 'Connection: close' 2>&1 |
         sed -e '/^</!d;s/</ /'
 }
+swift_post() { swift_do POST "$@"; }
 swift_put() {
     if test -t 0; then
         echo "$0: Upload source is stdin. Did you forget to supply a file?" >&2
@@ -264,6 +285,7 @@ if test "${0##*/}" = 'keystone-swift-curl'; then
     DELETE) swift_delete "$@";;
     GET) swift_get "$@";;
     HEAD) swift_head "$@";;
+    POST) swift_post "$@";;
     PUT) swift_put "$@";;
     *) echo "unknown method: $method" >&2; exit 1
     esac
