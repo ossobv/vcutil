@@ -39,9 +39,9 @@ def get_machines(filename):
     with open(sys.argv[1]) as fp:
         lines = [line.strip() for line in fp.read().strip().split('\n')]
         lines = [line for line in lines if line and not line.startswith('#')]
-        if lines[0] == 'hostname,ipmi-ip':
+        if lines[0].split(',', 2)[0:2] == ['hostname', 'ipmi-ip']:
             lines.pop(0)
-        machines = [Machine(*line.split(',', 1)) for line in lines]
+        machines = [Machine(*line.split(',', 2)[0:2]) for line in lines]
     return machines
 
 
