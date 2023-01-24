@@ -11,6 +11,7 @@ from collections import defaultdict, namedtuple
 from multiprocessing import Process, Queue
 from subprocess import PIPE, CalledProcessError, Popen, TimeoutExpired
 
+VERBOSE = False
 POOL_SIZE = 30
 PROCESS_TIMEOUT = 1.5
 IPMI_USER_PASS_BY_ALIAS = {'*': ('ADMIN', 'ADMIN')}  # ~/.config/ipmikvm/dict
@@ -47,13 +48,18 @@ def get_machines(filename):
 def get_ipmitool_power(ip):
     first_error = None
     user_pass = IPMI_USER_PASS_BY_IP.get(ip, IPMI_USER_PASS_BY_IP['*'])
-    for user, password in user_pass:
+    for password_attempt, (user, password) in enumerate(user_pass, 1):
         try:
             env = os.environ.copy()
             env['IPMI_PASSWORD'] = password  # using -E
-            res = check_output((
+            command = (
                 'ipmitool', '-I', 'lan', '-H', ip, '-U', user, '-E',
-                'dcmi', 'power', 'reading'), timeout=PROCESS_TIMEOUT, env=env)
+                'dcmi', 'power', 'reading')
+            if VERBOSE:
+                strcmd = ' '.join(command)
+                # print(f'#{password_attempt}# IPMI_PASSWORD={password}')
+                print(f'#{password_attempt}# {strcmd}')
+            res = check_output(command, timeout=PROCESS_TIMEOUT, env=env)
             res = res.decode('ascii', 'replace')
         except CalledProcessError as e:  # invalid username??
             if not first_error:
@@ -184,4 +190,7 @@ if __name__ == '__main__':
     IPMI_USER_PASS_BY_ALIAS, IPMI_USER_PASS_BY_IP = read_config_ipmikvm_dict()
     # #print(IPMI_USER_PASS_BY_ALIAS)
     # #print(IPMI_USER_PASS_BY_IP)
+    if sys.argv[1:2] == ['-v']:
+        VERBOSE = True
+        sys.argv.pop(1)
     main(sys.argv[1])  # machines.csv
