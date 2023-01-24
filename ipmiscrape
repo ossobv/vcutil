@@ -62,7 +62,13 @@ def get_ipmitool_power(ip):
             res = check_output(command, timeout=PROCESS_TIMEOUT, env=env)
             res = res.decode('ascii', 'replace')
         except CalledProcessError as e:  # invalid username??
-            if not first_error:
+            # (cmd, out, err) = e.cmd
+            # (exitcode, (cmd, out, err)) = e.args
+            if not first_error or (
+                    first_error.cmd[2].startswith((
+                        b'Invalid user name:',          # bad user
+                        b'Activate Session error:')     # bad pass
+                    )):
                 first_error = e
         else:
             break
