@@ -1,3 +1,20 @@
+vcutil (1.36) stable; urgency=low
+
+  * Additions:
+    - ipmiscrape: Quickly fetch power usage from multiple IPMI boards
+    - mysqlparseslow: Similar to mysqldumpslow, parsing the mysql slow log
+
+  * Improvements:
+    - keystone-swift-curl: Documentation on setting account/container metadata
+    - keystone-swift-curl: File PUT improvements
+    - mysql2csv: Add --period-size flag to alter the interval/period/chunk size
+    - mysql2csv: Allow scanning integer sequences too
+    - mysql2csv: Make --until optional
+    - mysql2csv: Speed improvement when there are gaps in the data
+    - tcpdump247: Add some tcp flag docs in tcpdump247.default
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 24 Jan 2023 10:14:15 +0100
+
 vcutil (1.35) stable; urgency=low
 
   * Fixes:
