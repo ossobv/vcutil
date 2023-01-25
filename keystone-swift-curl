@@ -202,7 +202,7 @@ swift_put() {
         test "${arg%%:*}" != 'Content-Type' || has_content_type=true
     done
     if ! $has_content_type; then
-        echo "$0: Did you forget -H 'Content-Type: application/binary' ?" >&2
+        echo "$0: Forgot -H 'Content-Type: application/octet-stream' ?" >&2
         echo "$0: Maybe use: file --mime-type FILE" >&2
     fi
 

@@ -13,7 +13,7 @@ vcutil (1.36) stable; urgency=low
     - mysql2csv: Speed improvement when there are gaps in the data
     - tcpdump247: Add some tcp flag docs in tcpdump247.default
 
- -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 24 Jan 2023 10:14:15 +0100
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 24 Jan 2023 10:14:15 +0100
 
 vcutil (1.35) stable; urgency=low
 
