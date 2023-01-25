@@ -44,7 +44,8 @@ from collections import OrderedDict, defaultdict
 from subprocess import check_output
 from tempfile import TemporaryFile
 
-MAX_DISPLAY = 100
+# Show entire package list for repo if there are at most this many:
+VERY_FEW_PACKAGES_LTE = 40
 
 CAT_LOCAL_ONLY = '(local only)'
 CAT_RC_ONLY = '(rc only)'
@@ -254,16 +255,19 @@ def show():
     lists = get_packages_per_list()
 
     print('Lists with corresponding package counts:')
-    has_short_list = False
+    show_details = False
     for key in sorted(lists.keys()):
         print('  {}\t{}'.format(len(lists[key]), key))
-        has_short_list = (has_short_list or len(lists[key]) <= MAX_DISPLAY)
+        show_details = (
+            show_details or
+            len(lists[key]) <= VERY_FEW_PACKAGES_LTE or
+            key in CAT_NON_URL)
 
-    if has_short_list or any(key in CAT_NON_URL for key in lists.keys()):
+    if show_details:
         print('')
         print('Lists with very few packages (or with remarks):')
         for key in sorted(lists.keys()):
-            if len(lists[key]) <= MAX_DISPLAY or key in CAT_NON_URL:
+            if len(lists[key]) <= VERY_FEW_PACKAGES_LTE or key in CAT_NON_URL:
                 print('  {}'.format(key))
                 for package in lists[key]:
                     print('    - {}'.format(package.name))
