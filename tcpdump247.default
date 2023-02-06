@@ -8,7 +8,15 @@ if test $ENABLED -ne 0; then # --skipping below if not enabled--
 
 # helpers
 IFACE=`/sbin/ip route get 1.2.3.4 | sed -e 's/.* dev //;s/ .*//;q'`
+spooldir_exists=$(test -d /var/spool/tcpdump && echo true || echo false)
 mkdir -p /var/spool/tcpdump
+if ! $spooldir_exists; then
+    # Try changing ownership to tcpdump if we created it.
+    # On some systems, tcpdump will change to the tcpdump
+    # user. Ignore any errors if no such user exists.
+    chown tcpdump: /var/spool/tcpdump 2>/dev/null || true
+    chmod 0700 /var/spool/tcpdump || true
+fi
 
 # a bash(1) list of argument strings. these will be expanded, so make
 # sure you enclose single arguments with extra quotes. e.g.:

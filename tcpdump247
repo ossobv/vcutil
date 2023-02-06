@@ -102,10 +102,11 @@ sleep 15; done"
 
 Daemon tcpdump did not start, possibly due to:
 - binary not found ($TCPDUMP)
-- not enough permissions (are you root?)
+- not enough permissions (are you root? does tcpdump switch to a tcpdump-user?)
 - bad args ($ARGS)
 - write permissions (does the -w directory exist?)
 - apparmor permissions (/**.[pP][cC][aA][pP].[0-9][0-9] rw,)
+- apparmor in lxc permissions for stdout/stderr (/dev/pts/* rw,)
 
 EOF
         return 1
