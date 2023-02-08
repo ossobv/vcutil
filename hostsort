@@ -27,7 +27,7 @@
 #     that www.example.com existed and was the server to contact."
 #     --Tim Berners-Lee
 #
-#     But, because we're stuck with a buttom-up hostname we'll have to
+#     But, because we're stuck with a bottom-up hostname we'll have to
 #     accept it and live with it.
 #
 #     Using hostsort, you'll get easier groupings.
