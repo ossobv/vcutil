@@ -26,6 +26,7 @@ BINS = \
 	git-hook-postcommit-coloremail \
 	git-reapply-patch \
 	gitlab-hook-postcommit-coloremail \
+	hostsort \
 	ifupdown2netplan \
 	ikvmocr \
 	indirect-scp \
