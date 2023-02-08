@@ -1,0 +1,51 @@
+#!/bin/sh
+# hostsort (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Sort input lines by hostname (top-down, right-to-left).
+#
+# USAGE
+#
+#     $ printf '%s\n' \
+#         node3.example.com node2.domain.tld \
+#         node1.domain.tld master.example.com | hostsort
+#     master.example.com
+#     node3.example.com
+#     node1.domain.tld
+#     node2.domain.tld
+#
+# EXPLANATION
+#
+#     Sorts the input hostnames top-down, from right to left.
+#     This is done by translating "node2.domain.tld" into
+#     "tld.domain.node2." before sorting.
+#
+# WHY
+#
+#     "I have to say that now I regret that the syntax is so clumsy. I
+#     would like http://www.example.com/foo/bar/baz to be just written
+#     http:com/example/foo/bar/baz where the client would figure out
+#     that www.example.com existed and was the server to contact."
+#     --Tim Berners-Lee
+#
+#     But, because we're stuck with a buttom-up hostname we'll have to
+#     accept it and live with it.
+#
+#     Using hostsort, you'll get easier groupings.
+#
+# TODO
+#
+#     We'll probably want to add the possibility of skipping over parts
+#     before sorting (-k<N>) and leave other non-hostname parts untouched.
+#     E.g. to sort a CSV by hostname. Right now it only works if you put
+#     the hostname in the last field.
+#
+#     Also, we don't support numeric/version sort, so node11 will sort
+#     before node2.
+#
+#     mawk does not have asorti. Maybe switch to perl instead?
+#     https://github.com/decklin/bin/blob/master/hostsort
+#
+exec gawk -F. '
+  {r="";for(i=NF;i>=1;--i)r=r$i".";m[r]=$0}
+  END {n=asorti(m,o);for(i in o)print m[o[i]]}
+'
