@@ -1,17 +1,17 @@
 #!/bin/sh
-# pdns-mysql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021
+# pdns-sql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021,2023
 #   // Public Domain
 #
-# Reads PowerDNS MySQL backend SLAVE data for stale domains and prunes
+# Reads PowerDNS SQL backend SLAVE data for stale domains and prunes
 # those.
 #
 # Usage:
 #
-#   # pdns-mysql-slave-prune
+#   # pdns-sql-slave-prune
 #   Pruning SLAVE domain 'old-removed-domain.tld' (704)
 #   ...
 #
-# It works by checking your PowerDNS MySQL database backend for domains
+# It works by checking your PowerDNS SQL database backend for domains
 # with:
 # - type set to SLAVE
 # - that haven't been 'last_check' updated in the last 3 days
@@ -24,26 +24,55 @@
 # Tested with PowerDNS 4.0, but should work with PowerDNS 3.4 as well.
 # Silence regular output by discarding stdout.
 #
+set -eu
 
-DBNAME=$(find /etc/powerdns/ -name '*.conf' -type f |
-         xargs grep -h ^gmysql-dbname= | sed -e 's/[^=]*=//')
+test -z "${DBNAME:-}" && \
+    DBNAME=$(find /etc/powerdns/ -name '*.conf' -type f |
+        xargs grep -hE '^g(mysql|pgsql)-dbname=' | sed -e 's/[^=]*=//')
+test -z "${DBTYPE:-}" && \
+    DBTYPE=$(find /etc/powerdns/ -name '*.conf' -type f |
+        xargs sed -ne 's/^g\(mysql\|pgsql\)-dbname=.*/\1/p')
 
-AVG_OLD_TIMESTAMP='(UNIX_TIMESTAMP() - 2 * 86400)'  # '-2 days'
-OLD_TIMESTAMP='(UNIX_TIMESTAMP() - 3*86400)'        # '-3 days'
+case "$DBTYPE" in
+mysql)
+    query() {
+        mysql --defaults-file=/etc/mysql/debian.cnf "$DBNAME" -BNe "$1"
+    }
+    SQL_EPOCH='UNIX_TIMESTAMP()'
+    SQL_TRUE=1
+    ;;
+pgsql)
+    if test $(whoami) != postgres; then
+        cd /
+        exec sudo -Hupostgres env DBNAME=$DBNAME DBTYPE=$DBTYPE $0 "$@"
+        exit 2  # should not get here
+    fi
 
-myquery() {
-    mysql --defaults-file=/etc/mysql/debian.cnf "$DBNAME" -Ne "$1"
-}
+    query() {
+        psql -tAF "$(printf '\t')" -c "$1" "$DBNAME"
+    }
+    SQL_EPOCH='EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)'
+    SQL_TRUE=t
+    ;;
+*)
+    echo "NotImplementedError: DBTYPE=$DBTYPE" >&2
+    exit 1
+    ;;
+esac
+
+AVG_OLD_TIMESTAMP="($SQL_EPOCH - 2 * 86400)"  # '-2 days'
+OLD_TIMESTAMP="($SQL_EPOCH - 3 * 86400)"      # '-3 days'
+
 
 test_slave_running() {
     #return  # <-- DISABLE this check?
-    if test "$(myquery "
+    if test "$(query "
             SELECT AVG(last_check) > $AVG_OLD_TIMESTAMP AS val
-            FROM domains WHERE type = 'SLAVE';")" != "1"; then
-        updated=$(myquery "
+            FROM domains WHERE type = 'SLAVE';")" != "$SQL_TRUE"; then
+        updated=$(query "
             SELECT name FROM domains WHERE last_check >= $AVG_OLD_TIMESTAMP
               AND type = 'SLAVE' ORDER BY name;")
-        not_updated=$(myquery "
+        not_updated=$(query "
             SELECT name FROM domains WHERE last_check < $AVG_OLD_TIMESTAMP
               AND type = 'SLAVE' ORDER BY name;")
         if test -z "$updated"; then
@@ -86,22 +115,22 @@ EOF
 }
 
 old_slave_domains() {
-    myquery "
+    query "
         SELECT id, name FROM domains
         WHERE type = 'SLAVE' AND last_check < $OLD_TIMESTAMP
         ORDER BY name, id;"
 }
 
 prune_domain() {
-    id=$1
-    domain=$2
+    local id="$1"
+    local domain="$2"
     if ! test "$((id-1))" -lt "$id"; then
         echo "Not an integer id for domain '$domain': $id" >&2
         exit 1
     fi
 
     echo "Pruning SLAVE domain '$domain' ($id)"
-    myquery "
+    query "
         DELETE FROM comments WHERE domain_id = $id;
         DELETE FROM cryptokeys WHERE domain_id = $id;
         DELETE FROM domainmetadata WHERE domain_id = $id;
@@ -113,9 +142,10 @@ prune_domain() {
 test_slave_running || exit 1
 
 # Do some pruning.
-old_slave_domains | awk -F'\t' '{print $1 ";" $2}' | while read line; do
-    id=${line%;*}
-    domain=${line#*;}
+TAB=$(printf '\t')
+old_slave_domains | while read line; do
+    id=${line%$TAB*}
+    domain=${line#*$TAB}
     prune_domain $id $domain
 done
 
