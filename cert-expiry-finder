@@ -92,11 +92,12 @@ enum_kuberstuff_certs() {
 }
 
 enum_mysql_wsrep_certs() {
-    find /etc/mysql/ -type f -name '*.cnf' -print0 |
+    find /etc/mysql/ -type f -name '*.cnf' -print0 2>/dev/null |
         xargs --no-run-if-empty -0 sed -ne "
-            s/^\(tcert\|tca\|ssl-cert\|ssl-ca\)$s*=$s*\($S*\).*/\2/p"
-    find /etc/mysql/ -type f -name '*.cnf' -print0 |
-        xargs --no-run-if-empty -0 grep 'wsrep_provider_options' |
+            s/^\(tcert\|tca\|ssl-cert\|ssl-ca\)$s*=$s*\($S*\).*/\2/p" \
+                2>/dev/null
+    find /etc/mysql/ -type f -name '*.cnf' -print0 2>/dev/null |
+        xargs --no-run-if-empty -0 grep 'wsrep_provider_options' 2>/dev/null |
             tr ';' '\n' | sed -ne "
                 s/^\(socket.ssl_ca\|socket.ssl_cert\)=\($S*\).*/\2/p"
 }
