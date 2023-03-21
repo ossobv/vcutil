@@ -32,6 +32,7 @@ enum_all_certs() {
         enum_gitlab_certs
         enum_haproxy_certs
         enum_kuberstuff_certs
+        enum_mysql_wsrep_certs
         enum_nginx_certs
         enum_openvpn_certs
         enum_postfix_certs
@@ -81,10 +82,23 @@ enum_kuberstuff_certs() {
     # /var/lib/kube-controller-manager/pki
     # /var/lib/kube-scheduler/pki
     # /var/lib/kubelet/pki
+    # /etc/kubernetes/pki
     # Exclude "-----BEGIN PUBLIC KEY-----" from access-token.crt.
-    find /var/lib/kube*/pki -name '*.crt' 2>/dev/null |
+    find /var/lib/kube*/pki \
+         /etc/kubernetes/pki \
+        -name '*.crt' 2>/dev/null |
         xargs --no-run-if-empty grep -l '^-----BEGIN CERTIFICATE-----'
         # no dollar, CR optional
+}
+
+enum_mysql_wsrep_certs() {
+    find /etc/mysql/ -type f -name '*.cnf' -print0 |
+        xargs --no-run-if-empty -0 sed -ne "
+            s/^\(tcert\|tca\|ssl-cert\|ssl-ca\)$s*=$s*\($S*\).*/\2/p"
+    find /etc/mysql/ -type f -name '*.cnf' -print0 |
+        xargs --no-run-if-empty -0 grep 'wsrep_provider_options' |
+            tr ';' '\n' | sed -ne "
+                s/^\(socket.ssl_ca\|socket.ssl_cert\)=\($S*\).*/\2/p"
 }
 
 enum_nginx_certs() {
