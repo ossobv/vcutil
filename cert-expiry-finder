@@ -195,9 +195,9 @@ list_cert_expiry_days() {
 enumerate_crl_expiry_seconds() {
     local line date subject
     foreach_crl -noout -issuer -nextupdate < "$1" | awk '
-        /^issuer=/{gsub(/^[^=]*=/, "");subj=$0}
+        /^issuer=/{sub(/^[^=]*=/, "");subj=$0}
         /^nextUpdate=/{
-            gsub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
+            sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
     ' | while IFS='|' read -r date subject; do
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
@@ -209,8 +209,8 @@ enumerate_crl_expiry_seconds() {
 enumerate_x509_expiry_seconds() {
     local line date subject
     foreach_x509 -noout -subject -dates < "$1" | awk '
-        /^subject=/{gsub(/^[^=]*=/, "");subj=$0}
-        /^notAfter=/{gsub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
+        /^subject=/{sub(/^[^=]*=/, "");subj=$0}
+        /^notAfter=/{sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
     ' | while IFS='|' read -r date subject; do
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
