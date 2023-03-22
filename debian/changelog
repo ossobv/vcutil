@@ -1,3 +1,22 @@
+vcutil (1.37) stable; urgency=low
+
+  * Additions:
+    - hostsort: Add initial version. Groups hostnames by tld.
+
+  * Improvements:
+    - apt-find-foreign: Fix so it works with non-English locales
+    - apt-find-foreign: Lower the threshold to list all packages for a single
+      repo
+    - cert-expiry-finder: Find various root/intermediate certificates too
+    - cert-expiry-finder: Handle multiple certs/CRLs in a single bundle
+    - ipmiscrape: Add -v verbose mode for debugging
+    - ipmiscrape: Allow input csv to hold additional (ignored) columns
+    - ipmiscrape: When listing errors, prefer the ones not about bad user/pass
+    - pdns-sql-slave-prune: Make mysql+postgres compatible
+    - tcpdump247: Remarks about apparmor/perms, handle moved tcpdump location
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 22 Mar 2023 10:47:50 +0100
+
 vcutil (1.36) stable; urgency=low
 
   * Additions:
