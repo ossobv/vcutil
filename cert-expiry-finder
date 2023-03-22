@@ -84,14 +84,15 @@ enum_haproxy_certs() {
 
 enum_kuberstuff_certs() {
     # Expected paths:
-    # /var/lib/kube-apiserver/pki
-    # /var/lib/kube-controller-manager/pki
-    # /var/lib/kube-scheduler/pki
-    # /var/lib/kubelet/pki
-    # /etc/kubernetes/pki
-    # Exclude "-----BEGIN PUBLIC KEY-----" from access-token.crt.
-    find /var/lib/kube*/pki \
-         /etc/kubernetes/pki \
+    #   /etc/kubernetes/pki
+    #   /var/lib/kube-apiserver/pki
+    #   /var/lib/kube-controller-manager/pki
+    #   /var/lib/kube-scheduler/pki
+    #   /var/lib/kubelet/pki
+    # Take only files with BEGIN CERTIFICATE. Doing it differently than the
+    # others were we start with the configuration file. An alternative could
+    # be to read /etc/default/kube*.
+    find /etc/kubernetes/pki /var/lib/kube*/pki \
         -name '*.crt' 2>/dev/null |
         xargs --no-run-if-empty grep -l '^-----BEGIN CERTIFICATE-----'
         # no dollar, CR optional
