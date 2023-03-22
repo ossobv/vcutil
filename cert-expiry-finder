@@ -26,6 +26,11 @@ S='[^[:blank:]]'
 
 global_t0=$(date +%s)  # cache the "now" value
 
+umask 0077
+global_temp=$(mktemp)
+trap "rm '$global_temp'" EXIT
+
+
 enum_all_certs() {
     (
         enum_apache2_certs
@@ -201,23 +206,18 @@ enumerate_x509_expiry_seconds() {
 
 foreach_x509() {
     local line
-    umask 0077
-    temp=$(mktemp)
-    trap "rm '$temp'" EXIT
     awk '
         /^-----BEGIN CERTIFICATE-----/{buf="";start=1}
         /^-----END CERTIFICATE-----/{if(start){print buf};start=0}
         {if(start==2)buf=(buf $0);if(start)start=2}
     ' | while read -r line; do
-        cat >$temp <<EOF
+        cat >$global_temp <<EOF
 -----BEGIN CERTIFICATE-----
 $line
 -----END CERTIFICATE-----
 EOF
-        openssl x509 -in "$temp" "$@"
+        openssl x509 -in "$global_temp" "$@"
     done
-    rm "$temp"
-    trap - EXIT
 }
 
 date_to_unixtime() {
