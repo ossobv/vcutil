@@ -19,7 +19,8 @@
 # Amend the PATH so we're more likely to.
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-set -u  # skip -e; we do want some results in case of failure
+set -u    # skip -e; we do want some results in case of failure
+# set +H  # disable histexpand if you're running the stuff in your shell
 s='[[:blank:]]'
 S='[^[:blank:]]'
 
