@@ -77,7 +77,7 @@ enum_haproxy_certs() {
     find /etc/haproxy/ -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -e "
         /^$s*bind$s.*${s}ssl\($\|$s\)/!d
-        s/${s}crt\(-list\)\?$s\+/\n|/g" |
+        s/${s}\(ca-\(verify-\)\?file\|crl-file\|crt\(-list\)\?\)$s\+/\n|/g" |
     sed -e "/^|/!d;s/^.//;s/$s.*//" | while read f; do
       test -d "$f" && find "$f" -maxdepth 1 -type f || echo "$f"; done
 }
