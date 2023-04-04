@@ -70,7 +70,7 @@ enum_gitlab_certs() {
     sed -e "
         /^nginx[[].ssl_certificate.[]]/!d
         s/[^=]*=$s*[\"']\([^\"']*\)[\"'].*/\1/
-    " /etc/gitlab/gitlab.rb 2>/dev/null || true
+    " /etc/gitlab/gitlab.rb 2>/dev/null || true  # '"vimsynfix
 }
 
 enum_haproxy_certs() {
