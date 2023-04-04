@@ -228,7 +228,7 @@ foreach_crl() {
     ' | while read -r line; do
         cat >$global_temp <<EOF
 -----BEGIN X509 CRL-----
-$line
+$(echo "$line" | base64 -d | base64)
 -----END X509 CRL-----
 EOF
         openssl crl -in "$global_temp" "$@"
@@ -244,7 +244,7 @@ foreach_x509() {
     ' | while read -r line; do
         cat >$global_temp <<EOF
 -----BEGIN CERTIFICATE-----
-$line
+$(echo "$line" | base64 -d | base64)
 -----END CERTIFICATE-----
 EOF
         openssl x509 -in "$global_temp" "$@"
