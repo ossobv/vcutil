@@ -124,8 +124,9 @@ enum_openvpn_certs() {
     find /etc/openvpn /etc/openvpn-nl -maxdepth 2 -name '*.conf' 2>/dev/null |
     while read -r f; do
         local fpath certs cert
+        local keywords='ca\|cert\|crl-verify\|extra-certs'
         certs=$(cat "$f" | sed -ne "
-            s/^$s*\(ca\|cert\|crl-verify\)$s\+\([^[:blank:]#]*\).*/\2/p")
+            s/^$s*\($keywords\)$s\+\([^[:blank:]#]*\).*/\2/p")
         fpath=${f%/*}
         for cert in $certs; do
             test "${cert#/}" = "${cert}" && cert=$fpath/$cert
