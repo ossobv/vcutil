@@ -726,7 +726,12 @@ def get_from_secret_storage(section):
             res = [i for i in coll.search_items(attrs)]
 
         assert len(res) == 1, res
-        res[0].ensure_not_locked()
+        try:
+            res[0].ensure_not_locked()
+        except secretstorage.exceptions.LockedException:
+            dialog_dismissed = res[0].unlock()  # request user unlock
+            if dialog_dismissed:
+                raise
         user_pass = res[0].get_secret()
         user, password = b64decode(user_pass).decode('utf-8').split(':', 1)
         return (user, password)
