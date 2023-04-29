@@ -132,6 +132,10 @@ enum_openvpn_certs() {
             test "${cert#/}" = "${cert}" && cert=$fpath/$cert
             echo "$cert"
         done
+        # Also list the config itself.
+        # Maybe there are inline certs in <ca> and <cert> and <extra-cert>.
+        # The enumerate_x509_expiry_seconds will extract all certificates.
+        echo "$f"
     done
 }
 
