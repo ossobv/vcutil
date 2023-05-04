@@ -17,7 +17,7 @@ find "$path" \
     -regex '.*\.('\
 'asp|c|cc|cfg|conf|cpp|css|cxx|erb|go|'\
 'h|hpp|htm|html|j2|java|js|less|m4|md|'\
-'php|po|pp|py|rb|rst|'\
+'php|po|pp|py|rb|rs|rst|'\
 'sh|sls|sql|tpl|template|txt|xml|yaml|yml)' \
     '!' -name '*.min.*' \
     -print0 \
