@@ -194,11 +194,19 @@ def dpkg_l():
     """
     Return list of [(package_name, state), ...].
     """
+    # Check our/default arch
+    arch = check_english_output(['dpkg', '--print-architecture']).strip()
+    colon_arch = ':{}'.format(arch)  # ":amd64"
+    colon_arch_neg_len = -len(colon_arch)
+    without_default_arch = (lambda x: (
+        x[0:colon_arch_neg_len] if x.endswith(colon_arch) else x))
+
+    # Get listing, condense to [(package, state)] list
     out = check_english_output(['dpkg', '-l'])
     out = out.split('\n')[1:]
     out = [i for i in out if i and not i.startswith(tuple('|+'))]
-    out = [list(reversed(i.split()))[-2:] for i in out]  # only "name", "ii"
-    out = [(i[0].split(':', 1)[0], i[1]) for i in out]   # drop ":amd64"
+    out = [list(reversed(i.split()))[-2:] for i in out]       # ("name", "ii")
+    out = [(without_default_arch(i[0]), i[1]) for i in out]   # drop ":amd64"
     return out
 
 
@@ -217,13 +225,13 @@ def apt_cache_policy(package_names):
         if not line.startswith(' '):
             if buf:
                 blob = '\n'.join(buf)
-                name = blob.split(':', 1)[0]
+                name = blob.split(':\n', 1)[0]
                 yield (name, blob)
                 buf = []
         buf.append(line)
     if buf:
         blob = '\n'.join(buf)
-        name = blob.split(':', 1)[0]
+        name = blob.split(':\n', 1)[0]
         yield (name, blob)
 
 
