@@ -59,7 +59,7 @@ CAT_NON_URL = (
 def check_english_output(command, **kwargs):
     assert 'env' not in kwargs, kwargs
     # Wipe all of LANG, LC_ALL, LC_MESSAGES to get C locale.
-    return check_output(command, env={}, **kwargs)
+    return check_output(command, env={}, **kwargs).decode('utf-8')
 
 
 class VersionState(object):
@@ -98,9 +98,8 @@ class Package(object):
                   500 http://example.com/ubuntu bionic/osso i386 Packages
         """
         if self.policy is None:
-            out = check_english_output(['apt-cache', 'policy', self.name])
-            out = out.decode('utf-8')
-            self.policy = out
+            self.policy = check_english_output(
+                ['apt-cache', 'policy', self.name])
         return self.policy
 
     def get_version_state(self):
@@ -196,7 +195,6 @@ def dpkg_l():
     Return list of [(package_name, state), ...].
     """
     out = check_english_output(['dpkg', '-l'])
-    out = out.decode('utf-8')
     out = out.split('\n')[1:]
     out = [i for i in out if i and not i.startswith(tuple('|+'))]
     out = [list(reversed(i.split()))[-2:] for i in out]  # only "name", "ii"
@@ -212,8 +210,7 @@ def apt_cache_policy(package_names):
         fp.write('\0'.join(package_names).encode('utf-8'))
         fp.seek(0)
         out = check_english_output(
-            ['xargs', '-0', 'apt-cache', 'policy'], stdin=fp)
-    out = out.decode('utf-8').strip()
+            ['xargs', '-0', 'apt-cache', 'policy'], stdin=fp).strip()
     out = out.split('\n')
     buf = []
     for line in out:
