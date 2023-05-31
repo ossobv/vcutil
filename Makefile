@@ -14,6 +14,7 @@ BINS = \
 	censored-for-email \
 	cert-expiry-check \
 	cert-expiry-finder \
+	ctre \
 	dbschemadiff \
 	difftac \
 	easycert \

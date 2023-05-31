@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+# ctre (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Enhanced CTR (containerd CLI)
+#
+# Right now it only does pruning of unused images.
+#
+# Usage:
+#
+#     ctre prune                # lists all images to prune
+#     ctre prune -f             # prunes the images
+#
+from collections import namedtuple
+from re import compile
+from subprocess import check_output
+from sys import argv, stderr
+from time import sleep
+from warnings import warn
+
+
+KEEP_IF_YOUNGER_THAN = (14 * 86400)
+TABSPLIT_RE = compile(r'\t+')
+SIZE_UNITS = {
+    'B': 1,
+    'kB': 1024,
+    'MB': 1024 * 1024,
+    'GB': 1024 * 1024 * 1024,
+    ' KiB': 1024,
+    ' MiB': 1024 * 1024,
+}
+
+HAS_WARNED = set()
+
+Blob = namedtuple('Blob', 'ns digest size age')
+Image = namedtuple('Image', 'ns digest ref size age')
+
+
+def split_by_header(lines):
+    """
+    Return lines (with header) as dictionaries
+
+    In ["KEY1  KEY2  KEY3", "VAL 1 VAL 2 VAL 3"]
+    Out [{"KEY1": "VAL 1", "KEY2": "VAL 2", "KEY3": "VAL 3"}]
+
+    .. or ..
+
+    In ["KEY1<TAB>KEY2<TAB>KEY3", "VAL 1<TAB>VAL 2<TAB>VAL 3"]
+    Out [{"KEY1": "VAL 1", "KEY2": "VAL 2", "KEY3": "VAL 3"}]
+    """
+    header = lines[0]
+    parts = header.strip().split()
+    ret = []
+
+    if '\t' in header:
+        for line in lines[1:]:
+            data = TABSPLIT_RE.split(line)
+            assert len(data) == len(parts), (parts, data)
+            item = {}
+            for n, part in enumerate(parts):
+                item[part] = data[n]
+            ret.append(item)
+
+    else:
+        sizes = []
+        last_idx = 0
+        for next_part in parts[1:]:
+            idx = header.find(next_part, last_idx)
+            assert idx > 0, (next_part, idx, header)
+            assert (
+                len(header[idx:]) == len(next_part) or
+                header[idx + len(next_part)] in ' \t'), (
+                    next_part, idx, header)
+            assert header[idx - 1] in ' \t', (next_part, idx, header)
+            sizes.append((last_idx, idx))
+            last_idx = idx
+        sizes.append((last_idx, -1))
+
+        for line in lines[1:]:
+            item = {}
+            for part, size in zip(parts, sizes):
+                item[part] = line[size[0]:size[1]].rstrip()
+            ret.append(item)
+
+    return ret
+
+
+def from_size(s):
+    size = []
+    for n, ch in enumerate(s):
+        if ch not in '0123456789.':
+            size = float(''.join(size))
+            unit = s[n:]
+            break
+        else:
+            size.append(ch)
+
+    return int(SIZE_UNITS[unit] * size)
+
+
+def from_age(s):
+    if s.endswith(' months'):
+        n, months = s.split()
+        return int(int(n) * 86400 * 365.25 / 12)
+    if s.endswith(' weeks'):
+        n, weeks = s.split()
+        return int(int(n) * 86400 * 7)
+    if s.endswith(' days'):
+        n, days = s.split()
+        return int(int(n) * 86400)
+    if s.endswith(' hours'):
+        n, hours = s.split()
+        return int(int(n) * 3600)
+    else:
+        raise NotImplementedError(s)
+    return s
+
+
+def namespaces():
+    out = check_output(['ctr', 'namespace', 'ls', '--quiet']).decode().strip()
+    return out.split('\n')
+
+
+def blobs(ns):
+    def dict_to_blob(ns, d):
+        assert len(d) == 4, d
+        return Blob(
+            ns=ns,
+            digest=d['DIGEST'],
+            size=from_size(d['SIZE']),
+            age=from_age(d['AGE']),
+        )
+
+    out = check_output(['ctr', '-n', ns, 'content', 'ls']).decode().strip()
+    # DIGEST  SIZE  AGE  LABELS
+    # sha..   123K  1 mo ..
+    items = split_by_header(out.split('\n'))
+    blobs = [dict_to_blob(ns, item) for item in items]
+    return dict((blob.digest, blob) for blob in blobs)
+
+
+def images(ns):
+    def dict_to_image(ns, item, blob_dict):
+        blob = blob_dict[item['DIGEST']]
+        # assert from_size(item['SIZE']) == blob.size, (item['SIZE'], blob)
+        return Image(
+            ns=ns,
+            digest=blob.digest,
+            ref=item['REF'],
+            size=from_size(item['SIZE']),
+            age=blob.age,
+        )
+
+    blob_dict = blobs(ns)
+
+    out = check_output(['ctr', '-n', ns, 'image', 'ls']).decode().strip()
+    # REF  TYPE  DIGEST  SIZE  PLATFORMS  LABELS
+    # name       sha..   1 MiB ...        ...
+    items = split_by_header(out.split('\n'))
+    images = [dict_to_image(ns, item, blob_dict) for item in items]
+    return images
+
+
+def images_not_in_use(ns):
+    out = check_output(['ctr', '-n', ns, 'container', 'ls']).decode().strip()
+    # CONTAINER  IMAGE  RUNTIME
+    items = split_by_header(out.split('\n'))
+    images_in_use = set([item['IMAGE'] for item in items])
+
+    image_list = images(ns)
+    image_dict = dict((image.ref, image.digest) for image in image_list)
+    image_digest_in_use = set()
+    for image_ref in images_in_use:
+        try:
+            image_digest_in_use.add(image_dict[image_ref])
+        except KeyError:
+            if image_ref not in HAS_WARNED:
+                if image_ref.startswith('k8s.gcr.io/pause:'):
+                    pass
+                else:
+                    warn(f'Container ref {image_ref!r} not found in images')
+                    HAS_WARNED.add(image_ref)
+
+    ret = []
+    for image in image_list:
+        if image.digest not in image_digest_in_use:
+            ret.append(image)
+
+    return ret
+
+
+def prunable_images(ns):
+    ret = []
+    for image in images_not_in_use(ns):
+        if image.age >= KEEP_IF_YOUNGER_THAN:
+            ret.append(image)
+    return ret
+
+
+def get_all_prunable_images():
+    images = []
+    for ns in namespaces():
+        for image in prunable_images(ns):
+            images.append((ns, image.ref))
+    return images
+
+
+def prunable_images_after_double_check():
+    prunable = set(get_all_prunable_images())
+    left = 15
+
+    while left > 0 and prunable:
+        if stderr.isatty():
+            msg = 'double check to avoid cleaning mid-restart'
+            stderr.write(f'\x1b[1K\r({msg}... {left} secs)')
+            stderr.flush()
+
+        sleep(1)
+        left -= 1
+
+        prunable_next = set(get_all_prunable_images())
+        prunable &= prunable_next  # only keep those in both lists
+
+    if stderr.isatty():
+        stderr.write('\x1b[1K\r')
+        stderr.flush()
+
+    return list(sorted(prunable))
+
+
+def remove_images(images):
+    for ns, ref in images:
+        ret = check_output(
+            ['ctr', '-n', ns, 'image', 'rm', ref]).decode().strip()
+        print('(deleted)', ns, ret)
+
+
+if __name__ == '__main__':
+    if len(argv) in (2, 3) and argv[1] == 'prune':
+        force = (len(argv) == 3 and argv[2] in ('-f', '--force'))
+        res = prunable_images_after_double_check()
+        if res:
+            print('NS', 'REF_TO_PRUNE')
+            for ns, image in res:
+                print(ns, image)
+            yn = ('y' if force else '')
+            while not yn.strip() or yn.strip() not in 'YyNn':
+                yn = input('Prune (y/n)? ')
+            if yn.lower() in 'Yy':
+                remove_images(res)
+    else:
+        raise ValueError('please use: ctre prune [-f]')
