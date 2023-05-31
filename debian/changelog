@@ -1,3 +1,21 @@
+vcutil (1.38) stable; urgency=low
+
+  * Additions:
+    - ctre: Add tool for pruning containerd images
+
+  * Improvements:
+    - apt-find-foreign: Cope with package:i386 on amd64 arch systems
+    - apt-find-foreign: Move utf-8 encoding to common place
+    - cert-expiry-finder: Also check inline certs in openvpn client configs
+    - cert-expiry-finder: Also find openvpn extra-certs
+    - cert-expiry-finder: Fix ~1500 line length limit on older openssl
+    - cert-expiry-finder: Fix mawk (non-gawk) compatibility
+    - cert-expiry-finder: Fix vim syntax highlighting in older vim
+    - wgrep: Add .rs for rust source files
+    - zabdig: Unlock secretstorage if still locked (somehow)
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 31 May 2023 15:42:46 +0200
+
 vcutil (1.37) stable; urgency=low
 
   * Additions:
