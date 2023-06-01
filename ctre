@@ -363,7 +363,7 @@ def record_image_starts():
                 print('-', unixtime, event.ns, image_ref)
 
 
-if __name__ == '__main__':
+def main():
     if len(argv) in (2, 3) and argv[1] == 'prune':
         force = (len(argv) == 3 and argv[2] in ('-f', '--force'))
         res = prunable_images_after_double_check()
@@ -382,3 +382,7 @@ if __name__ == '__main__':
         record_image_starts()
     else:
         raise ValueError('please use: ctre prune [-f]')
+
+
+if __name__ == '__main__':
+    main()
