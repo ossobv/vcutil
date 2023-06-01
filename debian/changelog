@@ -1,3 +1,10 @@
+vcutil (1.39) stable; urgency=low
+
+  * Improvements:
+    - ctre: Improvements. Now with a daemon.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 01 Jun 2023 11:12:35 +0200
+
 vcutil (1.38) stable; urgency=low
 
   * Additions:
