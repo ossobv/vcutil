@@ -35,6 +35,7 @@ SIZE_UNITS = {
 }
 
 HAS_WARNED = set()
+IMAGE_STARTS_DB = '/var/spool/ctre/image_starts'
 
 Blob = namedtuple('Blob', 'ns digest size age')
 Event = namedtuple('Event', 'unixtime ns action data')
@@ -214,6 +215,11 @@ def prunable_images_after_double_check():
     prunable = set(get_all_prunable_images())
     left = 15
 
+    # Load data collected by ctre record-image-starts daemon
+    kv = load_image_starts(max_age=KEEP_IF_YOUNGER_THAN)
+    used_to_start_a_container_recently = set(kv.keys())
+    prunable -= used_to_start_a_container_recently
+
     while left > 0 and prunable:
         if stderr.isatty():
             msg = 'double check to avoid cleaning mid-restart'
@@ -295,26 +301,37 @@ def to_kv(kv):
     return ''.join(ret)
 
 
-def update_image_starts(unixtime, ns, image_ref):
-    filename = '/var/spool/ctre/image_starts'
-    temp = f'{filename}.tmp'
+def load_image_starts(max_age):
+    filename = IMAGE_STARTS_DB
 
     # Load
     try:
         with open(filename, 'r') as fp:
             all_ = fp.read()
     except FileNotFoundError:
-        all_ = ''
+        return {}
+
+    kv = from_kv(all_)
 
     # Prune
-    old = time() - (14 * 86400)  # 14 days ago
-    kv = from_kv(all_)
+    old = time() - max_age
     to_rm = set()
     for k, v in kv.items():
         if float(v) < old:
             to_rm.add(k)
     for rm in to_rm:
         del kv[rm]
+
+    return kv
+
+
+def update_image_starts(unixtime, ns, image_ref):
+    filename = IMAGE_STARTS_DB
+    temp = f'{filename}.tmp'
+
+    # Load
+    kv = load_image_starts(
+        max_age=max(KEEP_IF_YOUNGER_THAN, 14 * 86400))  # prune to 14 days
 
     # Add
     kv[(ns, image_ref)] = unixtime
