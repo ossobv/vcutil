@@ -1,0 +1,15 @@
+[Unit]
+Description=ctre daemon listening for container start events
+Documentation=https://github.com/ossobv/vcutil
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/default/ctre
+ExecStart=/bin/sh -c "/bin/test ${RECORD_IMAGE_STARTS:-0} -lt 1 || exec /usr/bin/ctre record-image-starts"
+Restart=on-failure
+RestartSec=5s
+SyslogIdentifier=ctre
+
+[Install]
+WantedBy=multi-user.target

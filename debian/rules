@@ -12,6 +12,10 @@ override_dh_auto_install:
 	dh_auto_install -- BINDIR=/usr/bin SBINDIR=/usr/sbin
 
 override_dh_installinit:
+	# Using dh_installinit instead of dh_installsystemd because it
+	# also installs the /etc/default file.
+	dh_installinit --name=ctre
+	# tcpdump247 is an old school init script.
 	dh_installinit --name=tcpdump247
 
 override_dh_builddeb:
