@@ -213,21 +213,24 @@ def get_all_prunable_images():
 
 def prunable_images_after_double_check():
     prunable = set(get_all_prunable_images())
-    left = 15
+    tnow = time()
+    tmax = tnow + 15
 
     # Load data collected by ctre record-image-starts daemon
     kv = load_image_starts(max_age=KEEP_IF_YOUNGER_THAN)
     used_to_start_a_container_recently = set(kv.keys())
     prunable -= used_to_start_a_container_recently
 
-    while left > 0 and prunable:
+    while tnow <= tmax and prunable:
+        left = int(tmax - tnow)
+
         if stderr.isatty():
             msg = 'double check to avoid cleaning mid-restart'
             stderr.write(f'\x1b[1K\r({msg}... {left} secs)')
             stderr.flush()
 
-        sleep(1)
-        left -= 1
+        sleep(1.5)
+        tnow = time()
 
         prunable_next = set(get_all_prunable_images())
         prunable &= prunable_next  # only keep those in both lists
