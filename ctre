@@ -354,6 +354,8 @@ def update_image_starts(unixtime, ns, image_ref):
 def record_image_starts():
     print('Listening for container start events')
     with Popen(['ctr', 'event'], stdout=PIPE) as fp:
+        ignored_events = set()
+
         for event in event_lines(readlines(fp.stdout)):
             # /tasks/create is another option, or
             # /containers/create (with id, not container_id), but
@@ -367,6 +369,10 @@ def record_image_starts():
                     print('-', unixtime, event.ns, image_ref)
                 else:
                     print('-', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
+
+            elif event.action not in ignored_events:
+                print(f'- (seeing and ignoring event action {event.action!r})')
+                ignored_events.add(event.action)
 
 
 def main():
