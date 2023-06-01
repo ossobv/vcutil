@@ -355,12 +355,18 @@ def record_image_starts():
     print('Listening for container start events')
     with Popen(['ctr', 'event'], stdout=PIPE) as fp:
         for event in event_lines(readlines(fp.stdout)):
+            # /tasks/create is another option, or
+            # /containers/create (with id, not container_id), but
+            # when invoked from dockerd they have no containerd images.
             if event.action == '/tasks/exec-added':
                 container_id = event.data['container_id']
                 unixtime = int(event.unixtime)
                 image_ref = container_image_ref(event.ns, container_id)
-                update_image_starts(unixtime, event.ns, image_ref)
-                print('-', unixtime, event.ns, image_ref)
+                if image_ref:
+                    update_image_starts(unixtime, event.ns, image_ref)
+                    print('-', unixtime, event.ns, image_ref)
+                else:
+                    print('-', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
 
 
 def main():
