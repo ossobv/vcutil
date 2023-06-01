@@ -9,12 +9,17 @@
 #
 #     ctre prune                # lists all images to prune
 #     ctre prune -f             # prunes the images
+#     ctre record-image-starts  # daemon process that keeps track of starts
 #
 from collections import namedtuple
+from datetime import datetime
+from json import loads
 from re import compile
-from subprocess import check_output
+from os import makedirs, rename
+from os.path import dirname
+from subprocess import PIPE, Popen, check_output
 from sys import argv, stderr
-from time import sleep
+from time import sleep, time
 from warnings import warn
 
 
@@ -32,6 +37,7 @@ SIZE_UNITS = {
 HAS_WARNED = set()
 
 Blob = namedtuple('Blob', 'ns digest size age')
+Event = namedtuple('Event', 'unixtime ns action data')
 Image = namedtuple('Image', 'ns digest ref size age')
 
 
@@ -234,6 +240,109 @@ def remove_images(images):
         print('(deleted)', ns, ret)
 
 
+def container_image_ref(ns, container):
+    out = (
+        check_output(['ctr', '-n', ns, 'container', 'info', container])
+        .decode('utf-8').strip())
+    data = loads(out)
+    return data['Image']
+
+
+def readlines(fp):
+    ret = []
+    while True:
+        ch = fp.read(1)  # or os.read(fp.fileno(), 1)
+        if not ch:
+            raise ValueError('got EOF from ctr event')
+        ret.append(ch)
+        if ch == b'\n':
+            yield b''.join(ret)
+            ret = []
+
+
+def event_lines(it):
+    for line in it:
+        line = line.decode('utf-8', 'replace')
+        date, time, toff, tzone, ns, action, data = line.split(' ', 6)
+        time = time[0:15]  # strip to microseconds: "%H:%M:%S.%fffff"
+        when = datetime.strptime(
+            f'{date} {time} {toff} {tzone}', '%Y-%m-%d %H:%M:%S.%f %z %Z')
+        unixtime = when.timestamp()
+        data = loads(data)
+        yield Event(unixtime=unixtime, ns=ns, action=action, data=data)
+
+
+def from_kv(s):
+    s = s.strip()
+    if not s:
+        return {}
+
+    ret = {}
+    for line in s.split('\n'):
+        v, k = line.split(' ', 1)
+        if ' ' in k:
+            k = tuple(k.split())
+        ret[k] = v
+
+    return ret
+
+
+def to_kv(kv):
+    ret = []
+    for k, v in sorted(kv.items()):
+        flatk = ' '.join(k)
+        ret.append(f'{v} {flatk}\n')
+    return ''.join(ret)
+
+
+def update_image_starts(unixtime, ns, image_ref):
+    filename = '/var/spool/ctre/image_starts'
+    temp = f'{filename}.tmp'
+
+    # Load
+    try:
+        with open(filename, 'r') as fp:
+            all_ = fp.read()
+    except FileNotFoundError:
+        all_ = ''
+
+    # Prune
+    old = time() - (14 * 86400)  # 14 days ago
+    kv = from_kv(all_)
+    to_rm = set()
+    for k, v in kv.items():
+        if float(v) < old:
+            to_rm.add(k)
+    for rm in to_rm:
+        del kv[rm]
+
+    # Add
+    kv[(ns, image_ref)] = unixtime
+
+    # Save
+    all_ = to_kv(kv)
+    try:
+        with open(temp, 'w') as fp:
+            fp.write(all_)
+    except FileNotFoundError:
+        makedirs(dirname(temp))
+        with open(temp, 'w') as fp:
+            fp.write(all_)
+    rename(temp, filename)
+
+
+def record_image_starts():
+    print('Listening for container start events')
+    with Popen(['ctr', 'event'], stdout=PIPE) as fp:
+        for event in event_lines(readlines(fp.stdout)):
+            if event.action == '/tasks/exec-added':
+                container_id = event.data['container_id']
+                unixtime = int(event.unixtime)
+                image_ref = container_image_ref(event.ns, container_id)
+                update_image_starts(unixtime, event.ns, image_ref)
+                print('-', unixtime, event.ns, image_ref)
+
+
 if __name__ == '__main__':
     if len(argv) in (2, 3) and argv[1] == 'prune':
         force = (len(argv) == 3 and argv[2] in ('-f', '--force'))
@@ -247,5 +356,9 @@ if __name__ == '__main__':
                 yn = input('Prune (y/n)? ')
             if yn.lower() in 'Yy':
                 remove_images(res)
+    elif len(argv) == 2 and argv[1] == 'record-image-starts':
+        # Listen for events, check for container-add, lookup container image,
+        # store last-used-time.
+        record_image_starts()
     else:
         raise ValueError('please use: ctre prune [-f]')
