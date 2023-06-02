@@ -44,6 +44,7 @@ BINS = \
 	mysql2csv \
 	mysqlparseslow \
 	mysql-slave-skip-one-table \
+	mysql-slave-sync-table \
 	pdns-sql-slave-prune \
 	psdiff \
 	pve-macaddr-security \

@@ -14,7 +14,7 @@
 #
 # It will:
 # - check if SQL slaving is stopped because of an INSERT/UPDATE/DELETE
-#   constraint table (duplicate key or missing record);
+#   constraint on the table (duplicate key or missing record);
 # - if so, it will "SET GLOBAL sql_slave_skip_one = 1" + "START SLAVE";
 # - this will loop until you stop the script.
 #
@@ -28,6 +28,10 @@
 #
 #   mysql-slave-skip-one-table /etc/default/my.cnf client DATABASE TABLE
 #
+# See also:
+#
+#   mysql-slave-sync-table
+#
 from configparser import ConfigParser
 from datetime import datetime
 from fnmatch import fnmatch
@@ -39,6 +43,20 @@ from MySQLdb import connect
 
 def now():
     return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+
+def read_my_cnf(conffile, section):
+    # Read mysql config file:
+    # [section]
+    # host=host
+    # user=user
+    # password=password
+    confparser = ConfigParser(interpolation=None)
+    assert confparser.read([conffile]) == [conffile], (
+        f'Error reading {conffile!r}')
+    assert section in confparser.sections(), confparser.sections()
+    return [
+        confparser[section][i] for i in ('host', 'user', 'password')]
 
 
 def get_slave_status(cursor):
@@ -119,18 +137,6 @@ def sql_slave_skip_loop(cursor, reasons):
 
 
 def sql_slave_skip_start(conffile, section, database, table):
-    # Read mysql config file:
-    # [section]
-    # host=host
-    # user=user
-    # password=password
-    confparser = ConfigParser(interpolation=None)
-    assert confparser.read([conffile]) == [conffile], (
-        f'Error reading {conffile!r}')
-    assert section in confparser.sections(), confparser.sections()
-    host, user, password = [
-        confparser[section][i] for i in ('host', 'user', 'password')]
-
     # Define valid reasons to skip a single slave statement
     reasons = [
         make_slaving_is_down_because_of_sql_reason(1062, (
@@ -174,6 +180,7 @@ def sql_slave_skip_start(conffile, section, database, table):
         exit()
 
     # Open connection, start infinite loop
+    host, user, password = read_my_cnf(conffile, section)
     conn = connect(host=host, user=user, password=password)
     with conn.cursor() as cursor:
         sql_slave_skip_loop(cursor, reasons)
