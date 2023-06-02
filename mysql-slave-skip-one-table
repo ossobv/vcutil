@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+# mysql-slave-skip-one-table (part of ossobv/vcutil) // wdoekes/2023
+#   // Public Domain
+#
+# This mysql-slave-skip-one-table script is a stop gap to force
+# old-fashioned MySQL replication to continue in the face of errors like:
+#
+#   Last_SQL_Error: Could not execute Delete_rows_v1 event on table
+#     mydatabase.mytable; Can't find record in 'mytable', Error_code: 1032;
+#     handler error HA_ERR_KEY_NOT_FOUND; the event's master log
+#     mariadb-bin.009713, end_log_pos 22310985
+#
+# If you're confident you can skip these, you can run this script.
+#
+# It will:
+# - check if SQL slaving is stopped because of an INSERT/UPDATE/DELETE
+#   constraint table (duplicate key or missing record);
+# - if so, it will "SET GLOBAL sql_slave_skip_one = 1" + "START SLAVE";
+# - this will loop until you stop the script.
+#
+# It will NOT:
+# - make things in sync again.
+#
+# But if you're lucky you can get the slaving of the rest of the DB in
+# sync. And in the mean time you figure out how to fix this one table.
+#
+# Usage:
+#
+#   mysql-slave-skip-one-table /etc/default/my.cnf client DATABASE TABLE
+#
+from configparser import ConfigParser
+from datetime import datetime
+from fnmatch import fnmatch
+from pprint import pprint
+from time import sleep
+
+from MySQLdb import connect
+
+
+def now():
+    return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+
+def get_slave_status(cursor):
+    cursor.execute('SHOW SLAVE STATUS')
+    columns = [column[0] for column in cursor.description]
+    res = cursor.fetchall()
+    assert len(res) == 1, res
+    res = res[0]
+    ret = {}
+    for i, c in enumerate(res):
+        ret[columns[i]] = c
+    return ret
+
+
+def slaving_is_up(slaving):
+    return bool(
+        slaving['Slave_IO_Running'] == 'Yes' and
+        slaving['Slave_SQL_Running'] == 'Yes')
+
+
+def slaving_is_down_because_of_sql_error(slaving):
+    return bool(
+        slaving['Slave_IO_Running'] == 'Yes' and
+        slaving['Slave_SQL_Running'] == 'No' and
+        slaving['Last_Errno'] == slaving['Last_SQL_Errno'] and
+        slaving['Last_Error'] == slaving['Last_SQL_Error'])
+
+
+def make_slaving_is_down_because_of_sql_reason(error_code, error_text):
+    def _slaving_is_down_because_of_sql_reason(slaving):
+        if not slaving_is_down_because_of_sql_error(slaving):
+            return False
+
+        if slaving['Last_SQL_Errno'] != error_code:
+            return False
+
+        return fnmatch(slaving['Last_SQL_Error'], error_text)
+
+    return _slaving_is_down_because_of_sql_reason
+
+
+def sql_slave_skip_one(cursor):
+    cursor.execute('SET GLOBAL sql_slave_skip_counter = 1')
+    cursor.execute('START SLAVE')
+
+
+def sql_slave_skip_if_reasons_match(cursor, reasons):
+    slaving = get_slave_status(cursor)
+
+    if slaving_is_up(slaving):
+        return False
+
+    if any(reason(slaving) for reason in reasons):
+        print(f'{now()}: {slaving["Last_SQL_Error"]} -- skipping..')
+        sql_slave_skip_one(cursor)
+        return True
+
+    print(f'{now()}: slaving is down because of something unhandled...')
+    pprint(slaving)
+    exit(1)
+
+
+def sql_slave_skip_loop(cursor, reasons):
+    no_skips = 0
+
+    while True:
+        if sql_slave_skip_if_reasons_match(cursor, reasons):
+            no_skips = 0
+        else:
+            no_skips += 1
+
+        if no_skips >= 500:
+            if no_skips == 500:
+                print(f'{now()}: nothing to skip for a while, starting sleep')
+                sleep(0.2)
+            else:
+                sleep(1)
+
+
+def sql_slave_skip_start(conffile, section, database, table):
+    # Read mysql config file:
+    # [section]
+    # host=host
+    # user=user
+    # password=password
+    confparser = ConfigParser(interpolation=None)
+    assert confparser.read([conffile]) == [conffile], (
+        f'Error reading {conffile!r}')
+    assert section in confparser.sections(), confparser.sections()
+    host, user, password = [
+        confparser[section][i] for i in ('host', 'user', 'password')]
+
+    # Define valid reasons to skip a single slave statement
+    reasons = [
+        make_slaving_is_down_because_of_sql_reason(1062, (
+            f"Could not execute Write_rows_v1 event on table "
+            f"{database}.{table}; Duplicate entry '*' "
+            f"for key '*', Error_code: 1062; handler error "
+            f"HA_ERR_FOUND_DUPP_KEY; the event's master log "
+            f"mariadb-bin.*, end_log_pos *")),
+        make_slaving_is_down_because_of_sql_reason(1032, (
+            f"Could not execute Update_rows_v1 event on table "
+            f"{database}.{table}; Can't find record in "
+            f"'{table}', Error_code: 1032; handler error "
+            f"HA_ERR_KEY_NOT_FOUND; the event's master log "
+            f"mariadb-bin.*, end_log_pos *")),
+        make_slaving_is_down_because_of_sql_reason(1032, (
+            f"Could not execute Delete_rows_v1 event on table "
+            f"{database}.{table}; Can't find record in "
+            f"'{table}', Error_code: 1032; handler error "
+            f"HA_ERR_KEY_NOT_FOUND; the event's master log "
+            f"mariadb-bin.*, end_log_pos *")),
+    ]
+
+    # Test reasons to skip a single slave statement
+    if 0:
+        test_error_string = (
+            f"Could not execute Delete_rows_v1 event on table "
+            f"{database}.{table}; Can't find record in "
+            f"'{table}', Error_code: 1032; handler error "
+            f"HA_ERR_KEY_NOT_FOUND; the event's master log "
+            f"mariadb-bin.012345, end_log_pos 12345")
+        print('TEST REASON:', test_error_string)
+        test_slaving = {
+            'Last_Errno': 1032,
+            'Last_Error': test_error_string,
+            'Last_SQL_Errno': 1032,
+            'Last_SQL_Error': test_error_string,
+            'Slave_IO_Running': 'Yes',
+            'Slave_SQL_Running': 'No',
+        }
+        print('TEST RESULT:', [reason(test_slaving) for reason in reasons])
+        exit()
+
+    # Open connection, start infinite loop
+    conn = connect(host=host, user=user, password=password)
+    with conn.cursor() as cursor:
+        sql_slave_skip_loop(cursor, reasons)
+
+
+if __name__ == '__main__':
+    import sys
+
+    if len(sys.argv) == 5:
+        sql_slave_skip_start(*sys.argv[1:])
+    else:
+        print(
+            f'Usage: {sys.argv[0]} /etc/mysql/debian.cnf client '
+            f'DATABASE TABLE', file=sys.stderr)
+        exit(1)

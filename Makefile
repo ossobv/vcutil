@@ -43,6 +43,7 @@ BINS = \
 	make-master-secret-log \
 	mysql2csv \
 	mysqlparseslow \
+	mysql-slave-skip-one-table \
 	pdns-sql-slave-prune \
 	psdiff \
 	pve-macaddr-security \
