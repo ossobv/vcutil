@@ -441,8 +441,7 @@ class ZInterface(object):
             'params': params,
             'id': self.postid,
         }
-        if self.token:
-            data['auth'] = self.token
+        data['auth'] = self.token  # can be 'null'
         return self._zabbix_post(self.url, data)
 
     def _zabbix_post(self, url, data):
@@ -477,7 +476,7 @@ class ZInterface(object):
                 self.token = self._zabbix_call(
                     'user.login',
                     PrivacyDict(
-                        user=self.username,
+                        username=self.username,  # user->username since 6.0+
                         password=self.password))
             except ZInterfaceError as e:
                 raise ZLoginError(*e.args)
@@ -660,7 +659,7 @@ class ZInterface(object):
             # host instead.
             proxies = self._zabbix_call(
                 'proxy.get',
-                {'output': ['host', 'proxy_address']})
+                {'output': ['host', 'proxy_address', 'proxyid']})
 
             try:
                 self._get_proxies = dict(
