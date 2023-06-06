@@ -105,6 +105,9 @@ def from_size(s):
 
 
 def from_age(s):
+    if s.endswith(' years'):
+        n, years = s.split()
+        return int(int(n) * 86400 * 365.25)
     if s.endswith(' months'):
         n, months = s.split()
         return int(int(n) * 86400 * 365.25 / 12)
