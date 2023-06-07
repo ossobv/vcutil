@@ -11,7 +11,7 @@
 #     ctre prune -f             # prunes the images
 #     ctre record-image-starts  # daemon process that keeps track of starts
 #
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 from datetime import datetime
 from json import loads
 from re import compile
@@ -195,12 +195,32 @@ def images_not_in_use(ns):
                     warn(f'Container ref {image_ref!r} not found in images')
                     HAS_WARNED.add(image_ref)
 
-    ret = []
+    # Order by digest
+    by_digest = defaultdict(list)
     for image in image_list:
-        if image.digest not in image_digest_in_use:
-            ret.append(image)
+        by_digest[image.digest].append(image)
 
-    return ret
+    # Prepare results
+    not_in_use = []
+    for image_digest, images_for_digest in by_digest.items():
+        assert images_for_digest, images_for_digest
+
+        if image_digest not in image_digest_in_use:
+            not_in_use.extend(images_for_digest)
+        else:
+            # For those that _are_ in use, report about those with multiple
+            # labels.
+            refs = [
+                image.ref for image in images_for_digest if (
+                    not image.ref.startswith('sha256:') and  # sha256:abc..
+                    '@' not in image.ref)]                   # img@sha256:abc..
+            if len(refs) > 1:
+                image = images_for_digest[0]
+                warn(
+                    f'Dupe ref found for ns {image.ns} image {image.digest}, '
+                    f'keeping both: {refs}')
+
+    return not_in_use
 
 
 def prunable_images(ns):
