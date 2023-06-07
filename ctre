@@ -16,10 +16,11 @@ from datetime import datetime
 from json import loads
 from re import compile
 from os import makedirs, rename
-from os.path import dirname
+from os.path import dirname, basename
 from subprocess import PIPE, Popen, check_output
 from sys import argv, stderr
 from time import sleep, time
+import warnings
 from warnings import warn
 
 
@@ -401,6 +402,24 @@ def record_image_starts():
             elif event.action not in ignored_events:
                 print(f'- (seeing and ignoring event action {event.action!r})')
                 ignored_events.add(event.action)
+
+
+def formatwarning(message, category, filename, lineno, line=None):
+    """
+    Override default Warning layout, from:
+
+        /PATH/TO/ctre:123: UserWarning:
+            Dupe ref found for image sha256:113...
+          warn(
+
+    To:
+
+        ctre:123: UserWarning: Dupe ref found for image sha256:abc...
+    """
+    return '{basename}:{lineno}: {category}: {message}\n'.format(
+        basename=basename(filename), lineno=lineno,
+        category=category.__name__, message=message)
+warnings.formatwarning = formatwarning  # noqa
 
 
 def main():
