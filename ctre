@@ -216,10 +216,12 @@ def images_not_in_use(ns):
                     not image.ref.startswith('sha256:') and  # sha256:abc..
                     '@' not in image.ref)]                   # img@sha256:abc..
             if len(refs) > 1:
+                all_refs = ' + '.join(sorted(
+                    image.ref for image in images_for_digest))
                 image = images_for_digest[0]
                 warn(
-                    f'Dupe ref found for ns {image.ns} image {image.digest}, '
-                    f'keeping both: {refs}')
+                    f'Dupe refs found for ns {image.ns} image {image.digest}, '
+                    f'keeping all: {all_refs}')
 
     return not_in_use
 
