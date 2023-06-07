@@ -206,22 +206,40 @@ def images_not_in_use(ns):
     for image_digest, images_for_digest in by_digest.items():
         assert images_for_digest, images_for_digest
 
-        if image_digest not in image_digest_in_use:
-            not_in_use.extend(images_for_digest)
-        else:
+        if image_digest in image_digest_in_use:
             # For those that _are_ in use, report about those with multiple
-            # labels.
-            refs = [
-                image.ref for image in images_for_digest if (
-                    not image.ref.startswith('sha256:') and  # sha256:abc..
-                    '@' not in image.ref)]                   # img@sha256:abc..
-            if len(refs) > 1:
+            # labels. We expect:
+            # - img:tag
+            # - img@sha256:abc..
+            # - sha256:abc..
+            img_tag = []
+            img_sha = []
+            for image in images_for_digest:
+                if image.ref.startswith('sha256:'):
+                    # assert image.ref == image_digest, (ref, image_digest)
+                    assert len(image.ref) == 71, image.ref
+                elif '@' in image.ref:
+                    baseref, digest = image.ref.split('@')
+                    assert digest == image_digest, (baseref, image_digest)
+                    assert ':' not in baseref, image.ref
+                    img_sha.append(baseref)
+                elif ':' in image.ref:
+                    baseref, tag = image.ref.split(':', 1)
+                    img_tag.append(baseref)
+                else:
+                    assert False, image.ref
+
+            # Do not report duplicate tags. But do report duplicate names.
+            if len(set(img_sha) | set(img_tag)) > 1:
                 all_refs = ' + '.join(sorted(
                     image.ref for image in images_for_digest))
                 image = images_for_digest[0]
                 warn(
                     f'Dupe refs found for ns {image.ns} image {image.digest}, '
                     f'keeping all: {all_refs}')
+        else:
+            # For those _not_ in use, add to our response.
+            not_in_use.extend(images_for_digest)
 
     return not_in_use
 
