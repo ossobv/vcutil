@@ -5,6 +5,9 @@ Documentation=https://github.com/ossobv/vcutil
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
+# The default file is not shipped in the debian package. You can take
+# ownership of your custom file. Example content:
+# RECORD_IMAGE_STARTS=1
 EnvironmentFile=-/etc/default/ctre
 ExecStart=/bin/sh -c "/bin/test ${RECORD_IMAGE_STARTS:-0} -lt 1 || exec /usr/bin/ctre record-image-starts"
 Restart=on-failure
