@@ -1,5 +1,6 @@
 #!/bin/sh
-# keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+# keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022-2023
+#   // Public Domain
 #
 # Helper shell script to do simple GET/PUT/HEAD/DELETE in OpenStack Swift
 # after performing Keystone authentication.
@@ -80,8 +81,43 @@ swift_init() {
     # than passing these credentials on the command line, as they can be
     # seen in 'ps' output. (We do pass credentials in a printf call, but
     # because that is a shell builtin, no process is spawned for it.)
+    if test -n "${SWIFT_RUNDIR:-}"; then
+        echo "SWIFT_RUNDIR already set '($SWIFT_RUNDIR)'. Not implemented" >&2
+        exit 1
+    fi
     SWIFT_RUNDIR=$(mktemp -d)
     trap 'rm -rf "$SWIFT_RUNDIR"' EXIT
+}
+
+_swift_set_rundir() {
+    # We allow multiple logins. Store the tokens in a subdirectory.
+    # NOTE: If you want to use this functionality, you'll have to juggle
+    # some globals.
+    #
+    # Example:
+    #
+    #     login_site_1() {
+    #         SWIFT_PROJECT=site1@domain1
+    #         SWIFT_PROJECT_URL=
+    #         swift_login
+    #         SWIFT_PROJECT_URL_SITE1=$SWIFT_PROJECT_URL
+    #     }
+    #     login_site_2() {
+    #         SWIFT_PROJECT=site2@domain2
+    #         SWIFT_PROJECT_URL=
+    #         swift_login
+    #         SWIFT_PROJECT_URL_SITE2=$SWIFT_PROJECT_URL
+    #     }
+    #     use_site1() {
+    #         SWIFT_PROJECT=site1@domain1
+    #         SWIFT_PROJECT_URL=$SWIFT_PROJECT_URL_SITE1
+    #         SWIFT_CONTAINER=the_container
+    #         swift_get 'file/from/site1'
+    #     }
+    #
+    local hostname="${SWIFT_KEYSTONE_URL#*://}"
+    hostname=${hostname%%/*}
+    SWIFT_RUNDIR_PROJECT="$SWIFT_RUNDIR/$hostname/$SWIFT_PROJECT"
 }
 
 swift_login() {
@@ -94,6 +130,8 @@ swift_login() {
     # skip the scope. For multi-project or sysadmin accounts, we can
     # access /auth/domains and /auth/projects but not /project and
     # (thus) not swift.)
+    _swift_set_rundir
+    mkdir -p "$SWIFT_RUNDIR_PROJECT"
     echo "\
     {\"auth\": {
       \"identity\": {
@@ -108,16 +146,17 @@ swift_login() {
        \"project\":{
         \"name\":\"$project\",
         \"domain\":{\"name\":\"$project_domain\"}}}
-    }}" >"$SWIFT_RUNDIR/login"
+    }}" >"$SWIFT_RUNDIR_PROJECT/login"
 
     local output
     output=$(curl -fsS --max-time 4 --include \
         -H "Content-Type: application/json" \
-        --data @"$SWIFT_RUNDIR/login" "$SWIFT_KEYSTONE_URL/auth/tokens")
+        --data @"$SWIFT_RUNDIR_PROJECT/login" \
+        "$SWIFT_KEYSTONE_URL/auth/tokens")
 
     printf '%s\n' "$output" |
         sed -ne 's/^x-subject-token:[[:blank:]]*/X-Auth-Token: /ip' \
-          >"$SWIFT_RUNDIR/x-auth-token"
+          >"$SWIFT_RUNDIR_PROJECT/x-auth-token"
     if test -z "${SWIFT_PROJECT_URL:-}"; then
         output=$(printf '%s\n' "$output" | sed -e '1,/^[[:cntrl:]]*$/d')
         if command -v jq >/dev/null && SWIFT_PROJECT_URL=$(
@@ -169,14 +208,17 @@ swift_do() {
     local meth="$1"  # GET|DELETE|HEAD|POST|PUT
     local file="$2"  # remote/path/to/file
     shift; shift
+    _swift_set_rundir
     if test "$meth" = PUT && test "${QUIET:-0}" = 0; then
         # To get a progress bar, we must redirect stdout to /dev/null. cURL
         # feature..
         echo -n "$file " >&2
-        curl --progress-bar -fX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
+        curl --progress-bar -fX "$meth" \
+            -H @"$SWIFT_RUNDIR_PROJECT/x-auth-token" \
             "$project_url$container/$file" "$@" >/dev/null
     else
-        curl -fsSX "$meth" -H @"$SWIFT_RUNDIR/x-auth-token" \
+        curl -fsSX "$meth" \
+            -H @"$SWIFT_RUNDIR_PROJECT/x-auth-token" \
             "$project_url$container/$file" "$@"
     fi
 }
