@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+# pgpg (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Parallel GPG encryption/decryption, wrapping gpg1(1). This is useful
+# when a bunch of files are to be individually encrypted/decrypted.
+#
+# This works around the inability of parallel work by the gpg-agent(1)
+# -- which gpg1 *prefers* and gpg2 *requires* -- by bypassing the agent
+# and having gpg1 do the work directly.
+#
+# Beware:
+#
+#   To decrypt, pgpg will make a temporary password-less secret key,
+#   stored in /dev/shm.
+#
+# Usage:
+#
+#   pgpg --key KEYID[,...] --encrypt|--decrypt [FILES..] < NUL-delimited-FILES
+#
+# If FILES are not passed on the command line, the files are expected as
+# NUL-delimited on stdin. When you're dealing with many files, prefer
+# that option. If xargs has to invokes pgpg multiple times, you'll have to
+# provide credentials multiple times.
+#
+# Encryption example:
+#
+#   find ~/src/linux -type f -name '*.c' -print0 |
+#       pgpg --key KEYID[,KEYID,...] --encrypt
+#
+# Decryption examples:
+#
+#   find ~/src/linux -type f -name '*.c.gpg' -print0 |
+#       pgpg --key KEYID --decrypt
+#
+# Rationale/caveats:
+#
+# - The gpg-agent that gpg2 and gpg1 use, does not handle multiple
+#   encryption/decryption jobs at the same time well. (Observed on
+#   Ubuntu/Jammy with gpg(-agent) 2.2.27-3ubuntu2.1.)
+# - The gnupg1 version (1.4.23-1.1build1) will do encryption/decryption
+#   without the agent. That way we can leverage the multiple cores we
+#   have at our disposal on modern machines.
+# - It does so by asking you to decrypt your secret key once, and using
+#   that for the batch decryption.
+# - If your key is stored on a card, this trick will not work.
+#
+# Other notes:
+#
+# - If you enable 'auto-expand-secmem' in gpg-agent.conf you can run
+#   have multiple gpg2 instances do gpg decryption. But it is still too
+#   slow.
+#
+import sys
+from subprocess import DEVNULL, Popen, check_call
+from multiprocessing import cpu_count
+from os import (
+    environ, listdir, lstat, rename, rmdir, unlink,
+    wait, waitstatus_to_exitcode)
+from os.path import basename, dirname, exists, join
+from stat import S_ISREG
+from tempfile import mkdtemp
+
+MAX_JOBS = cpu_count()
+
+
+class Job:
+    __slots__ = ('process', 'source', 'temp', 'dest')
+
+    def __init__(self, process, source, temp, dest):
+        self.process = process
+        self.source = source
+        self.temp = temp
+        self.dest = dest
+
+    def finalize(self, status):
+        self.process.communicate()
+        self.process.wait()
+        assert self.process.returncode == 0, (
+            'we ate the real status using wait()', self.process.returncode)
+        status = self.process.returncode = waitstatus_to_exitcode(status)
+
+        if status != 0:
+            try:
+                unlink(self.temp)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(
+                    f'pgpg: unlinking {self.temp} failed: {e}',
+                    file=sys.stderr)
+            return False
+
+        try:
+            rename(self.temp, self.dest)
+        except Exception as e:
+            print(
+                f'pgpg: rename {self.temp} -> {self.dest} failed: {e}',
+                file=sys.stderr)
+            return False
+        return True
+
+    def __repr__(self):
+        return (
+            f'<Job({self.process.returncode}, {self.source!r}, '
+            f'{self.temp!r}, {self.dest!r})>')
+
+
+def secret_key_setup(keyid):
+    assert all(i in (
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        'abcdefghijklmnopqrstuvwxyz'
+        '0123456789') for i in keyid), ('expected only [A-Za-z0-9]', keyid)
+
+    tempdir = mkdtemp(prefix='pgpg.', dir='/dev/shm')  # assert shell safe
+    try:
+        print()
+        print('==vv========================================================')
+        print(f'Importing secret key into {tempdir}')
+        print('==^^========================================================')
+        print()
+        check_call(
+            f'gpg --export-secret-key {keyid} | '
+            f'GNUPGHOME={tempdir} gpg1 --import',
+            shell=True)
+        print()
+        print('==vv========================================================')
+        print('Now we need to drop the passphrase from the secret')
+        print()
+        print('Type the following:')
+        print('> passwd')
+        print('(enter your passphrase, then set the new passphrase to empty)')
+        print('> save')
+        print('==^^========================================================')
+        print()
+        check_call(
+            f'GNUPGHOME={tempdir} gpg1 --no-greeting --edit-key {keyid}',
+            shell=True)
+        print()
+        print('==vv========================================================')
+        print(f'Secret key is now in {tempdir}')
+        print('It will be cleaned up upon exit')
+        print('==^^========================================================')
+        print()
+    except Exception:
+        secret_key_cleanup(tempdir)
+        raise
+
+    return tempdir
+
+
+def secret_key_cleanup(gnupghome):
+    for file in sorted(listdir(gnupghome)):
+        assert file not in ('.', '..'), file
+        path = join(gnupghome, file)
+        try:
+            unlink(path)
+        except IsADirectoryError:
+            secret_key_cleanup(path)
+        except Exception as e:
+            print(f'pgpg: could not clean {path!r}: {e}')
+    try:
+        rmdir(gnupghome)
+    except Exception as e:
+        print(f'pgpg: could not clean {path!r}: {e}')
+
+
+def decrypt(source, dest, gnupghome):
+    """
+    Right now, we must do:
+
+    - use gpg1 (gpg2 will still use the agent and be slow)
+    - GNUPGHOME_TMP=$(mktemp -d -p /dev/shm)
+    - gpg --export X | GNUPGHOME=$GNUPGHOME_TMP gpg1 --import
+    - gpg --export-secret-keys X | GNUPGHOME=$GNUPGHOME_TMP gpg1 --import
+    - GNUPGHOME=$GNUPGHOME_TMP gpg1 --edit-key
+      passwd -> write old password
+             -> change to no password and confirm
+      save   -> write key
+    - run this, using the the GNUPGHOME in env
+
+    Major speedup increase by:
+    - not needing to decrypt the secret key
+    - running parallel without the gpg-agent
+    """
+    # We must use gpg1 here because gpg2 refuses to *not* use the gpg-agent.
+    # Do not use --lock-never. That breaks stuff, causing intermittent
+    # "gpg: note: random_seed file is empty" warnings.
+    cmd = ['gpg1', '--batch', '--no-tty', '--no-use-agent', '--quiet']
+    cmd.extend(['-o', dest])
+    cmd.extend(['--decrypt', source])
+
+    return Popen(cmd, stdin=DEVNULL, env={
+        'PATH': environ['PATH'],
+        'GNUPGHOME': gnupghome,
+    })
+
+
+def encrypt(source, dest, recipients):
+    # It doesn't matter whether we use gpg1 or gpg2 here. Either is fast
+    # enough and neither benefits from decrypted keys.
+    cmd = ['gpg', '--batch', '--no-tty']
+    for recipient in recipients:
+        cmd.extend(['-r', recipient])
+    cmd.extend(['-o', dest])
+    cmd.extend(['--encrypt', source])
+
+    # We do not wipe the environment here. No need as gpg2 does not need
+    # the agent.
+    return Popen(cmd, stdin=DEVNULL, env=environ)
+
+
+def parallel_decrypt(files, gnupghome):
+    def del_gpg(filename):
+        assert filename.endswith('.gpg'), filename
+        return filename[0:-4]
+
+    def decrypt_with_gnupghome(source, dest):
+        return decrypt(source, dest, gnupghome)
+
+    return _parallel_action(files, del_gpg, decrypt_with_gnupghome)
+
+
+def parallel_encrypt(files, recipients):
+    def add_gpg(filename):
+        assert not filename.endswith('.gpg'), filename
+        return f'{filename}.gpg'
+
+    def encrypt_for_recipients(source, dest):
+        return encrypt(source, dest, recipients)
+
+    return _parallel_action(files, add_gpg, encrypt_for_recipients)
+
+
+def wait_for_jobs_and_bail(failing_job, other_jobs):
+    print(
+        f'pgpg: job {failing_job} failed; '
+        f'waiting for {len(other_jobs)} to finish', file=sys.stderr)
+    try:
+        unlink(failing_job.temp)
+    except Exception:
+        pass
+
+    while other_jobs:
+        pid, status = wait()
+        job = [i for i in other_jobs if i.process.pid == pid][0]
+        other_jobs.remove(job)
+
+        if job.finalize(status):
+            print(f'pgpg: done with {job}', file=sys.stderr)
+        else:
+            print(f'pgpg: job {job} also failed', file=sys.stderr)
+
+    exit(failing_job.process.returncode)
+
+
+def _parallel_action(sources, make_destname, make_dest):
+    def is_valid(source):
+        try:
+            st = lstat(source)
+        except FileNotFoundError:
+            print(f'pgpg: {source!r} not found', file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f'pgpg: {source!r} got {e}', file=sys.stderr)
+            return False
+
+        if not S_ISREG(st.st_mode):
+            print(f'pgpg: {source!r} is not a regular file', file=sys.stderr)
+            return False
+
+        dest = make_destname(source)
+        if exists(dest):
+            print(f'pgpg: {dest!r} already exists', file=sys.stderr)
+            return False
+
+        return True
+
+    def make_job(source):
+        dest = make_destname(source)
+        if '/' in dest:
+            temp = f'{dirname(dest)}/.{basename(dest)}.pgpgtmp'
+        else:
+            temp = f'.{dest}.pgpgtmp'
+        process = make_dest(source, temp)
+        return Job(process=process, source=source, temp=temp, dest=dest)
+
+    njobs = MAX_JOBS
+    idx = 0
+    jobs = []
+
+    # Skip over invalid/done files
+    while idx < len(sources) and not is_valid(sources[idx]):
+        idx += 1
+
+    # Start creating njobs jobs
+    while idx < len(sources) and len(jobs) < njobs:
+        jobs.append(make_job(sources[idx]))
+        idx += 1
+
+        # While skipping invalid/done
+        while idx < len(sources) and not is_valid(sources[idx]):
+            idx += 1
+
+    # While there are still files left, keep exactly njobs jobs running
+    while idx < len(sources):
+        pid, status = wait()
+        job = [i for i in jobs if i.process.pid == pid][0]
+        jobs.remove(job)
+
+        if not job.finalize(status):
+            wait_for_jobs_and_bail(job, jobs)
+
+        jobs.append(make_job(sources[idx]))
+        assert len(jobs) == njobs
+        idx += 1
+
+        # While skipping invalid/done
+        while idx < len(sources) and not is_valid(sources[idx]):
+            idx += 1
+
+    # No files are left; wait for all jobs to complete
+    while jobs:
+        pid, status = wait()
+        job = [i for i in jobs if i.process.pid == pid][0]
+        jobs.remove(job)
+
+        if not job.finalize(status):
+            wait_for_jobs_and_bail(job, jobs)
+
+
+def get_files(files):
+    """
+    Return the list as passed as argument, or read stdin and split by 0.
+    """
+    if not files:
+        files = [i for i in sys.stdin.read().split('\0') if i]
+
+    return files
+
+
+def main():
+    if sys.argv[1:2] == ['--key'] and sys.argv[3:4] == ['--encrypt']:
+        recipients = sys.argv[2].split(',')
+        parallel_encrypt(get_files(sys.argv[4:]), recipients=recipients)
+    elif sys.argv[1:2] == ['--key'] and sys.argv[3:4] == ['--decrypt']:
+        keys = sys.argv[2].split(',')
+        assert len(keys) == 1, 'expected one secret key to decrypt with'
+        keyid = keys[0]
+
+        gnupghome = secret_key_setup(keyid)
+        try:
+            parallel_decrypt(get_files(sys.argv[4:]), gnupghome=gnupghome)
+        finally:
+            secret_key_cleanup(gnupghome)
+    else:
+        print(
+            'usage: pgpg --key KEYID[,...] --encrypt|--decrypt [FILES..]',
+            file=sys.stderr)
+        print('Providing NUL-delimited filenames on stdin is preferred.')
+
+
+if __name__ == '__main__':
+    main()

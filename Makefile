@@ -46,6 +46,7 @@ BINS = \
 	mysql-slave-skip-one-table \
 	mysql-slave-sync-table \
 	pdns-sql-slave-prune \
+	pgpg \
 	psdiff \
 	pve-macaddr-security \
 	sadfscheck \
