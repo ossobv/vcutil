@@ -186,6 +186,11 @@ def decrypt(source, dest, gnupghome):
     # Do not use --lock-never. That breaks stuff, causing intermittent
     # "gpg: note: random_seed file is empty" warnings.
     cmd = ['gpg1', '--batch', '--no-tty', '--no-use-agent', '--quiet']
+    # It's important we specify --yes here. Without it, any existing
+    # (partial?) temp file will not be clobbered, but the gpg1 exit code will
+    # be success (0). Ignoring that would open the possibility for file
+    # corruption if a .pgpgtmp file from a previous run was laying around.
+    cmd.extend(['--yes'])
     cmd.extend(['-o', dest])
     cmd.extend(['--decrypt', source])
 
