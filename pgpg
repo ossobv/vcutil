@@ -46,9 +46,15 @@
 #
 # Other notes:
 #
-# - If you enable 'auto-expand-secmem' in gpg-agent.conf you can run
-#   have multiple gpg2 instances do gpg decryption. But it is still too
-#   slow.
+# - If you enable 'auto-expand-secmem' in gpg-agent.conf you have
+#   multiple gpg2 instances do gpg decryption. But it will still be
+#   dramatically slower than using this with gpg1.
+#
+# Todo:
+#
+# - Maybe make secret-key-gathering dynamic (when needed) so a run where
+#   all files are already done, needs no keys.
+# - Maybe check for gpg1 before starting. (apt install gnupg1)
 #
 import sys
 from subprocess import DEVNULL, Popen, check_call
