@@ -340,18 +340,20 @@ def get_files(files):
 
 def main():
     if sys.argv[1:2] == ['--key'] and sys.argv[3:4] == ['--encrypt']:
-        recipients = sys.argv[2].split(',')
-        parallel_encrypt(get_files(sys.argv[4:]), recipients=recipients)
+        recipients, files = sys.argv[2].split(','), get_files(sys.argv[4:])
+        parallel_encrypt(files, recipients=recipients)
+
     elif sys.argv[1:2] == ['--key'] and sys.argv[3:4] == ['--decrypt']:
         keys = sys.argv[2].split(',')
         assert len(keys) == 1, 'expected one secret key to decrypt with'
-        keyid = keys[0]
+        keyid, files = keys[0], get_files(sys.argv[4:])
 
         gnupghome = secret_key_setup(keyid)
         try:
-            parallel_decrypt(get_files(sys.argv[4:]), gnupghome=gnupghome)
+            parallel_decrypt(files, gnupghome=gnupghome)
         finally:
             secret_key_cleanup(gnupghome)
+
     else:
         print(
             'usage: pgpg --key KEYID[,...] --encrypt|--decrypt [FILES..]',
