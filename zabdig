@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# zabdig (part of ossobv/vcutil) // wdoekes/2017-2022 // Public Domain
+# zabdig (part of ossobv/vcutil) // wdoekes/2017-2023 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
 # Zabbix JSON API.
