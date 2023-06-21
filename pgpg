@@ -115,7 +115,7 @@ def secret_key_setup(keyid):
     try:
         print()
         print('==vv========================================================')
-        print(f'Importing secret key into {tempdir}')
+        print(f'Importing secret key into TEMPORARY {tempdir}')
         print('==^^========================================================')
         print()
         check_call(
@@ -124,11 +124,12 @@ def secret_key_setup(keyid):
             shell=True)
         print()
         print('==vv========================================================')
-        print('Now we need to drop the passphrase from the secret')
+        print('Now we need to drop the passphrase from the TEMPORARY secret')
         print()
         print('Type the following:')
         print('> passwd')
-        print('(enter your passphrase, then set the new passphrase to empty)')
+        print('(enter your passphrase)')
+        print('(then set the new passphrase to empty on this temporary copy)')
         print('> save')
         print('==^^========================================================')
         print()
@@ -137,7 +138,7 @@ def secret_key_setup(keyid):
             shell=True)
         print()
         print('==vv========================================================')
-        print(f'Secret key is now in {tempdir}')
+        print(f'Secret key is now in TEMPORARY {tempdir}')
         print('It will be cleaned up upon exit')
         print('==^^========================================================')
         print()
@@ -166,21 +167,20 @@ def secret_key_cleanup(gnupghome):
 
 def decrypt(source, dest, gnupghome):
     """
-    Right now, we must do:
+    Right now, we must:
 
     - use gpg1 (gpg2 will still use the agent and be slow)
     - GNUPGHOME_TMP=$(mktemp -d -p /dev/shm)
-    - gpg --export X | GNUPGHOME=$GNUPGHOME_TMP gpg1 --import
     - gpg --export-secret-keys X | GNUPGHOME=$GNUPGHOME_TMP gpg1 --import
-    - GNUPGHOME=$GNUPGHOME_TMP gpg1 --edit-key
-      passwd -> write old password
-             -> change to no password and confirm
+    - GNUPGHOME=$GNUPGHOME_TMP gpg1 --edit-key X
+      passwd -> enter old password
+             -> change to empty password and confirm
       save   -> write key
     - run this, using the the GNUPGHOME in env
 
     Major speedup increase by:
     - not needing to decrypt the secret key
-    - running parallel without the gpg-agent
+    - running parallel while bypassing the gpg-agent
     """
     # We must use gpg1 here because gpg2 refuses to *not* use the gpg-agent.
     # Do not use --lock-never. That breaks stuff, causing intermittent
