@@ -1,3 +1,18 @@
+vcutil (1.40) stable; urgency=low
+
+  * Additions:
+    - mysql-slave-skip-one-table: Add script to auto-sql_slave_skip_counter=1
+    - mysql-slave-sync-table: Add script to do manual DB sync
+    - pgpg: Add tool to aid in parallel gpg encryption/decryption
+
+  * Improvements:
+    - ctre: Do not ship /etc/defaults/ctre file; let admins manage it
+    - ctre: Misc. improvements
+    - keystone-swift-curl: Add some hackery to allow multi-project management
+    - zabdig: Fix API compatibility with Zabbix 6.4+
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 23 Jun 2023 10:28:14 +0200
+
 vcutil (1.39) stable; urgency=low
 
   * Improvements:
