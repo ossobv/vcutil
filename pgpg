@@ -215,8 +215,8 @@ def encrypt(source, dest, recipients):
     cmd.extend(['-o', dest])
     cmd.extend(['--encrypt', source])
 
-    # We do not wipe the environment here. No need as gpg2 does not need
-    # the agent.
+    # We do not wipe the environment here. The gpg agent is not in the
+    # way when encrypting.
     return Popen(cmd, stdin=DEVNULL, env=environ)
 
 
