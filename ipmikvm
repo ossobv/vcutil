@@ -1,5 +1,5 @@
 #!/bin/sh
-# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2022 // Public Domain
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2023 // Public Domain
 #
 # A wrapper to call the SuperMicro iKVM console bypassing Java browser
 # plugins.
@@ -28,6 +28,9 @@
 # - iKVM__V1.69.19.0x0
 # - ...
 # - iKVM__V1.69.42.0x0
+#
+# This has been tried with (but failed):
+# - JViewer-unknown-version that comes with Quanta BMC
 #
 # See also: ipmiview
 #
@@ -165,8 +168,18 @@ get_launch_jnlp() {
         local pass=${passes%% *}; passes=${passes#* }
         echo "attempting login on '$management_ip' with user $user" >&2
 
-        local data="$(curl "$url" --fail -LksS --cookie-jar "$temp")"
-        if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
+        # Add --compressed. The Quanta BMC will send gzipped regardless
+        # of provided support.
+        local data="$(curl "$url" --fail -LksS --cookie-jar "$temp" \
+            --compressed)"
+        local ret=$?
+        if test $ret -eq 0 && echo "$data" |
+                grep -q '<title>Quanta Cloud</title>'; then
+            _get_launch_jnlp_quanta "$management_ip" "$user $users" \
+                "$pass $passes" "$temp"
+            rm "$temp"
+            return
+        elif test $ret -ne 0 || ! echo "$data" | grep -q '<form '; then
             echo "unexpected login page on address '$management_ip': $data" >&2
             data=
             if test "${url#https:}" != "$url"; then
@@ -234,6 +247,42 @@ get_launch_jnlp() {
 }
 # SYNOPSIS: get_launch_jnlp 10.x.x.x USERNAME PASSWORD
 
+_get_launch_jnlp_quanta() {
+    local management_ip="$1"
+    local users="$2"
+    local passes="$3"
+    local temp="$4"
+
+    local url="https://$management_ip/api"
+    local data
+    local csrf
+
+    until test -z "$users"; do
+        local user=${users%% *}; users=${users#* }
+        local pass=${passes%% *}; passes=${passes#* }
+        echo "attempting Quanta login on '$url' with user $user" >&2
+        data=$(curl "$url/api/session" --fail -LksS \
+            --cookie "$temp" --cookie-jar "$temp" --compressed \
+            -XPOST --data "username=$user&password=$pass")
+        local ret=$?
+        if test $ret -eq 0; then
+            echo "got Quanta login: $data" >&2
+            # { "ok": 0, "privilege": 4, "extendedpriv": 256,
+            #   "racsession_id": 9, "remote_addr": "10.x.x.1",
+            #   "server_name": "10.x.x.212", "server_addr":
+            #   "10.x.x.212", "HTTPSEnabled": 1, "CSRFToken": "ZxEvkl0S" }
+            csrf=$(printf '%s\n' "$data" | jq -r .CSRFToken)
+            echo "fetching kvmjnlp with CSRF $csrf..." >&2
+            data=$(curl "$url/kvmjnlp?&JNLPSTR=JViewer&HostOrIp=1" --fail \
+                -LksS --cookie "$temp" --cookie-jar "$temp" --compressed \
+                -H "X-CSRFTOKEN: $csrf")
+            printf '%s\n' "$data"
+            return
+        fi
+    done
+    false
+}
+
 make_local_path() {
     local path="$1"
     echo "$path" | sed -e 's#.*://##;s#^/*##;s#:#%3A#g;s#[.][.]*#.#g;'
@@ -252,7 +301,21 @@ get_app_jar() {
     fi
     local jar_base="$(basename "$app_jar")" # iKVM__V1.69.31.0x0.jar
     local jar_base="${jar_base%.jar}"   # iKVM__V1.69.31.0x0
-    local app_cache_dir="$app_cache_dir/$jar_base"
+
+    local app_cache_dir
+    case $jar_base in
+    JViewer)
+        local codebase_ip
+        codebase_ip=$(printf '%s\n' "$launch_jnlp" | sed -e '
+            /codebase="/!d
+            s@.* codebase="[^/]*//@@;s@:.*@@;s@/.*@@' | head -n1)
+        app_cache_dir="$app_cache_dir/$jar_base-$codebase_ip"
+        ;;
+    *)
+        app_cache_dir="$app_cache_dir/$jar_base"
+        ;;
+    esac
+
     umask 0077  # storing latest.jnlp here; might contain temp passwords
     test -d "$app_cache_dir" || mkdir -p "$app_cache_dir" || exit 1
     echo "$launch_jnlp" >"$app_cache_dir/latest.jnlp"
