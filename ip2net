@@ -25,14 +25,15 @@
 #   1.2.2.0/23
 #   192.168.1.1
 #
-# A more practical example, where the github action IPs are reduced from
-# 3500 IPs to 700 networks:
+# A more practical example, where the github action IPs/networks are
+# reduced from 3500 ranges to 700 ranges:
 #
-#   $ curl -sSfL https://api.github.com/meta | jq -r .actions[] |
-#     head -n3
-#   4.148.0.0/16
-#   4.149.0.0/18
-#   4.149.64.0/19
+#   $ curl -sSfL https://api.github.com/meta | jq -r .actions[]
+#   ...
+#   40.123.140.0/22
+#   40.123.144.0/26
+#   40.123.144.64/29
+#   ...
 #
 #   $ curl -sSfL https://api.github.com/meta | jq -r .actions[] |
 #     wc -l
