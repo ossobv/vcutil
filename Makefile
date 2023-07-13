@@ -32,6 +32,7 @@ BINS = \
 	ikvmocr \
 	indirect-scp \
 	interfaces2netplan \
+	ip2net \
 	ipmikvm \
 	ipmiscrape \
 	keystone-swift-curl \
