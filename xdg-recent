@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+# xdg-recent (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Mark files as "recently used" so they show up first in the File Browser in
+# GNOME/Gtk/X. This is useful when you're editing/preparing files using
+# the command line and want to upload them using a (graphical) web
+# brower.
+#
+# Usage:
+#
+# - <create file1.txt>
+# - xdg-recent file1.txt
+# - <open graphical application, click recent, see file there>
+#
+# Original from unix.stackexchange.com/questions/509413 by Stephen Kitt.
+# Named it xdg-recent to match xdg-open, which is the other commonly used
+# tool when switching from CLI to X. Not called xdg-mark-recent because
+# (a) there exists a xdg-m(ime) and (b) we may want to amend this to do
+# more than just "mark".
+#
+# Todo:
+# - add -n for do-not-mark utime()
+# - do other stuff, like list/delete the RecentManager data
+#
+# See also: xdg-open(1) from xdg-utils.
+#
+import os
+import sys
+
+import gi
+gi.require_version('Gtk', '3.0')
+
+from gi.repository import Gtk, Gio, GLib
+
+rec_mgr = Gtk.RecentManager.get_default()
+
+for arg in sys.argv[1:]:
+    os.utime(arg, None)
+    rec_mgr.add_item(Gio.File.new_for_path(arg).get_uri())
+
+GLib.idle_add(Gtk.main_quit)
+Gtk.main()

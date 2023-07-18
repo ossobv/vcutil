@@ -68,6 +68,7 @@ BINS = \
 	wtimestamp \
 	wtrunc \
 	wvpn \
+	xdg-recent \
 	zabdig
 
 SBINS = \
