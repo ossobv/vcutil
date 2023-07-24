@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # ipmiscrape (part of ossobv/vcutil) // wdoekes/2022,2023 // Public Domain
 #
+# Fetch controller info from multiple IPMI boards in parallel.
 # Fetch power usage from multiple IPMI boards in parallel.
 #
 # TODO: more documentation :)
@@ -20,6 +21,9 @@ IPMI_USER_PASS_BY_IP = {'*': ('ADMIN', 'ADMIN')}     # ~/.config/ipmikvm/dict
 
 
 Machine = namedtuple('Machine', 'hostname ipmi_ip')
+InfoReading = namedtuple(
+    'InfoReading',
+    'system_guid firmware_rev')
 PowerReading = namedtuple(
     'PowerReading',
     'cur_watt max_watt min_watt avg_watt sample_duration power_state')
@@ -99,6 +103,31 @@ def get_ipmitool(ip, *ipmi_command):
     return res
 
 
+def get_ipmitool_mc_info(ip):
+    res = {}
+
+    # System GUID  : 3130xxxx-xxxx-xxxx-xxxc-xxxxxxxxxxxx
+    # Timestamp    : 02/25/1996 10:51:48
+    res.update(to_dict(get_ipmitool(ip, 'mc', 'guid')))
+
+    # Device ID                 : 32
+    # Device Revision           : 1
+    # Firmware Revision         : 1.23
+    # IPMI Version              : 2.0
+    # Manufacturer ID           : 10876
+    # Manufacturer Name         : Supermicro
+    # Product ID                : 6683 (0x1a1b)
+    # Product Name              : Unknown (0x1A1B)
+    # Device Available          : yes
+    # Provides Device SDRs      : no
+    # Additional Device Support :
+    #     Sensor Device
+    # ...
+    res.update(to_dict(get_ipmitool(ip, 'mc', 'info'), only_depth_0=True))
+
+    return res
+
+
 def get_ipmitool_power(ip):
     #     Instantaneous power reading:                   102 Watts
     #     Minimum during sampling period:                 22 Watts
@@ -121,6 +150,24 @@ def get_power_reading(machine):
                 kv['Average power reading over sample period'].split()[0]),
             sample_duration=int(kv['Sampling period'].split()[0]),
             power_state=kv['Power reading state is'],
+        )
+    except CalledProcessError as e:
+        return e
+    except TimeoutExpired as e:
+        return e
+    except Exception as e:
+        return MultiprocessingProgrammingError.from_exception(
+            'unhandled {!r} on {!r}'.format(e.__class__.__name__, machine), e)
+
+    return res
+
+
+def get_info_reading(machine):
+    try:
+        kv = get_ipmitool_mc_info(machine.ipmi_ip)
+        res = InfoReading(
+            system_guid=kv['System GUID'],
+            firmware_rev=kv['Firmware Revision'],
         )
     except CalledProcessError as e:
         return e
@@ -162,6 +209,14 @@ def dump_results(results, dump_valid_func):
 
     dump_invalid(invalid)
     dump_valid_func(valid)
+
+
+def dump_info_results(results):
+    print('hostname,ipmi-ip,firmware_rev')
+    for res in results:
+        print(','.join([
+            res.machine.hostname, res.machine.ipmi_ip,
+            res.reading.firmware_rev]))
 
 
 def dump_power_results(results):
@@ -210,9 +265,11 @@ def main(what, machines_filename):
     results = []
 
     getfunc = {
+        'info': get_info_reading,
         'power': get_power_reading,
     }[what]
     dumpfunc = {
+        'info': dump_info_results,
         'power': dump_power_results,
     }[what]
 
@@ -251,4 +308,4 @@ if __name__ == '__main__':
     if sys.argv[1:2] == ['-v']:
         VERBOSE = True
         sys.argv.pop(1)
-    main(*sys.argv[1:])  # power machines.csv
+    main(*sys.argv[1:])  # info|power machines.csv
