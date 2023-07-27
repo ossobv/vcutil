@@ -69,15 +69,15 @@ BINS = \
 	wtrunc \
 	wvpn \
 	xdg-recent \
-	zabdig
+	zabdig \
 
 SBINS = \
 	arpfix \
 	fwdiff \
-	multilb-sanity-check
+	multilb-sanity-check \
 
 SYSSBINS = \
-	mount.zfs-non-legacy
+	mount.zfs-non-legacy \
 
 OTHER = \
 	.gitignore \
@@ -89,12 +89,16 @@ OTHER = \
 	ikvmocr-2.png \
 	psdiff.hash \
 	psdiff.rst \
-	tcpdump247 \
 	tcpdump247.default \
 	udiff.selftest \
 
-.PHONY: all clean deb hashes make_has_all_files
-all: hashes make_has_all_files
+OTHERX = \
+	tcpdump247 \
+
+
+.PHONY: all clean deb hashes make_has_all_files all_bins_are_executable
+.PHONY: all_other_has_no_x
+all: hashes make_has_all_files all_bins_are_executable all_other_has_no_x
 
 clean:
 	$(MAKE) -f udiff.selftest clean
@@ -125,8 +129,19 @@ hashes: $(HASHES)
 
 make_has_all_files:
 	@bash -c "diff -pu <(git ls-files | grep -vF / | sort -V) \
-	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) | \
+	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) $(OTHERX) | \
 	    tr ' ' '\n' | sort -V)"
+
+all_bins_are_executable:
+	@ok=true; for bin in $(BINS) $(SBINS) $(SYSSBINDIR) $(OTHERX); do \
+	  if ! test -x $$bin; then echo "$$bin: missing -x perms" >&2; \
+	  ok=false; fi; done; $$ok
+
+all_other_has_no_x:
+	@ok=true; for nox in $(OTHER); do \
+	  if ! test -f $$nox || test -x $$nox; then \
+	    echo "$$nox: unexpected perms/availability" >&2; \
+	    ok=false; fi; done; $$ok
 
 %.hash: % Makefile
 	sha256sum $< > $@
