@@ -325,6 +325,8 @@ if test "${0##*/}" = 'keystone-swift-curl'; then
     method=$1; shift    # get method ($2)
     case $method in
     DELETE) swift_delete "$@";;
+    # TODO: create a LIST here where we multi-get using ?marker= to
+    # quickly get a listing. (Both for json and text.)
     GET) swift_get "$@";;
     HEAD) swift_head "$@";;
     POST) swift_post "$@";;
