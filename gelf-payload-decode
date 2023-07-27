@@ -46,6 +46,8 @@ import sys
 
 LINKTYPE_ETHERNET = 1
 LINKTYPE_RAW = 101
+LINKTYPE_LINUX_SLL = 113
+LINKTYPE_NETLINK = 253
 
 PcapHeader = namedtuple('PcapHeader', (
     'magic_number version_major version_minor thiszone sigfigs '
@@ -194,6 +196,13 @@ class PcapRecordDefragmenter:
             assert pcap_record.data[13] == 0x00, pcap_record.data
         elif pcap_record.linktype == LINKTYPE_RAW:
             packet_offset = 0
+        elif pcap_record.linktype in (LINKTYPE_LINUX_SLL, LINKTYPE_NETLINK):
+            # LINKTYPE_LINUX_SLL is an extension of LINKTYPE_NETLINK;
+            # the payload starts from 16th byte according to
+            # https://www.tcpdump.org/linktypes/LINKTYPE_LINUX_SLL.html
+            # https://www.tcpdump.org/linktypes/LINKTYPE_NETLINK.html
+            # (sum of the lengths of the fields before "payload" is 16)
+            packet_offset = 16
         else:
             raise NotImplementedError(f'linktype {pcap_record.linktype}')
 
