@@ -36,6 +36,7 @@ enum_all_certs() {
         enum_apache2_certs
         enum_dovecot_certs
         enum_gitlab_certs
+        enum_grafana_agent_certs
         enum_haproxy_certs
         enum_kuberstuff_certs
         enum_mysql_wsrep_certs
@@ -71,6 +72,12 @@ enum_gitlab_certs() {
         /^nginx[[].ssl_certificate.[]]/!d
         s/[^=]*=$s*[\"']\([^\"']*\)[\"'].*/\1/
     " /etc/gitlab/gitlab.rb 2>/dev/null || true  # '"vimsynfix
+}
+
+enum_grafana_agent_certs() {
+    sed -e "
+        /^$s*cert_file:/!d;s/^[^:]*:$s*//;s/$s*//" \
+        /etc/grafana-agent.yaml 2>/dev/null || true
 }
 
 enum_haproxy_certs() {
