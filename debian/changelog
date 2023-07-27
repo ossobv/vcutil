@@ -1,3 +1,17 @@
+vcutil (1.41) stable; urgency=low
+
+  * Additions:
+    - ip2net: Tool to trim down IP lists to fewer ranges
+    - xdg-recent: Add tool to mark files as "recently used" in X
+
+  * Improvements:
+    - cert-expiry-finder: Fix that CWD does not break finding
+    - cert-expiry-finder: Include grafana-agent cert in scan
+    - gelf-payload-decode: Add new linktypes for gelf decoding
+    - ipmiscrape: Add board/bmc info listing as well. And refactor a bit.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 27 Jul 2023 15:24:16 +0200
+
 vcutil (1.40) stable; urgency=low
 
   * Additions:
