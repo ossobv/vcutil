@@ -26,8 +26,12 @@
 #
 #   interfaces2netplan > /etc/netplan/01-netcfg.yaml
 #
-# After a succesful 'netplan try' you should be able to reboot and then remove
-# the 'ifupdown' package.
+# After a succesful 'netplan try' you should be able to reboot and then
+# remove the 'ifupdown' package. Make sure you remove/rename the
+# interfaces file firs though. Otherwise the ifupdown removal will
+# ifdown your interfaces >:)
+#
+# See also: "netplan ifupdown-migrate" (which apparently exists)
 #
 from collections import OrderedDict
 import fnmatch
