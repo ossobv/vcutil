@@ -136,7 +136,7 @@ def sql_slave_skip_loop(cursor, reasons):
                 sleep(1)
 
 
-def sql_slave_skip_start(conffile, section, database, table):
+def sql_slave_skip_start(conffile, section, database, table, binlog_prefix):
     # Define valid reasons to skip a single slave statement
     reasons = [
         make_slaving_is_down_because_of_sql_reason(1062, (
@@ -144,19 +144,19 @@ def sql_slave_skip_start(conffile, section, database, table):
             f"{database}.{table}; Duplicate entry '*' "
             f"for key '*', Error_code: 1062; handler error "
             f"HA_ERR_FOUND_DUPP_KEY; the event's master log "
-            f"mariadb-bin.*, end_log_pos *")),
+            f"{binlog_prefix}.*, end_log_pos *")),
         make_slaving_is_down_because_of_sql_reason(1032, (
             f"Could not execute Update_rows_v1 event on table "
             f"{database}.{table}; Can't find record in "
             f"'{table}', Error_code: 1032; handler error "
             f"HA_ERR_KEY_NOT_FOUND; the event's master log "
-            f"mariadb-bin.*, end_log_pos *")),
+            f"{binlog_prefix}.*, end_log_pos *")),
         make_slaving_is_down_because_of_sql_reason(1032, (
             f"Could not execute Delete_rows_v1 event on table "
             f"{database}.{table}; Can't find record in "
             f"'{table}', Error_code: 1032; handler error "
             f"HA_ERR_KEY_NOT_FOUND; the event's master log "
-            f"mariadb-bin.*, end_log_pos *")),
+            f"{binlog_prefix}.*, end_log_pos *")),
     ]
 
     # Test reasons to skip a single slave statement
@@ -166,7 +166,7 @@ def sql_slave_skip_start(conffile, section, database, table):
             f"{database}.{table}; Can't find record in "
             f"'{table}', Error_code: 1032; handler error "
             f"HA_ERR_KEY_NOT_FOUND; the event's master log "
-            f"mariadb-bin.012345, end_log_pos 12345")
+            f"{binlog_prefix}.012345, end_log_pos 12345")
         print('TEST REASON:', test_error_string)
         test_slaving = {
             'Last_Errno': 1032,
@@ -189,10 +189,22 @@ def sql_slave_skip_start(conffile, section, database, table):
 if __name__ == '__main__':
     import sys
 
-    if len(sys.argv) == 5:
-        sql_slave_skip_start(*sys.argv[1:])
+    if len(sys.argv) in (5, 6):
+        kwargs = {
+            'conffile': sys.argv[1],
+            'section': sys.argv[2],
+            'database': sys.argv[3],
+            'table': sys.argv[4],
+            'binlog_prefix': 'mariadb-bin',
+        }
+        if len(sys.argv) == 6:
+            kwargs['binlog_prefix'] = sys.argv[5]
+        sql_slave_skip_start(**kwargs)
     else:
         print(
             f'Usage: {sys.argv[0]} /etc/mysql/debian.cnf client '
-            f'DATABASE TABLE', file=sys.stderr)
+            f'DATABASE TABLE [mariadb-bin]\n'
+            f'  client = the [client] section in /etc/mysql/debian.cnf\n'
+            f'  mariadb-bin = the binlog filename prefix\n',
+            end='', file=sys.stderr)
         exit(1)
