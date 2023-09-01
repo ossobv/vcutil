@@ -15,9 +15,9 @@ find "$path" \
     '(' -type f -o -type l ')' \
     -regextype posix-extended \
     -regex '.*\.('\
-'asp|c|cc|cfg|conf|cpp|css|cxx|erb|go|'\
+'asp|c|cc|cfg|conf|cpp|css|cxx|diff|erb|go|'\
 'h|hpp|htm|html|j2|java|js|less|m4|md|'\
-'php|po|pp|py|rb|rs|rst|'\
+'patch|php|po|pp|py|rb|rs|rst|'\
 'sh|sls|sql|tpl|template|txt|xml|yaml|yml)' \
     '!' -name '*.min.*' \
     -print0 \
