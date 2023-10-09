@@ -11,6 +11,10 @@
 #     ctre prune -f             # prunes the images
 #     ctre record-image-starts  # daemon process that keeps track of starts
 #
+# BEWARE: stoptime can record the stopping of the _previous_ container after
+# starting the next one. This can confuse you into thinking a container is
+# started/stopped quickly.
+#
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from json import loads
@@ -25,6 +29,7 @@ from warnings import warn
 
 
 KEEP_IF_YOUNGER_THAN = (14 * 86400)
+NULL_TIME = '----------'
 TABSPLIT_RE = compile(r'\t+')
 SIZE_UNITS = {
     'B': 1,
@@ -331,11 +336,11 @@ def event_lines(it):
         yield Event(unixtime=unixtime, ns=ns, action=action, data=data)
 
 
-def from_kv(s):
-    s = s.strip()
-    if not s:
-        return {}
-
+def from_kv_old(s):
+    """
+    <starttime> <namespace> <image>  # old
+    <starttime> <image>              # oldest
+    """
     ret = {}
     for line in s.split('\n'):
         v, k = line.split(' ', 1)
@@ -346,11 +351,45 @@ def from_kv(s):
     return ret
 
 
+def from_kv(s):
+    """
+    <starttime> <stoptime|-> <namespace> <image>
+
+    BEWARE: stoptime can record the stopping of the _previous_ container after
+    starting the next one. This can confuse you into thinking a container is
+    started/stopped quickly.
+    """
+    s = s.rstrip()
+    if not s:
+        return {}
+
+    first_line = s.split('\n', 1)[0]
+    first_line_items = first_line.split(' ', 3)
+    if len(first_line_items) < 4 or not (
+            first_line_items[1].isdigit() or
+            first_line_items[1] == NULL_TIME):
+        oldret = from_kv_old(s)
+        ret = dict((k, (int(v), None)) for k, v in oldret.items())
+        return ret
+
+    ret = {}
+    for line in s.split('\n'):
+        start, stop, namespace, image = line.split(' ', 3)
+        k = (namespace, image)  # ctr namespace
+        v = (int(start), None if stop == NULL_TIME else int(stop))
+        ret[k] = v
+
+    return ret
+
+
 def to_kv(kv):
     ret = []
     for k, v in sorted(kv.items()):
         flatk = ' '.join(k)
-        ret.append(f'{v} {flatk}\n')
+        starttime, stoptime = v
+        if stoptime is None:
+            stoptime = NULL_TIME
+        ret.append(f'{starttime} {stoptime} {flatk}\n')
     return ''.join(ret)
 
 
@@ -370,7 +409,7 @@ def load_image_starts(max_age):
     old = time() - max_age
     to_rm = set()
     for k, v in kv.items():
-        if float(v) < old:
+        if v[0] < old and (v[1] is None or v[1] < old):
             to_rm.add(k)
     for rm in to_rm:
         del kv[rm]
@@ -378,7 +417,7 @@ def load_image_starts(max_age):
     return kv
 
 
-def update_image_starts(unixtime, ns, image_ref):
+def update_image_startstop(starttime, stoptime, ns, image_ref):
     filename = IMAGE_STARTS_DB
     temp = f'{filename}.tmp'
 
@@ -387,7 +426,13 @@ def update_image_starts(unixtime, ns, image_ref):
         max_age=max(KEEP_IF_YOUNGER_THAN, 14 * 86400))  # prune to 14 days
 
     # Add
-    kv[(ns, image_ref)] = unixtime
+    try:
+        prev_starttime, prev_stoptime = kv[(ns, image_ref)]
+    except KeyError:
+        prev_starttime = prev_stoptime = None
+    starttime = starttime or prev_starttime or stoptime
+    stoptime = stoptime or prev_stoptime
+    kv[(ns, image_ref)] = (starttime, stoptime)
 
     # Save
     all_ = to_kv(kv)
@@ -470,11 +515,24 @@ def handle_event(event, ignored_events, debug=False):
         unixtime = int(event.unixtime)
         image_ref = container_image_ref(event.ns, container_id)
         if image_ref:
-            update_image_starts(unixtime, None, event.ns, image_ref)
+            update_image_startstop(unixtime, None, event.ns, image_ref)
             print('T', unixtime, event.ns, image_ref, (
                 event.data if debug else ''))
         else:
             print('T', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
+
+    # Stop/end tasks
+    elif event.action == '/tasks/exit' and (
+            event.data['id'] == event.data['container_id']):
+        container_id = event.data['container_id']
+        unixtime = int(event.unixtime)
+        image_ref = container_image_ref(event.ns, container_id)
+        if image_ref:
+            update_image_startstop(None, unixtime, event.ns, image_ref)
+            print('t', unixtime, event.ns, image_ref, (
+                event.data if debug else ''))
+        else:
+            print('t', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
 
 
 def formatwarning(message, category, filename, lineno, line=None):
