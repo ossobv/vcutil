@@ -21,7 +21,7 @@ from json import loads
 from re import compile
 from os import makedirs, rename
 from os.path import dirname, basename
-from subprocess import PIPE, Popen, check_output
+from subprocess import PIPE, STDOUT, CalledProcessError, Popen, check_output
 from sys import argv, stderr
 from time import sleep, time
 import warnings
@@ -258,24 +258,6 @@ def prunable_images(ns):
     return ret
 
 
-def run_ctr_content_prune_references():
-    # Not entirely sure what this does, but it shrinks the content down.
-    # We'll likely want to do this last.
-    for ns in namespaces():
-        before = check_output(
-            ['ctr', '-n', ns, 'content', 'list', '--quiet']
-            ).decode().count('\n')
-        ret = check_output(
-            ['ctr', '-n', ns, 'content', 'prune', 'references']
-            ).decode().strip()
-        if ret != '':
-            print('(unexpected ctr content prune references output)', ns, ret)
-        after = check_output(
-            ['ctr', '-n', ns, 'content', 'list', '--quiet']
-            ).decode().count('\n')
-        print('(pruned content)', ns, (before - after))
-
-
 def get_all_prunable_images():
     images = []
     for ns in namespaces():
@@ -320,6 +302,76 @@ def remove_images(images):
         ret = check_output(
             ['ctr', '-n', ns, 'image', 'rm', ref]).decode().strip()
         print('(deleted)', ns, ret)
+
+
+def remove_containers():
+    # Simply remove all containers. Every container that fails is still
+    # running. Don't worry about that.
+    for ns in namespaces():
+        containers = check_output(
+            ['ctr', '-n', ns, 'containers', 'list', '--quiet']
+            ).decode().strip()
+        if not containers:
+            continue
+
+        container_objects = []
+        for container_id in containers.split('\n'):
+            out = check_output(
+                ['ctr', '-n', ns, 'containers', 'info', container_id]
+                ).decode().strip()
+            json = loads(out)
+            assert json['ID'] == container_id
+            container_objects.append({
+                'id': container_id,
+                'k8s.ns': json['Labels'].get(
+                    'io.kubernetes.pod.namespace', container_id),
+                'k8s.pod': json['Labels'].get(
+                    'io.kubernetes.pod.name', container_id),
+                'k8s.container': json['Labels'].get(
+                    'io.kubernetes.container.name', '[{}]'.format(
+                        json['Labels'].get('io.cri-containerd.kind'))),
+                # TODO: Use timestamps?
+                'created': json['CreatedAt'],
+                'updated': json['UpdatedAt'],
+            })
+
+        container_objects.sort(key=(
+            lambda x: (x['k8s.ns'], x['k8s.pod'], x['updated'])))
+        for obj in container_objects:
+            try:
+                out = check_output(
+                    ['ctr', '-n', ns, 'containers', 'remove', obj['id']],
+                    stderr=STDOUT,
+                    ).decode()
+            except CalledProcessError:
+                # TODO: Hide this.
+                print(
+                    '(keeping container)', ns, obj['k8s.ns'], obj['k8s.pod'],
+                    obj['k8s.container'], obj['created'])
+            else:
+                # TODO: Maybe not list the timestamps..
+                print(
+                    '(deleted container)', ns, obj['k8s.ns'], obj['k8s.pod'],
+                    obj['k8s.container'], obj['created'])
+                exit()
+
+
+def prune_content_references():
+    # Not entirely sure what this does, but it shrinks the content down.
+    # We'll likely want to do this last.
+    for ns in namespaces():
+        before = check_output(
+            ['ctr', '-n', ns, 'content', 'list', '--quiet']
+            ).decode().count('\n')
+        ret = check_output(
+            ['ctr', '-n', ns, 'content', 'prune', 'references']
+            ).decode().strip()
+        if ret != '':
+            print('(unexpected ctr content prune references output)', ns, ret)
+        after = check_output(
+            ['ctr', '-n', ns, 'content', 'list', '--quiet']
+            ).decode().count('\n')
+        print('(pruned content)', ns, (before - after))
 
 
 def container_image_ref(ns, container):
@@ -583,8 +635,15 @@ def main():
             while not yn.strip() or yn.strip() not in 'YyNn':
                 yn = input('Prune (y/n)? ')
             if yn.lower() in 'Yy':
+                # Remove the curated images.
                 remove_images(res)
-                run_ctr_content_prune_references()
+                # Enumerate and try to remove all containers. Those that are
+                # running cannot be removed.
+                remove_containers()
+                # Prune the content. Not entirely sure what this does, but it
+                # does clean up stuff that is unused.
+                prune_content_references()
+
     elif len(argv) == 2 and argv[1] == 'record-image-starts':
         # Listen for events, check for container-add, lookup container image,
         # store last-used-time.
