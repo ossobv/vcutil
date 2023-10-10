@@ -628,21 +628,24 @@ def main():
         force = (len(argv) == 3 and argv[2] in ('-f', '--force'))
         res = prunable_images_after_double_check()
         if res:
-            print('NS', 'REF_TO_PRUNE')
-            for ns, image in res:
-                print(ns, image)
-            yn = ('y' if force else '')
-            while not yn.strip() or yn.strip() not in 'YyNn':
-                yn = input('Prune (y/n)? ')
-            if yn.lower() in 'Yy':
-                # Remove the curated images.
-                remove_images(res)
-                # Enumerate and try to remove all containers. Those that are
-                # running cannot be removed.
-                remove_containers()
-                # Prune the content. Not entirely sure what this does, but it
-                # does clean up stuff that is unused.
-                prune_content_references()
+            if not force:
+                print('NS', 'REF_TO_PRUNE')
+                for ns, image in res:
+                    print(ns, image)
+                yn = ''
+                while not yn.strip() or yn.strip() not in 'YyNn':
+                    yn = input('Prune (y/n)? ')
+                if yn.lower() not in 'Yy':
+                    exit(1)
+
+            # Remove the curated images.
+            remove_images(res)
+            # Enumerate and try to remove all containers. Those that are
+            # running cannot be removed.
+            remove_containers()
+            # Prune the content. Not entirely sure what this does, but it
+            # does clean up stuff that is unused.
+            prune_content_references()
 
     elif len(argv) == 2 and argv[1] == 'record-image-starts':
         # Listen for events, check for container-add, lookup container image,
