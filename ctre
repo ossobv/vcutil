@@ -258,6 +258,24 @@ def prunable_images(ns):
     return ret
 
 
+def run_ctr_content_prune_references():
+    # Not entirely sure what this does, but it shrinks the content down.
+    # We'll likely want to do this last.
+    for ns in namespaces():
+        before = check_output(
+            ['ctr', '-n', ns, 'content', 'list', '--quiet']
+            ).decode().count('\n')
+        ret = check_output(
+            ['ctr', '-n', ns, 'content', 'prune', 'references']
+            ).decode().strip()
+        if ret != '':
+            print('(unexpected ctr content prune references output)', ns, ret)
+        after = check_output(
+            ['ctr', '-n', ns, 'content', 'list', '--quiet']
+            ).decode().count('\n')
+        print('(pruned content)', ns, (before - after))
+
+
 def get_all_prunable_images():
     images = []
     for ns in namespaces():
@@ -566,6 +584,7 @@ def main():
                 yn = input('Prune (y/n)? ')
             if yn.lower() in 'Yy':
                 remove_images(res)
+                run_ctr_content_prune_references()
     elif len(argv) == 2 and argv[1] == 'record-image-starts':
         # Listen for events, check for container-add, lookup container image,
         # store last-used-time.
