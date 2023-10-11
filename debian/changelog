@@ -1,3 +1,16 @@
+vcutil (1.42) stable; urgency=low
+
+  * Improvements:
+    - ctre: Fix systemd unit file issue.
+    - ctre: Various improvements; better image use recording, better handling
+      of docker-based containerd setups, also prunes stopped containers and
+      unused content.
+    - lldpscan: Handle outgoing LLDP packets with ETH_P_ALL proto
+    - mysql-slave-skip-one-table: Add optional mariadb-bin prefix arg
+    - wgrep: Also search through .diff and .patch files
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 11 Oct 2023 11:54:11 +0200
+
 vcutil (1.41) stable; urgency=low
 
   * Additions:
