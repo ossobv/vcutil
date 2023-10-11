@@ -530,7 +530,7 @@ def record_image_starts():
 
         for event in event_lines(readlines(fp.stdout)):
             try:
-                handle_event(event, ignored_events)
+                handle_event(event, ignored_events, debug=False)
             except Exception as e:
                 print(f'ERROR event: {event!r} -- {e}', file=stderr)
                 raise
@@ -568,12 +568,16 @@ def handle_event(event, ignored_events, debug=False):
 
     # In container.io env, we first see a container create event.
     if event.action == '/containers/create':
-        container_id = event.data['id']
-        unixtime = int(event.unixtime)
-        image_ref = event.data['image']
-        update_image_startstop(unixtime, None, event.ns, image_ref)
-        print('C', unixtime, event.ns, image_ref, (
-            event.data if debug else ''))
+        if 'image' in event.data:
+            container_id = event.data['id']
+            unixtime = int(event.unixtime)
+            image_ref = event.data['image']
+            update_image_startstop(unixtime, None, event.ns, image_ref)
+            print('C', unixtime, event.ns, image_ref, (
+                event.data if debug else ''))
+        else:
+            print('C', unixtime, event.ns, 'NO_IMAGE_REF', (
+                event.data if (event.ns != 'moby' or debug) else ''))
 
     # Tasks create/start is how we see PODs getting started, both in
     # docker and pure container.io environments.
@@ -596,7 +600,8 @@ def handle_event(event, ignored_events, debug=False):
             print('T', unixtime, event.ns, image_ref, (
                 event.data if debug else ''))
         else:
-            print('T', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
+            print('T', unixtime, event.ns, 'NO_IMAGE_REF', (
+                event.data if (event.ns != 'moby' or debug) else ''))
 
     # Stop/end tasks
     elif event.action == '/tasks/exit' and (
@@ -609,7 +614,8 @@ def handle_event(event, ignored_events, debug=False):
             print('t', unixtime, event.ns, image_ref, (
                 event.data if debug else ''))
         else:
-            print('t', unixtime, event.ns, 'NO_IMAGE_REF', event.data)
+            print('t', unixtime, event.ns, 'NO_IMAGE_REF', (
+                event.data if (event.ns != 'moby' or debug) else ''))
 
 
 def formatwarning(message, category, filename, lineno, line=None):
