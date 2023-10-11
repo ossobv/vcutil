@@ -66,6 +66,11 @@ def split_by_header(lines):
     In ["KEY1<TAB>KEY2<TAB>KEY3", "VAL 1<TAB>VAL 2<TAB>VAL 3"]
     Out [{"KEY1": "VAL 1", "KEY2": "VAL 2", "KEY3": "VAL 3"}]
     """
+    def as_value(value):
+        if value == '-':
+            return None
+        return value
+
     header = lines[0]
     parts = header.strip().split()
     ret = []
@@ -76,7 +81,7 @@ def split_by_header(lines):
             assert len(data) == len(parts), (parts, data)
             item = {}
             for n, part in enumerate(parts):
-                item[part] = data[n]
+                item[part] = as_value(data[n])
             ret.append(item)
 
     else:
@@ -97,7 +102,7 @@ def split_by_header(lines):
         for line in lines[1:]:
             item = {}
             for part, size in zip(parts, sizes):
-                item[part] = line[size[0]:size[1]].rstrip()
+                item[part] = as_value(line[size[0]:size[1]].rstrip())
             ret.append(item)
 
     return ret
@@ -199,7 +204,7 @@ def images_not_in_use(ns):
     image_dict = dict((image.ref, image.digest) for image in image_list)
     image_digest_in_use = set()
     for image_ref in images_in_use:
-        if image_ref != '-':
+        if image_ref is not None:
             try:
                 image_digest_in_use.add(image_dict[image_ref])
             except KeyError:
