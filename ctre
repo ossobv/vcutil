@@ -3,13 +3,19 @@
 #
 # Enhanced CTR (containerd CLI)
 #
-# Right now it only does pruning of unused images.
+# Right now it only does pruning of unused images. This is useful in
+# Kubernetes (K8S) environments where stale content can pile up.
 #
 # Usage:
 #
 #     ctre prune                # lists all images to prune
 #     ctre prune -f             # prunes the images
 #     ctre record-image-starts  # daemon process that keeps track of starts
+#
+# This differs from 'crictl prune' because it records image use first.
+# Making sure that we're not removing images that were recently used.
+# Recording is done in /var/spool/ctre/image_starts by this application
+# run in daemon mode.
 #
 # BEWARE: stoptime can record the stopping of the _previous_ container after
 # starting the next one. This can confuse you into thinking a container is
@@ -41,7 +47,6 @@ SIZE_UNITS = {
     ' GiB': 1024 * 1024 * 1024,
 }
 
-HAS_WARNED = set()
 IMAGE_STARTS_DB = '/var/spool/ctre/image_starts'
 
 Blob = namedtuple('Blob', 'ns digest size age')
@@ -185,6 +190,8 @@ def images(ns):
 def images_not_in_use(ns):
     out = check_output(['ctr', '-n', ns, 'container', 'ls']).decode().strip()
     # CONTAINER  IMAGE  RUNTIME
+    # can contain empty images "-" when they are not linked through containerd
+    # (as seen with moby/dockerd)
     items = split_by_header(out.split('\n'))
     images_in_use = set([item['IMAGE'] for item in items])
 
@@ -192,15 +199,11 @@ def images_not_in_use(ns):
     image_dict = dict((image.ref, image.digest) for image in image_list)
     image_digest_in_use = set()
     for image_ref in images_in_use:
-        try:
-            image_digest_in_use.add(image_dict[image_ref])
-        except KeyError:
-            if image_ref not in HAS_WARNED:
-                if image_ref.startswith('k8s.gcr.io/pause:'):
-                    pass
-                else:
-                    warn(f'Container ref {image_ref!r} not found in images')
-                    HAS_WARNED.add(image_ref)
+        if image_ref != '-':
+            try:
+                image_digest_in_use.add(image_dict[image_ref])
+            except KeyError:
+                warn(f'Container ref {image_ref!r} not found in images')
 
     # Order by digest
     by_digest = defaultdict(list)
@@ -376,7 +379,7 @@ def prune_content_references():
 
 def container_image_ref(ns, container):
     out = (
-        check_output(['ctr', '-n', ns, 'container', 'info', container])
+        check_output(['ctr', '-n', ns, 'containers', 'info', container])
         .decode('utf-8').strip())
     data = loads(out)
     return data['Image']
