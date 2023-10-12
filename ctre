@@ -261,6 +261,7 @@ def images_not_in_use(ns):
 def prunable_images(ns):
     ret = []
     for image in images_not_in_use(ns):
+        # Check image creation time.
         if image.age >= KEEP_IF_YOUNGER_THAN:
             ret.append(image)
     return ret
@@ -485,9 +486,10 @@ def load_image_starts(max_age):
     # Prune
     old = time() - max_age
     to_rm = set()
-    for k, v in kv.items():
-        if v[0] < old and (v[1] is None or v[1] < old):
-            to_rm.add(k)
+    for image_ref, (start, stop) in kv.items():
+        # Check start/stop time of containers with this image.
+        if start < old and (stop is None or stop < old):
+            to_rm.add(image_ref)
     for rm in to_rm:
         del kv[rm]
 
