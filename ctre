@@ -570,9 +570,9 @@ def handle_event(event, ignored_events, debug=False):
 
     # In container.io env, we first see a container create event.
     if event.action == '/containers/create':
+        unixtime = int(event.unixtime)
         if 'image' in event.data:
             container_id = event.data['id']
-            unixtime = int(event.unixtime)
             image_ref = event.data['image']
             update_image_startstop(unixtime, None, event.ns, image_ref)
             print('C', unixtime, event.ns, image_ref, (
