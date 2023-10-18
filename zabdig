@@ -703,6 +703,8 @@ def get_from_secret_storage(section):
 
     with closing(secretstorage.dbus_init()) as conn:
         coll = secretstorage.get_default_collection(conn)
+        if coll.is_locked():
+            coll.unlock()
         # FIXME: section? or DEFAULT?
         attrs = {'application': 'zabdig'}
         if section:
