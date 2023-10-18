@@ -1,0 +1,613 @@
+#!/usr/bin/env python3
+# fwsniff (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Sniffing live traffic for the purpose of adding a firewall.
+# fwsniff has two modes:
+# - traffic sniffing, in which traffic is monitored and displayed;
+# - iptables generation, in which (shell) iptables rules are created
+#   which add LOG to the final lines.
+#
+# A configuration file can be created along the lines of the
+# EXAMPLE_HOSTHUBBLE_YAML example below. Pass the filename as argument
+# to fwsniff for either mode.
+#
+# Running fwsniff is as safe as running tcpdump.
+#
+# TODO:
+# - document timing stuff with regards to dictionary keys (tuples vs. bins)
+# - move bin dictionary keys to int+str tuples
+# - add -i interface support (add detection too?)
+# - add something for udp?
+#
+import sys
+import warnings
+
+from collections import defaultdict, namedtuple
+from ipaddress import IPv4Network, IPv6Network, ip_network
+from os import environ, path
+from struct import pack, unpack
+from socket import AF_INET, inet_ntop
+from time import time
+from unittest import TestCase
+from warnings import warn
+
+from dpkt import NeedData           # python3-dpkt
+from dpkt.ethernet import Ethernet  # python3-dpkt
+from dpkt.sll import SLL            # python3-dpkt
+from pcapy import open_live         # python3-pcapy
+from yaml import SafeLoader, load   # python3-yaml
+
+
+EXAMPLE_HOSTHUBBLE_YAML = '''
+aliases:
+  VRF/backend/svc: 10.111.32.0/22
+  k8s-masters-and-nodes:
+    - k8s-masters
+    - k8s-nodes
+  k8s-masters:
+    - master.dr.backend.example.cloud: 10.0.68.11
+    - master.wp.backend.example.cloud: 10.0.87.11
+    - master.zl.backend.example.cloud: 10.0.90.11
+  k8s-nodes:
+    - node1.dr.backend.example.cloud: 10.0.68.15
+    - node1.wp.backend.example.cloud: 10.0.87.15
+    - node1.zl.backend.example.cloud: 10.0.90.15
+    - node2.dr.backend.example.cloud: 10.0.68.17
+    - node2.wp.backend.example.cloud: 10.0.87.17
+    - node2.zl.backend.example.cloud: 10.0.90.17
+  other-k8s-nodes:
+    # XXX: we definitely need more here...
+    - node1.wp.frontend.example.cloud: 10.0.87.129
+  load-balancers:
+    - lb.dr.example.com: 10.1.1.68
+    - lb.wp.example.com: 10.1.1.87
+    - lb.zl.example.com: 10.1.1.90
+  vpn:
+    - vpn-internal
+    - vpn-external
+  vpn-external: 8.8.8.8
+  vpn-internal: 10.0.87.193
+
+services:
+  # XXX: do something with interfaces?
+  ssh:
+    match: -p tcp --dport 22  # iface?
+    allow: [vpn]
+  zabbix_agent:
+    match: -p tcp --dport 10050
+    allow: [vpn]
+  master_cilium_api_in:
+    match: -p tcp --dport 12379
+    allow: [other-k8s-nodes]
+  master_etcd_clients:
+    match: -p tcp --dport 2379
+    allow: [VRF/backend/svc]
+  master_etcd_peers:
+    match: -p tcp --dport 2380
+    allow: [k8s-masters]
+  master_kube_apiserver:
+    match: -p tcp --dport 6443
+    allow: [k8s-masters-and-nodes, load-balancers]
+'''
+
+
+class KnownRulesTest(TestCase):
+    maxDiff = 8192
+
+    @staticmethod
+    def s2kv(s):
+        """
+        'name 1.2.3.4' -> ('name', IPv4Network('1.2.3.4'))
+        """
+        k, v = s.split(' ', 1)
+        return k, ip_network(v)
+
+    def test_example_yaml(self):
+        known_rules = KnownRules.from_yaml(EXAMPLE_HOSTHUBBLE_YAML)
+        self.assertEqual(
+            known_rules.get_cidrs('k8s-masters-and-nodes'), [
+                self.s2kv('master.dr.backend.example.cloud 10.0.68.11'),
+                self.s2kv('master.wp.backend.example.cloud 10.0.87.11'),
+                self.s2kv('master.zl.backend.example.cloud 10.0.90.11'),
+                self.s2kv('node1.dr.backend.example.cloud 10.0.68.15'),
+                self.s2kv('node1.wp.backend.example.cloud 10.0.87.15'),
+                self.s2kv('node1.zl.backend.example.cloud 10.0.90.15'),
+                self.s2kv('node2.dr.backend.example.cloud 10.0.68.17'),
+                self.s2kv('node2.wp.backend.example.cloud 10.0.87.17'),
+                self.s2kv('node2.zl.backend.example.cloud 10.0.90.17'),
+            ]
+        )
+
+    def test_aliases_chain(self):
+        known_rules = KnownRules()
+        known_rules.set_aliases({
+            'vpns': ['vpn-internal', 'vpn-external'],
+            'vpn-internal': ['10.1.2.0', '10.1.3.0'],
+            'vpn-external': ['1.2.3.4'],
+        })
+        self.assertEqual(
+            known_rules.get_cidrs('vpns'),
+            [self.s2kv('vpn-external 1.2.3.4'),
+             self.s2kv('vpn-internal 10.1.2.0'),
+             self.s2kv('vpn-internal 10.1.3.0')],
+        )
+
+    def test_aliases_reject_single(self):
+        known_rules = KnownRules()
+        known_rules.set_aliases({
+            'vpn-internal': '10.1.2.0',
+            'vpn-external': ['1.2.3.4', '5.5.5.5'],
+        })
+        self.assertEqual(
+            known_rules.get_cidrs('vpn-internal'),
+            [self.s2kv('vpn-internal 10.1.2.0')],
+        )
+        with self.assertRaises(ValueError):
+            known_rules.set_aliases({
+                'vpns': 'vpn-internal',
+            })
+        known_rules.set_aliases({
+            'vpns': ['vpn-internal', 'vpn-external'],
+        })
+        self.assertEqual(
+            known_rules.get_cidrs('vpns'),
+            [self.s2kv('vpn-external 1.2.3.4'),
+             self.s2kv('vpn-external 5.5.5.5'),
+             self.s2kv('vpn-internal 10.1.2.0')],
+        )
+
+    def test_services_existing(self):
+        known_rules = KnownRules.from_yaml(EXAMPLE_HOSTHUBBLE_YAML)
+        service, allowed = known_rules.get_service_by_tcp_port(2379)
+        self.assertEqual(service, 'master_etcd_clients')
+        self.assertEqual(
+            allowed,
+            [self.s2kv('VRF/backend/svc 10.111.32.0/22')],
+        )
+
+    def test_services_non_existing(self):
+        known_rules = KnownRules.from_yaml(EXAMPLE_HOSTHUBBLE_YAML)
+        missing = known_rules.get_service_by_tcp_port(9999)
+        self.assertEqual(missing, None)
+
+
+def ip_network_or_none(value):
+    try:
+        return ip_network(value)
+    except ValueError:
+        None
+
+
+class KnownRules:
+    """
+    Parses a yaml like EXAMPLE_HOSTHUBBLE_YAML and exposes...
+
+    - get_service_by_tcp_port, returning a service
+    - get_cidr, returning a name+network for an IP
+    """
+    @classmethod
+    def from_yaml_file(cls, filename):
+        with open(filename) as fp:
+            return cls.from_yaml(fp.read())
+
+    @classmethod
+    def from_yaml(cls, yaml):
+        data = load(yaml, Loader=SafeLoader)
+        if set(data.keys()) - set(['aliases', 'services']):
+            raise ValueError('unexpected keys in yaml: {}'.format(data.keys()))
+        obj = cls()
+        obj.set_aliases(data['aliases'])
+        obj.set_services(data['services'])
+        return obj
+
+    def __init__(self):
+        self._aliases = {}      # alias -> [aliases]|[networks]
+        self._services = {}     # service_id -> service_def
+        self._tcp_ports = {}    # 1234 -> service_id
+
+    def get_cidrs(self, alias):
+        if alias not in self._aliases:
+            raise ValueError(f'alias {alias!r} not found')
+        values = self._aliases[alias]
+        ret = []
+        for value in values:
+            if isinstance(value, (IPv4Network, IPv6Network)):
+                ret.append((alias, value))
+            else:
+                ret.extend(self.get_cidrs(value))
+        ret.sort()
+        return ret
+
+    def set_aliases(self, aliases):
+        for key, value in aliases.items():
+            if isinstance(value, str):
+                # Expect a:
+                # - CIDR
+                # (if we accepted aliases here, we would allow aliases to
+                # aliases without lists; confusing)
+                self._set_alias_cidr(key, value)
+
+            elif isinstance(value, list):
+                # Expect a:
+                # - list of aliases (strings)
+                # - list of CIDRs (strings)
+                # - list of dicts (alias: CIDR)
+                types = tuple(set([type(i) for i in value]))
+                if types == (str,):
+                    networks = [ip_network_or_none(i) for i in value]
+                    networks = [i for i in networks if i is not None]
+                    if len(networks) == 0:
+                        # - list of aliases
+                        self._set_alias_list(key, value)
+                    elif len(networks) == len(value):
+                        # - list of networks
+                        self._set_alias_list(key, networks)
+                    else:
+                        raise ValueError(
+                            f'unexpected both aliases and networks in '
+                            f'same list: {value!r}')
+
+                elif types == (dict,):
+                    # - list of dicts (alias: CIDR)
+                    aliases = []
+                    for item in value:
+                        if len(item) != 1:
+                            raise ValueError(
+                                f'only single value dict allowed here, got '
+                                f'{item!r}')
+                        for alias_key, alias_value in item.items():
+                            # Only takes a single CIDR
+                            self._set_alias_cidr(alias_key, alias_value)
+                            aliases.append(alias_key)
+                    self._set_alias_list(key, aliases)
+
+            else:
+                raise ValueError(f'unexpected {key!r}: {value!r}')
+
+    def _set_alias_cidr(self, key, value):
+        if key in self._aliases:
+            raise ValueError(
+                f'duplicate key {key!r} with value {value!r}')
+        try:
+            networks = [ip_network(value)]
+        except ValueError as e:
+            raise ValueError(
+                f'unexpected {value!r} non-network as single arg'
+                ) from e
+        else:
+            assert isinstance(networks, list), networks
+            self._aliases[key] = networks
+
+    def _set_alias_list(self, key, list_):
+        if key in self._aliases:
+            raise ValueError(
+                f'duplicate key {key!r} with value {list_!r}')
+        assert isinstance(list_, list), list_
+        self._aliases[key] = list_
+
+    def set_services(self, services):
+        for key, service in services.items():
+            if (not isinstance(service, dict) or
+                    set(service.keys()) != set(['match', 'allow'])):
+                raise ValueError(
+                    f'must has exactly match+allow for every service, got: '
+                    f'{key!r}: {service!r}')
+
+            # FIXME: right now we expect a certain format
+            match_parts = service['match'].split()
+            assert len(match_parts) == 4, service['match']
+            assert match_parts[0] == '-p', service['match']
+            assert match_parts[1] == 'tcp', service['match']
+            assert match_parts[2] == '--dport', service['match']
+            port = int(match_parts[3])
+            assert key not in self._services
+            assert port not in self._tcp_ports, (self._tcp_ports, port)
+
+            # Extract IPs immediately.
+            allowed = []
+            assert isinstance(service['allow'], list), (key, service)
+            for allow in service['allow']:
+                allowed.extend(self.get_cidrs(allow))
+            allowed.sort()
+            self._services[key] = allowed
+            self._tcp_ports[port] = key
+
+    def get_service_by_tcp_port(self, port):
+        if port not in self._tcp_ports:
+            return None
+        key = self._tcp_ports[port]
+        return key, self._services[key]
+
+    def print_iptables(self):
+        print('''\
+#!/bin/sh
+PRIMARY_IP=$(ip -o route get 1.2.3.4 | sed -e 's/^.* src \\([^ ]*\\).*/\\1/')
+
+if ! iptables -t filter -F INPUT_test 2>/dev/null; then
+    iptables -t filter -N INPUT_test
+    iptables -t filter -I INPUT -j INPUT_test
+fi
+
+# Explicitly use 127.0.0.1 (or maybe 127.0.0.0/8) for sanity;
+# if we expect traffic on a non-local IP, we generally expect
+# other connections too.
+iptables -t filter -A INPUT_test -i lo -s 127.0.0.0/8 -d 127.0.0.0/8 -j RETURN
+iptables -t filter -A INPUT_test -p icmp -j RETURN
+iptables -t filter -A INPUT_test -m state --state ESTABLISHED,RELATED -j RETURN
+# FIXME: what to do with incoming udp? nothing yet? and icmpv6?
+
+allow() {
+    iptables -t filter -A INPUT_test -i enp1s0np0 -d $PRIMARY_IP \\
+        $from $service -m comment --comment "$*" -j RETURN
+}
+
+''')
+        for port in self._tcp_ports:
+            service_id, allowed_list = self.get_service_by_tcp_port(port)
+            for allowed_name, allowed_net in allowed_list:
+                print(
+                    f"service='-p tcp --dport {port}' from='-s {allowed_net}' "
+                    f"allow '{service_id}: {allowed_name}'")
+            print()
+
+        print('#iptables -t filter -A INPUT_test  # just count')
+        print('iptables -t filter -A INPUT_test -j LOG  # log the rest')
+        print()
+
+
+def make_spinner():
+    """"
+    Return an interator to a single character as a spinner
+
+    Usage:
+
+        spinner = make_spinner()
+        while do_stuff():
+            print(next(spinner), end='')  # '|' -> '/' -> '-' -> '\\'
+    """
+    cycle, cyclepos, cyclelast = r'/-\|', 0, time()
+
+    while True:
+        yield f'\r{cycle[cyclepos]}\r'
+
+        # Less jerky cycle by only spinning if the previous iteration has been
+        # seen.
+        t = time()
+        if (t - cyclelast) >= 0.2:
+            cyclepos = (cyclepos + 1) % 4
+            cyclelast = t
+
+
+class NoService(namedtuple('NoService', 'service source')):
+    """
+    Light weight "Service" placeholder for undefined service
+    """
+    @classmethod
+    def from_small_identifier(cls, small_identifier):
+        dst_ip = inet_ntop(AF_INET, small_identifier[0:4])
+        (dst_port,) = unpack('>H', small_identifier[4:6])
+        src_ip = inet_ntop(AF_INET, small_identifier[6:10])
+        return cls(service=f'{dst_ip}:{dst_port}', source=src_ip)
+
+
+class Service:
+    """
+    Heavier weight "Service" with allowed networks and counts
+    """
+    def __init__(self, name, allowed_networks):
+        self.name = name
+        # TODO: replace source_net with binary+mask?
+        self._counts = dict((net, 0) for id_, net in allowed_networks)
+        self._networks_to_names = dict(
+            (net, id_) for id_, net in allowed_networks)
+
+    def total_count(self):
+        return sum(self._counts.values())
+
+    def add_count(self, small_identifier):
+        source_ip = ip_network(inet_ntop(AF_INET, small_identifier[6:10]))
+        net = self.get_net(source_ip)
+        if net:
+            self._counts[net] += 1
+            return self._counts[net], self._networks_to_names[net]
+        return 0, ''
+
+    def get_net(self, source_ip):
+        for net in self._counts.keys():
+            if source_ip.subnet_of(net):
+                return net
+        return None
+
+    def __str__(self):
+        return f"Service(name='{self.name}')"
+
+
+class HostHubble:
+    MINLEN = 14 + 20 + 20       # ethernet/sll + IP(min) + TCP(min)
+    SNAPLEN = 16 + 60 + 20      # ethernet/sll + IP(max) + TCP(min..)
+    PROMISC = False             # no need for promiscuous mode
+    BUFFER_TIMEOUT_MS = 200     # MUST be non-zero
+    TCP_SYN_ONLY = '(tcp[tcpflags]&tcp-syn)!=0 and (tcp[tcpflags]&tcp-ack)=0'
+    SLL_TYPE_TO_US = 0
+    ARPHRD_ETHER = 1
+    ARPHRD_LOOPBACK = 772
+    ARPHRD_NONE = 0xFFFE
+
+    def __init__(self, known_rules, listen_interface='any'):
+        # Args
+        self._known_rules = known_rules
+        self._listen_interface = listen_interface
+
+        # Store the counts
+        self._services = {}
+        self._noservices = defaultdict(int)
+
+    def main(self):
+        cap = open_live(
+            self._listen_interface, self.SNAPLEN, self.PROMISC,
+            self.BUFFER_TIMEOUT_MS)
+        cap.setfilter(self.TCP_SYN_ONLY)
+
+        decode_frame = (  # outermost frame is either 16 or 14 bytes
+            SLL if self._listen_interface == 'any' else Ethernet)
+        spinner = (make_spinner() if sys.stderr.isatty() else (lambda: ''))
+
+        while True:
+            print(next(spinner), end='', file=sys.stderr)
+
+            header, packet = cap.next()
+            if len(packet) < self.MINLEN:
+                warn(f'skipping small packet {packet!r}')
+                continue
+
+            outer_frame = decode_frame(packet)
+            if outer_frame.type != self.SLL_TYPE_TO_US:
+                # XXX: ^^^ for 'any' iface only
+                warn(f'skipping not-to-us packet type {outer_frame.type}')
+                continue
+            if outer_frame.hrd == self.ARPHRD_LOOPBACK:
+                assert outer_frame.hlen == 6, repr(outer_frame)
+                assert outer_frame.hdr[0:6] == b'\x00\x00\x00\x00\x00\x00', (
+                    repr(outer_frame))  # source from localhost device
+                warn('skipping to-us packet with src mac 00:00:00:00:00:00')
+                continue
+            elif outer_frame.hrd == self.ARPHRD_NONE:
+                assert outer_frame.hlen == 0, repr(outer_frame)
+            elif outer_frame.hrd == self.ARPHRD_ETHER:
+                pass
+            else:
+                print(outer_frame.hlen, outer_frame.hrd)
+                assert False, repr(outer_frame)
+
+            try:
+                ip = outer_frame.data
+                tcp = ip.data
+                small_identifier = self.compress(ip, tcp)
+            except (AttributeError, NeedData):
+                print(packet)
+                print(ip)
+                print(ip.data)
+                print(tcp)
+                print(tcp.data)
+                raise
+
+            if not self.add_known_service(small_identifier):
+                self.add_unknown_service(small_identifier)
+
+    def add_known_service(self, small_identifier):
+        service = self.get_known_service(small_identifier)
+        if not service:
+            return False  # not found by dst port
+
+        count, name = service.add_count(small_identifier)
+        if not count:
+            return False  # not found by src ip
+
+        if count == 1:
+            print(f'* expected {service.name!r} <- {name!r}')
+
+        return True
+
+    def add_unknown_service(self, small_identifier):
+        if small_identifier not in self._noservices:
+            nosvc = NoService.from_small_identifier(small_identifier)
+            print(f'* UNEXPECTED {nosvc.service!r} <- {nosvc.source!r}')
+        self._noservices[small_identifier] += 1
+
+    def get_known_service(self, small_identifier):
+        smaller_identifier = small_identifier[0:6]  # dstip+dport
+        try:
+            service = self._services[smaller_identifier]
+        except KeyError:
+            (dport,) = unpack('>H', small_identifier[4:6])
+            raw_service = self._known_rules.get_service_by_tcp_port(dport)
+            if not raw_service:
+                return None
+
+            service = self._services[smaller_identifier] = (
+                self.make_service(raw_service))
+        return service
+
+    def compress(self, ip, tcp):
+        return ip.dst + pack('>H', tcp.dport) + ip.src
+
+    def make_service(self, known_rules_service):
+        name, allowed_networks = known_rules_service
+        return Service(name, allowed_networks)
+
+    def report(self):
+        print('')
+        print('# reporting for duty!')
+        print()
+        print('## known services:')
+        for smaller_identifier, service in sorted(self._services.items()):
+            count = service.total_count()
+            print(f'{count:4d}  {service.name}:')
+            for net, count in sorted(service._counts.items()):
+                net_name = service._networks_to_names[net]
+                print(f'{count:4d}    {net_name}')
+        print()
+        print('## unknown services:')
+        for small_identifier, count in sorted(self._noservices.items()):
+            noservice = NoService.from_small_identifier(small_identifier)
+            print(f'{count:4d}  {noservice}')
+        print()
+
+
+def formatwarning(message, category, filename, lineno, line=None):
+    """
+    Override default Warning layout, from:
+
+        /PATH/TO/dutree.py:326: UserWarning:
+            [Errno 2] No such file or directory: '/0.d/05.d'
+          warnings.warn(str(e))
+
+    To:
+
+        dutree.py:330: UserWarning:
+            [Errno 2] No such file or directory: '/0.d/05.d'
+    """
+    return '{basename}:{lineno}: {category}: {message}\n'.format(
+        basename=path.basename(filename), lineno=lineno,
+        category=category.__name__, message=message)
+warnings.formatwarning = formatwarning  # noqa
+
+
+if __name__ == '__main__':
+    if sys.argv[1:2] in (['-h'], ['--help']):
+        argv0 = sys.argv[0]
+        print(f'Usage: {argv0} [YAMLFILE] [--make-iptables]')
+        print(f'or: RUNTESTS=1 {sys.argv[0]}')
+        print('')
+        print('Testing using iptables:')
+        print(f'# {argv0} YAMLFILE --make-iptables > iptables && sh iptables')
+        print('# tail /var/log/kern.log')
+        print('')
+        print('Testing using fwsniff packet capture:')
+        print(f'# {argv0} [YAMLFILE]')
+        print('')
+        exit(0)
+
+    if environ.get('RUNTESTS', '') not in ('', '0', 'n'):
+        from unittest import main
+        main()
+        raise RuntimeError('unreachable code')
+
+    if path.exists(' '.join(sys.argv[1:2])):
+        known_rules = KnownRules.from_yaml_file(' '.join(sys.argv[1:2]))
+        sys.argv.pop(1)
+    else:
+        known_rules = KnownRules()
+
+    if sys.argv[1:2] == ['--make-iptables']:
+        known_rules.print_iptables()
+        exit(0)
+
+    if sys.argv[1:]:
+        raise RuntimeError('unknown args')
+
+    hosthubble = HostHubble(known_rules)
+    try:
+        hosthubble.main()
+    except KeyboardInterrupt:
+        hosthubble.report()

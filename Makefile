@@ -74,6 +74,7 @@ BINS = \
 SBINS = \
 	arpfix \
 	fwdiff \
+	fwsniff \
 	multilb-sanity-check \
 
 SYSSBINS = \
