@@ -17,8 +17,8 @@ dump_iptables() {
         sort)"
     if test -z "$tables"; then
         #echo 'fwdiff: no ip4 tables found, error?' >&2
-	# I guess, nftables? Does not add modules for nothing.
-	tables='filter nat mangle raw'
+        # I guess, nftables? Does not add modules for nothing.
+        tables='filter nat mangle raw'
     fi
     for table in $tables; do
         iptables -t $table -S | sed -e "s/^/iptables -t $table /"
@@ -31,8 +31,8 @@ dump_ip6tables() {
         sort)"
     if test -z "$tables"; then
         #echo 'fwdiff: no ip6 tables found, error?' >&2
-	# I guess, nftables? Does not add modules for nothing.
-	tables='filter nat mangle raw'
+        # I guess, nftables? Does not add modules for nothing.
+        tables='filter nat mangle raw'
     fi
     for table in $tables; do
         ip6tables -t $table -S | sed -e "s/^/ip6tables -t $table /"
