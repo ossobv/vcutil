@@ -65,17 +65,21 @@
 #     description of how the cipher groups work can be found in the
 #     ciphers(1ssl) man-page.
 #
+from __future__ import print_function
+
 import sys
+
 from datetime import datetime
-from scapy.all import IP, TCP, sniff
-from scapy_ssl_tls.ssl_tls import (
+from scapy.all import IP, TCP, sniff    # python3-scapy (no-install-recommends)
+from scapy_ssl_tls.ssl_tls import (     # scapy-ssl_tls (*)
     TLS_VERSIONS, TLS_CIPHER_SUITES,
     TLS, TLSClientHello, TLSServerHello)
+# (*) git+https://github.com/ossobv/scapy-ssl_tls-py3
 
 
 def traffic_callback(pkt):
     if TCP not in pkt:
-        print >>sys.stderr, pkt.show()
+        print(pkt.show(), file=sys.stderr)
         return
 
     try:
@@ -97,38 +101,39 @@ def tls_callback(pkt):
 
         if TLSClientHello in pkt:
             hello = pkt[TLSClientHello]
-            print '%s: %s: TLS Client Hello:' % (when, tuple4)
-            print '  VERSION 0x%x: %s' % (
-                hello.version, TLS_VERSIONS.get(hello.version))
+            print('%s: %s: TLS Client Hello:' % (when, tuple4))
+            print('  VERSION 0x%x: %s' % (
+                hello.version, TLS_VERSIONS.get(hello.version)))
             for cipher in hello.cipher_suites:
-                print '  CIPHER 0x%04x: %s' % (
-                    cipher, TLS_CIPHER_SUITES.get(cipher))
+                print('  CIPHER 0x%04x: %s' % (
+                    cipher, TLS_CIPHER_SUITES.get(cipher)))
             print
 
         if TLSServerHello in pkt:
             hello = pkt[TLSServerHello]
-            print '%s: %s: TLS Server Hello:' % (when, tuple4)
+            print('%s: %s: TLS Server Hello:' % (when, tuple4))
             cipher = hello.cipher_suite
-            print '  VERSION 0x%x: %s' % (
-                hello.version, TLS_VERSIONS.get(hello.version))
-            print '  CIPHER 0x%04x: %s' % (
-                cipher, TLS_CIPHER_SUITES.get(cipher))
-            print
+            print('  VERSION 0x%x: %s' % (
+                hello.version, TLS_VERSIONS.get(hello.version)))
+            print('  CIPHER 0x%04x: %s' % (
+                cipher, TLS_CIPHER_SUITES.get(cipher)))
+            print()
 
 
 def main():
     if len(sys.argv) <= 1:
-        print >>sys.stderr, (
+        print(
             'Listen for TCP packets and report TLS Hello packets.\n'
             'Use this to debug SSL/TLS setup problems.\n'
             '\n'
             'Please supply a pcap-filter expression on the command line,\n'
-            'like: port 25 and host 1.2.3.4\n')
+            'like: port 25 and host 1.2.3.4\n',
+            file=sys.stderr)
         sys.exit(1)
 
     pcap_filter = ' '.join(sys.argv[1:])
     real_filter = 'tcp and (%s)' % (pcap_filter,)
-    print 'Listening for TCP packets on: %s' % (pcap_filter,)
+    print('Listening for TCP packets on: %s' % (pcap_filter,))
     sniff(prn=traffic_callback, filter=real_filter, store=0)
 
 
