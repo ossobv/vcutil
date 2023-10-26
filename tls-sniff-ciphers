@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-# tls-sniff-ciphers (part of ossobv/vcutil) // wdoekes/2016 // Public Domain
+# tls-sniff-ciphers (part of ossobv/vcutil) // wdoekes/2016,2023
+#   // Public Domain
 #
 # Sniff TLS traffic off the wire and show which TLS/SSL cipher is being
 # negotiated. Useful to debug TLS cipher selection issues, commonly
@@ -19,17 +20,17 @@
 #
 #     2016-09-30 13:34:16.924273: 1.2.3.4:1782 -> 5.5.5.5:25: TLS Client Hello:
 #       VERSION 0x303: TLS_1_2
-#       CIPHER 0xc02f: ECDHE_RSA_WITH_AES_128_GCM_SHA256
-#       CIPHER 0xc02b: ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-#       CIPHER 0x009e: DHE_RSA_WITH_AES_128_GCM_SHA256
+#       CIPHER 0xc02f: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+#       CIPHER 0xc02b: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+#       CIPHER 0x009e: TLS_DHE_RSA_WITH_AES_128_GCM_SHA256
 #       ...
 #
 #     2016-09-30 13:34:16.927713: 5.5.5.5:25 -> 1.2.3.4:1782: TLS Server Hello:
 #       VERSION 0x303: TLS_1_2
-#       CIPHER 0xc030: ECDHE_RSA_WITH_AES_256_GCM_SHA384
+#       CIPHER 0xc030: TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 #
 # Here we see that the TLS setup between 1.2.3.4 and 5.5.5.5 selected
-# ECDHE_RSA_WITH_AES_256_GCM_SHA384. That's fine.
+# TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384. That's fine.
 #
 # At other times, you may see that the client sends ciphers that are not
 # in your cipherlist. For instance, you have a cipherlist set to HIGH,
@@ -71,10 +72,36 @@ import sys
 
 from datetime import datetime
 from scapy.all import IP, TCP, sniff    # python3-scapy (no-install-recommends)
-from scapy_ssl_tls.ssl_tls import (     # scapy-ssl_tls (*)
-    TLS_VERSIONS, TLS_CIPHER_SUITES,
-    TLS, TLSClientHello, TLSServerHello)
-# (*) git+https://github.com/ossobv/scapy-ssl_tls-py3
+from scapy.main import load_layer
+from scapy.layers.tls.crypto.suites import (
+    _tls_cipher_suites as TLS_CIPHER_SUITES)
+assert TLS_CIPHER_SUITES[5].endswith('RSA_WITH_RC4_128_SHA'), TLS_CIPHER_SUITES
+
+TLS_VERSIONS = {
+    # SSL
+    0x0002: "SSL_2_0",
+    0x0300: "SSL_3_0",
+    # TLS:
+    0x0301: "TLS_1_0",
+    0x0302: "TLS_1_1",
+    0x0303: "TLS_1_2",
+    0x0304: "TLS_1_3",
+    # DTLS
+    0x0100: "PROTOCOL_DTLS_1_0_OPENSSL_PRE_0_9_8f",
+    0x7f10: "TLS_1_3_DRAFT_16",
+    0x7f12: "TLS_1_3_DRAFT_18",
+    0xfeff: "DTLS_1_0",
+    0xfefd: "DTLS_1_1",
+}
+
+# Places lots of stuff in __builtins__. Like:
+# TLS, TLSClientHello, TLSServerHello
+load_layer('tls')
+
+# Avoid flake8 complaining about us using them out of the blue.
+TLS = __builtins__.TLS
+TLSClientHello = __builtins__.TLSClientHello
+TLSServerHello = __builtins__.TLSServerHello
 
 
 def traffic_callback(pkt):
@@ -104,19 +131,18 @@ def tls_callback(pkt):
             print('%s: %s: TLS Client Hello:' % (when, tuple4))
             print('  VERSION 0x%x: %s' % (
                 hello.version, TLS_VERSIONS.get(hello.version)))
-            for cipher in hello.cipher_suites:
+            for cipher in hello.ciphers:
                 print('  CIPHER 0x%04x: %s' % (
                     cipher, TLS_CIPHER_SUITES.get(cipher)))
-            print
+            print()
 
         if TLSServerHello in pkt:
             hello = pkt[TLSServerHello]
             print('%s: %s: TLS Server Hello:' % (when, tuple4))
-            cipher = hello.cipher_suite
             print('  VERSION 0x%x: %s' % (
                 hello.version, TLS_VERSIONS.get(hello.version)))
             print('  CIPHER 0x%04x: %s' % (
-                cipher, TLS_CIPHER_SUITES.get(cipher)))
+                hello.cipher, TLS_CIPHER_SUITES.get(hello.cipher)))
             print()
 
 
