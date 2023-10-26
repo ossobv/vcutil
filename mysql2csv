@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2022 // Public Domain
+# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2023 // Public Domain
 #
 # This mysql2csv dump script is a convenient way to dump and/or prune
 # large tables. Instead of selecting all data at once, it takes chunks
@@ -22,9 +22,19 @@
 # "hour-selecting" queries should be light enough to handle without
 # locking up your production database.
 #
+# If you have an index on an integer column, that can be used too, but
+# then you'll want to pass a timestamp column as extra argument:
+#
+#     mysql2csv ... mydatabase large_table id created
+#
+# When selecting by id, you may want to fetch larger chunks at once (see
+# the --period-size argument).
+#
 # See mysql2csv -h for more info.
 #
 # Created by Walter Doekes, OSSO B.V.
+#
+# Changes:
 # - 2011-01-21: Initial from http://wjd.nu/files/2011/01/mysql2csv.py
 # - 2016-05-23: PEP cleanup, add into vcutil repository.
 # - 2016-05-23: Only write CSVs if there is data for that period. End
@@ -40,6 +50,14 @@
 #               than silently truncate/NULLify values.
 # - 2019-04-02: Handle YYYY-mm-dd HH:MM:SS[.qqq[qqq]] TIMESTAMP values.
 # - 2022-03-04: Compatibility tweaks (py2/3, DATETIME NULL, BLOB).
+# - 2022-12-05: Add the option to sort/filter by integer column.
+# - 2023-10-26: When sorting by integer, allow time based templates,
+#               by reading the time from another (unindexed) column.
+# - 2023-10-26: Rename -t/--template to -o/--output.
+#
+# Caveats:
+# - Appends to existing files. Make sure the output location is devoid
+#   of stale CSV output.
 #
 from __future__ import print_function, unicode_literals
 import argparse  # pip install argparse on old pre-2.7 python
@@ -47,10 +65,11 @@ import getpass
 import sys
 import time
 
-from MySQLdb import connect, converters
 from base64 import b16encode
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+
+from MySQLdb import connect, converters
 
 try:
     from configparser import RawConfigParser
@@ -220,12 +239,6 @@ class Interval(object):
         ret = cursor.fetchall()
         return ret[0][0]
 
-    def make_filename(self, template):
-        if self.type == datetime:
-            return self.begin.strftime(template)
-        assert '%' not in template, 'Maybe set template without strftime?'
-        return template
-
     def set_next(self):
         self.begin, self.end = self.end, self.end + self.period
 
@@ -235,13 +248,64 @@ class Interval(object):
         self.end = self.begin + self.period
 
 
+class FileManager(object):
+    def __init__(self, filename_template, header, is_monotonic):
+        self._filename_template = filename_template
+        self._header = header
+
+        # If is_monotonic, we'll assume we can close files as soon as we're
+        # moving to the next file. For others, it might look like we're leaking
+        # files until the last moment when close() is called.
+        self._is_monotonic = is_monotonic
+
+        self._files = {}
+
+    def _open(self, filename):
+        assert filename not in self._files, (filename, self._files)
+        # We must open in append-mode if sort_column!=date_column,
+        # because we might get a record from an older date. (An option to
+        # avoid this could be by recording the files we have visited in
+        # this run.)
+        fp = open(filename, 'a')
+        if fp.tell() == 0:
+            # We're at pos 0.
+            fp.write(self._header)
+        self._files[filename] = fp
+        return fp
+
+    def _make_filename(self, date_value):
+        return date_value.strftime(self._filename_template)
+
+    def close(self):
+        for fp in self._files.values():
+            fp.close()
+        self._files = {}
+
+    def write(self, line, when):
+        opened_new_file = False
+        filename = self._make_filename(when)
+
+        try:
+            # Most common case first. We expect few exceptions.
+            fp = self._files[filename]
+        except KeyError:
+            if self._is_monotonic:
+                self.close()
+
+            fp = self._open(filename)
+            opened_new_file = True
+
+        fp.write(line)
+        return opened_new_file
+
+
 def dump2csv_and_prune(db_connection, kwargs):
     # Get relevant args.
-    (table_name, date_column, until, template, period_size, quiet, sleep,
-     prune) = tuple(
+    (table_name, sort_column, date_column, until, output,
+     period_size, quiet, sleep, prune) = tuple(
         kwargs[i] for i in (
-            'table', 'date_column', 'until', 'template', 'period_size',
-            'quiet', 'sleep', 'prune'))
+            'table', 'sort_column', 'date_column', 'until', 'output',
+            'period_size', 'quiet', 'sleep', 'prune'))
 
     extra_where = (kwargs.get('extra_where') or '').strip()
     if extra_where:
@@ -249,23 +313,40 @@ def dump2csv_and_prune(db_connection, kwargs):
 
     rows = describe_table(db_connection, table_name)
 
+    # Figure out the interval/datatypes involved.
     interval = Interval(
-        db_connection, table_name, date_column,
+        db_connection, table_name, sort_column,
         period_size, until, extra_where)
+
+    # Check what column to use for the filenames.
+    date_column_idx = None
+    if date_column is None and interval.type == datetime:
+        date_column = sort_column
+        is_monotonic = True
+    elif date_column is None and '%' in output:
+        raise NotImplementedError(
+            'output filename templates (using %) require a date_column')
+    elif date_column is None:
+        assert '%' not in output, output
+        is_monotonic = True  # very monotonic, only one file
+    else:
+        is_monotonic = False
+    if date_column is not None:
+        date_column_idx = rows.index(date_column)
+
+    # Make filemanager that auto-opens files and auto-adds CSV headers.
+    # This allows us to write to multiple files simultaneously. For instance
+    # when using an INT index, but storing the files in a time-based filename.
+    filemanager = FileManager(
+        filename_template=output,
+        header='%s\n' % (','.join(rows),),
+        is_monotonic=is_monotonic)
 
     # Create cursor. Increment in 1 hour steps.
     cursor = db_connection.cursor()
-    dest_file = None
-    dest_file_name = ''
 
     caret_angle = 0
     while interval.begin <= interval.last:
-        # Check if we need to open a new file.
-        if dest_file and interval.make_filename(template) != dest_file_name:
-            if dest_file:
-                dest_file.close()
-                dest_file = None
-
         if interval.type == datetime:
             # For certain columns, string/time comparisons can fail during
             # DST changes, for example:
@@ -285,20 +366,20 @@ def dump2csv_and_prune(db_connection, kwargs):
             extra_seconds = has_crossed_dst(db_connection, interval.begin)
             begin_date_hack = (
                 interval.begin - timedelta(seconds=extra_seconds))
-            begin_date_sql = "'%s'" % (
+            begin_range_sql = "'%s'" % (
                 begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'),)
-            end_date_sql = "'%s'" % (
+            end_range_sql = "'%s'" % (
                 interval.end.strftime('%Y-%m-%d %H:%M:%S'),)
         else:
-            begin_date_sql = interval.begin
-            end_date_sql = interval.end
+            begin_range_sql = interval.begin
+            end_range_sql = interval.end
 
         # Query a bit of data and write to file.
         sql = (
             "SELECT * FROM %s WHERE %s <= %s AND %s < %s %s "
             "ORDER BY %s" % (
-                table_name, begin_date_sql, date_column,
-                date_column, end_date_sql, extra_where, date_column))
+                table_name, begin_range_sql, sort_column,
+                sort_column, end_range_sql, extra_where, sort_column))
         # #print(sql)
         cursor.execute(sql)
 
@@ -306,14 +387,6 @@ def dump2csv_and_prune(db_connection, kwargs):
         cursorit = iter(cursor)
         try:
             row = next(cursorit)
-            if dest_file is None:
-                dest_file_name = interval.make_filename(template)
-                dest_file = open(dest_file_name, 'a')
-                dest_file.write('%s\n' % (','.join(rows),))
-
-                if not quiet:
-                    sys.stdout.write('+')
-                    sys.stdout.flush()
         except StopIteration:
             # No data! Seek to first data now. Otherwise we might keep
             # scanning and scanning.
@@ -321,9 +394,16 @@ def dump2csv_and_prune(db_connection, kwargs):
             continue
 
         # Write data (first row, and the rest).
-        dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
+        opened_new_file = filemanager.write(
+            line='%s\n' % (','.join(to_string(i) for i in row),),
+            when=row[date_column_idx])
         for row in cursorit:
-            dest_file.write('%s\n' % (','.join(to_string(i) for i in row),))
+            opened_new_file |= filemanager.write(
+                line='%s\n' % (','.join(to_string(i) for i in row),),
+                when=row[date_column_idx])
+        if opened_new_file and not quiet:
+            sys.stdout.write('+')
+            sys.stdout.flush()
 
         # Prune immediately in equal sized chunks.
         if prune and row is not None:
@@ -332,8 +412,8 @@ def dump2csv_and_prune(db_connection, kwargs):
             cursor.execute(
                 "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
                     table_name,
-                    begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), date_column,
-                    date_column, interval.end.strftime('%Y-%m-%d %H:%M:%S'),
+                    begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), sort_column,
+                    sort_column, interval.end.strftime('%Y-%m-%d %H:%M:%S'),
                     extra_where))
             db_connection.commit()
             if not quiet:
@@ -349,9 +429,7 @@ def dump2csv_and_prune(db_connection, kwargs):
         if sleep:
             time.sleep(sleep)
 
-    if dest_file:
-        dest_file.close()
-        dest_file = None
+    filemanager.close()
 
 
 def describe_table(db_connection, table_name):
@@ -464,8 +542,8 @@ Supply --prune as argument to immediately prune the data after dumping it.
         '-s', '--socket',
         help='unix socket to connect to instead of tcp host')
     parser.add_argument(
-        '-t', '--template',
-        help="the filename template to use instead of '%s'" % (
+        '-o', '--output',
+        help="output filename template to use instead of '%s'" % (
             example_filename.replace('%', '%%'),))
     parser.add_argument(  # not through defaults-file
         '--until', type=parse_date, default=None,
@@ -476,7 +554,7 @@ Supply --prune as argument to immediately prune the data after dumping it.
     parser.add_argument(
         '--period-size', type=int, metavar='PERIOD', default=3600,
         help=('interval size in seconds or in integers if dealing with a '
-              'sequence'))
+              'sequence (maybe use 50000 for primary key sorted ones)'))
     parser.add_argument(  # not through defaults-file
         '--prune', action='store_true', default=False,
         help='prunes the data after writing the csv (DESTRUCTIVE!)')
@@ -501,8 +579,12 @@ Supply --prune as argument to immediately prune the data after dumping it.
         'table',
         help='the table to dump and/or prune')
     parser.add_argument(
-        'date_column',
-        help='the column that holds the indexed date (or a simple sequence)')
+        'sort_column',
+        help='the column that holds the indexed date or primary key')
+    parser.add_argument(
+        'date_column', nargs='?', default=None,
+        help=('the column that holds a datetime to use for the filename '
+              'template (same as sort_column if not specified)'))
 
     # Extract args and merge with defaults. If a defaults-file is set,
     # use that and have the command line overrule it.
@@ -516,16 +598,16 @@ Supply --prune as argument to immediately prune the data after dumping it.
         if 'sleep' in kwargs:
             kwargs['sleep'] = float(kwargs['sleep'])
     # Copy command line args.
-    for arg in ('host', 'port', 'user', 'socket', 'template',
-                'database', 'table', 'date_column', 'until',
+    for arg in ('host', 'port', 'user', 'socket', 'output',
+                'database', 'table', 'sort_column', 'date_column', 'until',
                 'period_size', 'quiet', 'sleep', 'extra_where'):
         value = getattr(args, arg)
         if value is not None or arg not in kwargs:
             kwargs[arg] = value
     kwargs['prune'] = args.prune
     # Set defaults.
-    if kwargs['template'] is None:
-        kwargs['template'] = DEFAULT_FILENAME % {
+    if kwargs['output'] is None:
+        kwargs['output'] = DEFAULT_FILENAME % {
             'database': kwargs['database'],
             'table': kwargs['table']}
     if kwargs['sleep'] is None:
@@ -554,11 +636,14 @@ Supply --prune as argument to immediately prune the data after dumping it.
             until = kwargs['until'].strftime('%Y-%m-%d')
         else:
             until = 'end'
-        print('Table to dump: %s (ordered by %s, from begin to %s)' % (
-            kwargs['table'], kwargs['date_column'], until))
-        print('Filename template: "%s"' % (kwargs['template'],))
+        print(
+            'Table to dump: %s (ordered by %s, %d chunk/period, '
+            'from begin to %s)' % (
+                kwargs['table'], kwargs['sort_column'],
+                kwargs['period_size'], until))
+        print('Output filename template: "%s"' % (kwargs['output'],))
         print('Processing %s.%s (ordered by %s)' % (
-            my_kwargs['db'], kwargs['table'], kwargs['date_column']))
+            my_kwargs['db'], kwargs['table'], kwargs['sort_column']))
 
     # Connect and do work.
     conn = connect(conv=CONVERSIONS, **my_kwargs)
