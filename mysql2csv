@@ -56,8 +56,10 @@
 # - 2023-10-26: Rename -t/--template to -o/--output.
 #
 # Caveats:
-# - Appends to existing files. Make sure the output location is devoid
-#   of stale CSV output.
+# - mysql2csv clobbers existing files without asking!
+# - When using a different column (date_column) for the filename template,
+#   mysql2csv will not close files until the end. If you use %Y%m%d, you get
+#   up to 4096 file descriptors when processing 11 years at once.
 #
 from __future__ import print_function, unicode_literals
 import argparse  # pip install argparse on old pre-2.7 python
@@ -68,6 +70,7 @@ import time
 from base64 import b16encode
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from os import utime
 
 from MySQLdb import connect, converters
 
@@ -258,18 +261,18 @@ class FileManager(object):
         # files until the last moment when close() is called.
         self._is_monotonic = is_monotonic
 
+        self._written_files = {}
         self._files = {}
 
     def _open(self, filename):
         assert filename not in self._files, (filename, self._files)
-        # We must open in append-mode if sort_column!=date_column,
-        # because we might get a record from an older date. (An option to
-        # avoid this could be by recording the files we have visited in
-        # this run.)
-        fp = open(filename, 'a')
+        # We must open in append-mode if sort_column!=date_column.
+        # If we get a record with an older date we could need to reopen
+        # a file we've already written to.
+        fp = open(filename, ('a' if filename in self._written_files else 'w'))
         if fp.tell() == 0:
-            # We're at pos 0.
-            fp.write(self._header)
+            fp.write(self._header)  # write header because we're at pos 0
+            self._written_files[filename] = time.time()
         self._files[filename] = fp
         return fp
 
@@ -277,8 +280,14 @@ class FileManager(object):
         return date_value.strftime(self._filename_template)
 
     def close(self):
-        for fp in self._files.values():
+        for filename, fp in self._files.items():
             fp.close()
+
+            # Set last updated time after closing, to get a more
+            # realistic view of when the files were populated.
+            last_updated = self._written_files[filename]
+            utime(filename, (last_updated, last_updated))
+
         self._files = {}
 
     def write(self, line, when):
@@ -295,6 +304,7 @@ class FileManager(object):
             fp = self._open(filename)
             opened_new_file = True
 
+        self._written_files[filename] = time.time()
         fp.write(line)
         return opened_new_file
 
