@@ -1,6 +1,6 @@
 #!/bin/sh
 # mount.zfs-non-legacy (part of ossobv/vcutil) // wdoekes/2021-2022
-#  // Public Domain
+#   // Public Domain
 #
 # This script is a mount wrapper that adds the 'zfs-non-legacy' type for
 # mount(8). It checks whether a particular ZFS dataset is mounted,
