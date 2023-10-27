@@ -161,15 +161,13 @@ class Ip2NetTest(TestCase):
     def _2net6(self, ips):
         return [IPv6Network(ip) for ip in ips]
 
-    def _run_ip4_process_test(self, input_, expected, sort=True, unique=True):
+    def _run_ip4_process_test(self, input_, expected, unique=True):
         ip4s = self._2net4(input_)
         expected = self._2net4(expected)
         translation4 = process(ip4s, (lambda x: ipreduce(x, 24, 15)))
         nets4 = [translation4[ip] for ip in ip4s]
         if unique:
             nets4 = list(set(nets4))
-            assert sort
-        if sort:
             nets4.sort()
         self.assertEqual(expected, nets4)
 
@@ -179,7 +177,7 @@ class Ip2NetTest(TestCase):
              '10.10.10.30').split(),
             ('10.10.10.0/24 8.8.8.8 10.10.10.0/24 192.168.0.255 '
              '10.10.10.0/24').split(),
-            sort=False, unique=False)
+            unique=False)
 
     def test_process_2(self):
         # This auto-sorts, but two records are not improved by merging them.
@@ -217,23 +215,48 @@ class Ip2NetTest(TestCase):
             ['1.2.3.0/24', '1.2.3.0/24', '1.2.3.0/24', '5.5.5.5'],
             result)
 
-    def test_print_nets_u(self):
-        print_nets(self._2net4([
+    def test_compress_ips_badval(self):
+        class args:
+            unique = False
+            verbose = False
+
+        compress_ips(['aap', 'noot', 'mies'], args=args)
+        result = self._expect_simple_prints()
+        self.assertEqual([], result)
+
+    def test_compress_ips(self):
+        class args:
+            unique = False
+            verbose = False
+
+        compress_ips(self._2net4([
+            '1.2.3.0/24', '5.5.5.5/32', '1.2.3.0/24', '5.5.5.5']),
+            args=args)
+        result = self._expect_simple_prints()
+        self.assertEqual(
+            ['1.2.3.0/24', '5.5.5.5', '1.2.3.0/24', '5.5.5.5'], result)
+
+    def test_compress_ips_u(self):
+        class args:
+            unique = True
+            verbose = False
+
+        compress_ips(self._2net4([
             '1.2.3.0/24', '1.2.3.0/24', '1.2.3.0/24', '5.5.5.5']),
-            unique=True)
+            args=args)
         result = self._expect_simple_prints()
         self.assertEqual(['1.2.3.0/24', '5.5.5.5'], result)
 
     def test_print_nets_u_v(self):
-        print_nets(self._2net4([
+        class args:
+            unique = True
+            verbose = True
+
+        compress_ips(self._2net4([
             '1.2.3.0/24', '1.2.3.0/24', '1.2.3.0/24', '5.5.5.5']),
-            unique=True, verbose=True)
+            args=args)
         result = self._expect_simple_prints()
         self.assertEqual(['1.2.3.0/24', '5.5.5.5/32'], result)
-
-    def test_print_nets_assert_sorted(self):
-        with self.assertRaises(AssertionError):
-            print_nets(self._2net4(['1.2.3.0/24', '1.2.2.0/24']))
 
 
 def main():
