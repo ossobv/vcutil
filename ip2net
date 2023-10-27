@@ -50,8 +50,10 @@
 #   743
 #
 import sys
+
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from ipaddress import IPv4Network, IPv6Network, ip_network
+from os import environ
 from unittest import TestCase, main as main_unittest
 
 
@@ -262,8 +264,8 @@ For instance:
 
 
 if __name__ == '__main__':
-    if '--run-tests' in sys.argv:
-        sys.argv.remove('--run-tests')
+    if environ.get('RUNTESTS', '') not in ('', '0'):
         main_unittest()
-    else:
-        main()
+        raise RuntimeError('(unreachable code)')
+
+    main()

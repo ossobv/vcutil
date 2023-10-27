@@ -105,6 +105,8 @@ clean:
 	$(MAKE) -f udiff.selftest clean
 
 test:
+	RUNTESTS=1 ./fwsniff
+	RUNTESTS=1 ./ip2net
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean
 
 deb:
