@@ -13,14 +13,19 @@
 #
 # Running fwsniff is as safe as running tcpdump.
 #
+# BEWARE: Blindly running the generated iptables output is not safe. One
+# can probably hack the input YAML to make it do unwanted stuff.
+#
+# NOTE: Interface support is only available for iptables-rules at the
+# moment because we cannot properly detect all interfaces.
+#
 # TODO:
 # - document timing stuff with regards to dictionary keys (tuples vs. bins)
 # - move bin dictionary keys to int+str tuples
-# - add -i interface support (add detection too?)
 # - add something for udp?
 #
-import sys
 import warnings
+import sys
 
 from collections import defaultdict, namedtuple
 from ipaddress import IPv4Network, IPv6Network, ip_network
@@ -31,8 +36,9 @@ from time import time
 from unittest import TestCase
 from warnings import warn
 
-from dpkt import NeedData           # python3-dpkt
+from dpkt import NeedData, Packet, UnpackError  # python3-dpkt
 from dpkt.ethernet import Ethernet  # python3-dpkt
+from dpkt.ip import IP              # python3-dpkt
 from dpkt.sll import SLL            # python3-dpkt
 from pcapy import open_live         # python3-pcapy
 from yaml import SafeLoader, load   # python3-yaml
@@ -56,7 +62,7 @@ aliases:
     - node2.wp.backend.example.cloud: 10.0.87.17
     - node2.zl.backend.example.cloud: 10.0.90.17
   other-k8s-nodes:
-    # XXX: we definitely need more here...
+    - node1.dr.frontend.example.cloud: 10.0.68.129
     - node1.wp.frontend.example.cloud: 10.0.87.129
   load-balancers:
     - lb.dr.example.com: 10.1.1.68
@@ -71,9 +77,11 @@ aliases:
 services:
   # XXX: do something with interfaces?
   ssh:
-    match: -p tcp --dport 22  # iface?
+    iface: [$extif]  # XXX: use me
+    match: -p tcp --dport 22
     allow: [vpn]
   zabbix_agent:
+    iface: [$extif]
     match: -p tcp --dport 10050
     allow: [vpn]
   master_cilium_api_in:
@@ -158,10 +166,10 @@ class KnownRulesTest(TestCase):
 
     def test_services_existing(self):
         known_rules = KnownRules.from_yaml(EXAMPLE_HOSTHUBBLE_YAML)
-        service, allowed = known_rules.get_service_by_tcp_port(2379)
-        self.assertEqual(service, 'master_etcd_clients')
+        known_service = known_rules.get_service_by_tcp_port(2379)
+        self.assertEqual(known_service.name, 'master_etcd_clients')
         self.assertEqual(
-            allowed,
+            known_service.src_allowed,
             [self.s2kv('VRF/backend/svc 10.111.32.0/22')],
         )
 
@@ -171,11 +179,50 @@ class KnownRulesTest(TestCase):
         self.assertEqual(missing, None)
 
 
+class ServiceTest(TestCase):
+    def test_service(self):
+        known_service = KnownService(
+            'ssh', tcp_port=22, interfaces=['$extif'], src_allowed=[
+                ('vpn', ip_network('1.2.3.4'))])
+        service = Service(known_service)
+        self.assertEqual(service.name, 'ssh')
+
+        for i in range(3):
+            ret = service.add_count(
+                b'\xff\xff\xff\xff'
+                b'\x00\x16'
+                b'\x01\x02\x03\x04')
+        self.assertEqual(ret, (3, 'vpn'))
+
+
 def ip_network_or_none(value):
     try:
         return ip_network(value)
     except ValueError:
         None
+
+
+class KnownService:
+    def __init__(
+            self, name, src_allowed, tcp_port=None, interfaces=None):
+        if not isinstance(name, str) or not name:
+            raise TypeError('name should be str')
+        self.name = name
+        if not (
+                all(isinstance(i, tuple) for i in src_allowed) and
+                all(len(i) == 2 for i in src_allowed) and
+                all(isinstance(i[0], str) and i[0] for i in src_allowed) and
+                all(isinstance(i[1], IPv4Network) for i in src_allowed)):
+            raise TypeError('src_allowed should be list of (name,net) tuples')
+        self.src_allowed = src_allowed
+        if not isinstance(tcp_port, (int, type(None))):
+            raise TypeError('tcp_port must be int or unset')
+        self.tcp_port = tcp_port
+        if interfaces is not None and not (
+                interfaces and isinstance(interfaces, list) and
+                all(i and isinstance(i, str) for i in interfaces)):
+            raise TypeError('interfaces be list of strings or unset')
+        self.interfaces = interfaces
 
 
 class KnownRules:
@@ -287,68 +334,130 @@ class KnownRules:
 
     def set_services(self, services):
         for key, service in services.items():
-            if (not isinstance(service, dict) or
-                    set(service.keys()) != set(['match', 'allow'])):
-                raise ValueError(
-                    f'must has exactly match+allow for every service, got: '
-                    f'{key!r}: {service!r}')
+            known_service = self._parse_service(key, service)
+            assert key not in self._services, (key, self._services)
+            assert known_service.tcp_port is not None, known_service
+            assert known_service.tcp_port not in self._tcp_ports, (
+                self._tcp_ports, known_service)
+            self._services[key] = known_service
+            self._tcp_ports[known_service.tcp_port] = key
 
-            # FIXME: right now we expect a certain format
-            match_parts = service['match'].split()
-            assert len(match_parts) == 4, service['match']
-            assert match_parts[0] == '-p', service['match']
-            assert match_parts[1] == 'tcp', service['match']
-            assert match_parts[2] == '--dport', service['match']
-            port = int(match_parts[3])
-            assert key not in self._services
-            assert port not in self._tcp_ports, (self._tcp_ports, port)
+    def _parse_service(self, key, service):
+        if (not isinstance(service, dict) or
+                (set(service.keys()) - set(['iface'])) !=
+                set(['match', 'allow'])):
+            raise ValueError(
+                f'must has exactly match+allow[+iface] for every '
+                f'service, got: {key!r}: {service!r}')
 
-            # Extract IPs immediately.
-            allowed = []
-            assert isinstance(service['allow'], list), (key, service)
-            for allow in service['allow']:
-                allowed.extend(self.get_cidrs(allow))
-            allowed.sort()
-            self._services[key] = allowed
-            self._tcp_ports[port] = key
+        # FIXME: right now we expect a certain format
+        match_parts = service['match'].split()
+        assert len(match_parts) == 4, service['match']
+        assert match_parts[0] == '-p', service['match']
+        assert match_parts[1] == 'tcp', service['match']
+        assert match_parts[2] == '--dport', service['match']
+        tcp_port = int(match_parts[3])
+
+        # Extract IPs immediately.
+        allowed = []
+        assert isinstance(service['allow'], list), (key, service)
+        for allow in service['allow']:
+            allowed.extend(self.get_cidrs(allow))
+        allowed.sort()
+
+        interfaces = None
+        if 'iface' in service:
+            assert isinstance(service['iface'], list), service
+            assert all(str(i) for i in service['iface']), service
+            interfaces = []
+            for iface in service['iface']:
+                if iface.startswith('$'):
+                    assert iface == '$extif', iface
+                    iface = '$IFACE_extif'
+                interfaces.append(iface)
+
+        return KnownService(
+            name=key,
+            src_allowed=allowed,
+            tcp_port=tcp_port,
+            interfaces=interfaces,
+        )
 
     def get_service_by_tcp_port(self, port):
         if port not in self._tcp_ports:
             return None
-        key = self._tcp_ports[port]
-        return key, self._services[key]
+        return self._services[self._tcp_ports[port]]
 
     def print_iptables(self):
         print('''\
 #!/bin/sh
-PRIMARY_IP=$(ip -o route get 1.2.3.4 | sed -e 's/^.* src \\([^ ]*\\).*/\\1/')
+IFACE_extif=$(ip -o route get 1.2.3.4 |
+    sed -e 's/.* dev //;s/ .*//')
+IP_extif=$(ip -o -4 addr show dev $IFACE_extif |
+    sed -e 's/.* inet //;s@[ /].*@@')
 
 if ! iptables -t filter -F INPUT_test 2>/dev/null; then
     iptables -t filter -N INPUT_test
     iptables -t filter -I INPUT -j INPUT_test
 fi
 
-# Explicitly use 127.0.0.1 (or maybe 127.0.0.0/8) for sanity;
-# if we expect traffic on a non-local IP, we generally expect
-# other connections too.
+# Do not allow just anything on localhost. Only 127/8 and the primary IP.
 iptables -t filter -A INPUT_test -i lo -s 127.0.0.0/8 -d 127.0.0.0/8 -j RETURN
+iptables -t filter -A INPUT_test -i lo -s $IP_extif -d $IP_extif -j RETURN
+# Ignore ICMP. Ignore non-new TCP.
 iptables -t filter -A INPUT_test -p icmp -j RETURN
+iptables -t filter -A INPUT_test -p tcp -m tcp '!' --tcp-flags SYN,ACK SYN \\
+    -j RETURN
+# HACKS: For wireguard traffic (cilium_wg*)
+iptables -t filter -A INPUT_test -i $IFACE_extif \\
+    -p udp --sport 51871 --dport 51871 -j RETURN
+# FIXME: do something with udp. unfortunately not an easy SYN to check..
+# FIXME: icmpv6? tcp6? udp6?
+# Ignore established (or returning!) traffic. DNS UDP responses, among others.
 iptables -t filter -A INPUT_test -m state --state ESTABLISHED,RELATED -j RETURN
-# FIXME: what to do with incoming udp? nothing yet? and icmpv6?
 
 allow() {
-    iptables -t filter -A INPUT_test -i enp1s0np0 -d $PRIMARY_IP \\
-        $from $service -m comment --comment "$*" -j RETURN
+    iptables -t filter -A INPUT_test \\
+         $from $service -m comment --comment "$*" -j RETURN
 }
 
 ''')
+        # Get all possible interfaces first:
+        possible_interfaces = set()
         for port in self._tcp_ports:
-            service_id, allowed_list = self.get_service_by_tcp_port(port)
-            for allowed_name, allowed_net in allowed_list:
-                print(
-                    f"service='-p tcp --dport {port}' from='-s {allowed_net}' "
-                    f"allow '{service_id}: {allowed_name}'")
-            print()
+            known_service = self.get_service_by_tcp_port(port)
+            if known_service.interfaces:
+                possible_interfaces.update(known_service.interfaces)
+            else:
+                possible_interfaces.add('')
+        possible_interfaces = list(sorted(possible_interfaces))
+
+        # Interfaces in outer loop because this makes the iptables -nvL output
+        # so much more readable when investigating.
+        for iface in possible_interfaces:
+            for port in self._tcp_ports:
+                known_service = self.get_service_by_tcp_port(port)
+
+                # If the known_service does not mention an interface, allow if
+                # we're doing the any interface. Otherwise allow only if the
+                # interfaces match.
+                if iface and known_service.interfaces:
+                    if iface not in known_service.interfaces:
+                        continue
+                elif not iface and not known_service.interfaces:
+                    pass
+                else:
+                    continue
+
+                for allowed_name, allowed_net in known_service.src_allowed:
+                    service = f'-p tcp --dport {port}'
+                    if iface:
+                        service = f'-i {iface} {service}'
+                    print(
+                        f'service="{service}" '
+                        f"from='-s {allowed_net}' "
+                        f"allow '{known_service.name}: {allowed_name}'")
+                print()
 
         print('#iptables -t filter -A INPUT_test  # just count')
         print('iptables -t filter -A INPUT_test -j LOG  # log the rest')
@@ -394,12 +503,12 @@ class Service:
     """
     Heavier weight "Service" with allowed networks and counts
     """
-    def __init__(self, name, allowed_networks):
-        self.name = name
+    def __init__(self, known_service):
+        self.name = known_service.name
         # TODO: replace source_net with binary+mask?
-        self._counts = dict((net, 0) for id_, net in allowed_networks)
+        self._counts = dict((net, 0) for id_, net in known_service.src_allowed)
         self._networks_to_names = dict(
-            (net, id_) for id_, net in allowed_networks)
+            (net, id_) for id_, net in known_service.src_allowed)
 
     def total_count(self):
         return sum(self._counts.values())
@@ -422,16 +531,33 @@ class Service:
         return f"Service(name='{self.name}')"
 
 
+class IPFrame(Packet):
+    __hdr__ = tuple()
+
+    def unpack(self, buf):
+        super().unpack(buf)
+        try:
+            self.data = IP(self.data)
+            self.ip = self.data
+        except (KeyError, UnpackError):
+            pass
+
+
 class HostHubble:
-    MINLEN = 14 + 20 + 20       # ethernet/sll + IP(min) + TCP(min)
     SNAPLEN = 16 + 60 + 20      # ethernet/sll + IP(max) + TCP(min..)
     PROMISC = False             # no need for promiscuous mode
     BUFFER_TIMEOUT_MS = 200     # MUST be non-zero
     TCP_SYN_ONLY = '(tcp[tcpflags]&tcp-syn)!=0 and (tcp[tcpflags]&tcp-ack)=0'
-    SLL_TYPE_TO_US = 0
+    SLL_TYPES_TO_US = (
+        # 3=promisc, 4=from_us
+        0,  # specifically sent to us by somebody else
+        1,  # broadcast by somebody else
+        2,  # multicast, but not broadcast, by somebody else
+    )
     ARPHRD_ETHER = 1
     ARPHRD_LOOPBACK = 772
     ARPHRD_NONE = 0xFFFE
+    LOOPBACK_MAC = b'\x00\x00\x00\x00\x00\x00'
 
     def __init__(self, known_rules, listen_interface='any'):
         # Args
@@ -446,53 +572,88 @@ class HostHubble:
         cap = open_live(
             self._listen_interface, self.SNAPLEN, self.PROMISC,
             self.BUFFER_TIMEOUT_MS)
+
+        # Here we filter so we only get TCP SYNs. We may want to expand on this
+        # later.
         cap.setfilter(self.TCP_SYN_ONLY)
 
-        decode_frame = (  # outermost frame is either 16 or 14 bytes
-            SLL if self._listen_interface == 'any' else Ethernet)
+        if self._listen_interface == 'any':
+            decode_frame = self._decode_sll  # 16 bytes..
+            minlen = 16 + 20 + 20
+        elif self._listen_interface.startswith('cilium_wg'):
+            decode_frame = self._decode_ip   # 0 bytes
+            minlen = 14 + 20 + 20
+        else:
+            decode_frame = self._decode_ethernet  # 14 bytes..
+            minlen = 20 + 20
+
         spinner = (make_spinner() if sys.stderr.isatty() else (lambda: ''))
 
         while True:
+            # Show spinning wheel
             print(next(spinner), end='', file=sys.stderr)
 
             header, packet = cap.next()
-            if len(packet) < self.MINLEN:
+            if len(packet) < minlen:
                 warn(f'skipping small packet {packet!r}')
                 continue
 
-            outer_frame = decode_frame(packet)
-            if outer_frame.type != self.SLL_TYPE_TO_US:
-                # XXX: ^^^ for 'any' iface only
-                warn(f'skipping not-to-us packet type {outer_frame.type}')
-                continue
-            if outer_frame.hrd == self.ARPHRD_LOOPBACK:
-                assert outer_frame.hlen == 6, repr(outer_frame)
-                assert outer_frame.hdr[0:6] == b'\x00\x00\x00\x00\x00\x00', (
-                    repr(outer_frame))  # source from localhost device
-                warn('skipping to-us packet with src mac 00:00:00:00:00:00')
-                continue
-            elif outer_frame.hrd == self.ARPHRD_NONE:
-                assert outer_frame.hlen == 0, repr(outer_frame)
-            elif outer_frame.hrd == self.ARPHRD_ETHER:
-                pass
-            else:
-                print(outer_frame.hlen, outer_frame.hrd)
-                assert False, repr(outer_frame)
-
+            # #print('packet', repr(packet))
             try:
-                ip = outer_frame.data
-                tcp = ip.data
+                outer_frame = decode_frame(packet)
+                if not outer_frame:
+                    continue
+
+                ip = outer_frame.ip
+                tcp = ip.tcp
                 small_identifier = self.compress(ip, tcp)
             except (AttributeError, NeedData):
-                print(packet)
-                print(ip)
-                print(ip.data)
-                print(tcp)
-                print(tcp.data)
+                print('packet', repr(packet))
+                print('outer_frame', repr(outer_frame))
                 raise
 
             if not self.add_known_service(small_identifier):
                 self.add_unknown_service(small_identifier)
+
+    def _decode_ethernet(self, packet):
+        outer_frame = Ethernet(packet)
+        # We could improve this by finding our network interfaces and selecting
+        # only those with dst_ether us and broadcast (and multicast).
+        # Do we need 'ip -brief -oneline link show' here?
+        return outer_frame
+
+    def _decode_ip(self, packet):
+        # Here we could only filter if we knew which IPs are ours.
+        return IPFrame(packet)
+
+    def _decode_sll(self, packet):
+        # Here we filter everything that is:
+        # - not to us
+        # - is sent on the loopback interface (with 127.0.0.0/8)
+        outer_frame = SLL(packet)
+        if outer_frame.type not in self.SLL_TYPES_TO_US:
+            warn(f'skipping not-to-us packet type {outer_frame.type}')
+            return None
+
+        if outer_frame.hrd == self.ARPHRD_LOOPBACK:
+            assert outer_frame.hlen == 6, repr(outer_frame)
+            assert outer_frame.hdr[0:6] == self.LOOPBACK_MAC, (
+                repr(outer_frame))  # source from localhost device
+            if outer_frame.ip.src[0] == outer_frame.ip.src[0] == 127:
+                warn('skipping loopback packet with 127.0.0.0/8')
+                return None
+        elif outer_frame.hrd == self.ARPHRD_NONE:
+            print('ARPHRD_NONE:', repr(outer_frame), repr(outer_frame.ip))
+            assert outer_frame.hlen == 0, repr(outer_frame)
+        elif outer_frame.hrd == self.ARPHRD_ETHER:
+            pass
+        else:
+            assert False, (
+                f'ARPHRD_{outer_frame.hrd}', outer_frame.hlen,
+                ':'.join(f'{i:02x}' for i in outer_frame.hdr),
+                repr(outer_frame))
+
+        return outer_frame
 
     def add_known_service(self, small_identifier):
         service = self.get_known_service(small_identifier)
@@ -520,20 +681,16 @@ class HostHubble:
             service = self._services[smaller_identifier]
         except KeyError:
             (dport,) = unpack('>H', small_identifier[4:6])
-            raw_service = self._known_rules.get_service_by_tcp_port(dport)
-            if not raw_service:
+            known_service = self._known_rules.get_service_by_tcp_port(dport)
+            if not known_service:
                 return None
 
             service = self._services[smaller_identifier] = (
-                self.make_service(raw_service))
+                Service(known_service))
         return service
 
     def compress(self, ip, tcp):
         return ip.dst + pack('>H', tcp.dport) + ip.src
-
-    def make_service(self, known_rules_service):
-        name, allowed_networks = known_rules_service
-        return Service(name, allowed_networks)
 
     def report(self):
         print('')
