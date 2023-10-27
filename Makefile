@@ -105,9 +105,9 @@ clean:
 	$(MAKE) -f udiff.selftest clean
 
 test:
-	RUNTESTS=1 ./fwsniff
-	RUNTESTS=1 ./ip2net
-	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean
+	RUNTESTS=1 ./fwsniff && printf '\342\234\205\n\n'
+	RUNTESTS=1 ./ip2net && printf '\342\234\205\n\n'
+	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && echo OK
 
 deb:
 	# Make sure a valid email with PGP key is in the changelog
