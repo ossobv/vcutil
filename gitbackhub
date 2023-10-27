@@ -296,7 +296,7 @@ class GitHub(object):
             if err.fp:
                 try:
                     data = err.fp.read().decode('ascii', 'replace')
-                except:
+                except Exception:
                     data = ''
             # TODO: Fix this:
             print('URL', err.url)

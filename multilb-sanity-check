@@ -188,20 +188,20 @@ class Proc:
 
         if self.exe == '/usr/sbin/haproxy':
             lines = [
-                l.strip() for l in config.split('\n')
-                if not l.lstrip().startswith('#')]
-            for l in lines:
-                parts = l.rstrip().split()
+                line.strip() for line in config.split('\n')
+                if not line.lstrip().startswith('#')]
+            for line in lines:
+                parts = line.rstrip().split()
                 for optkey, optval in zip(parts[:-1], parts[1:]):
                     if optkey == 'crt':
                         possible_certs.append(optval)
         elif self.exe == '/usr/sbin/nginx':
             lines = [
-                l.strip() for l in config.split('\n')
-                if not l.lstrip().startswith('#')]
-            for l in lines:
-                if l.startswith('ssl_certificate'):
-                    parts = l.split()
+                line.strip() for line in config.split('\n')
+                if not line.lstrip().startswith('#')]
+            for line in lines:
+                if line.startswith('ssl_certificate'):
+                    parts = line.split()
                     if parts[0] == 'ssl_certificate':
                         possible_certs.append(parts[1].rstrip(';'))
         else:

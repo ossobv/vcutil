@@ -198,8 +198,9 @@ def dpkg_l():
     arch = check_english_output(['dpkg', '--print-architecture']).strip()
     colon_arch = ':{}'.format(arch)  # ":amd64"
     colon_arch_neg_len = -len(colon_arch)
-    without_default_arch = (lambda x: (
-        x[0:colon_arch_neg_len] if x.endswith(colon_arch) else x))
+
+    def without_default_arch(pkg):
+        return pkg[0:colon_arch_neg_len] if pkg.endswith(colon_arch) else pkg
 
     # Get listing, condense to [(package, state)] list
     out = check_english_output(['dpkg', '-l'])

@@ -48,6 +48,7 @@
 #
 #     * Allow MAIL_TO to be passed as QUERY_STRING.
 #
+from __future__ import print_function
 import json
 import os
 import smtplib
@@ -84,9 +85,12 @@ def update_globals_from_file(filename):
     globals_ = {}
     locals_ = {}
     try:
-        execfile(filename, globals_, locals_)
+        with open(filename, 'r') as source_file:
+            code = compile(source_file.read(), filename, 'exec')
     except IOError:
         return
+    else:
+        exec(code, globals_, locals_)
     uppercase_values = dict(
         (key, value) for (key, value) in locals_.items()
         if key[0].isupper())
@@ -167,8 +171,11 @@ def diff_to_html(diff):
     finally:
         try:
             os.unlink(txttmp)
+        except Exception:
+            pass
+        try:
             os.unlink(htmltmp)
-        except:
+        except Exception:
             pass
 
     return diff_html
@@ -237,16 +244,16 @@ def send_mails(decoded):
         else:
             extra_prefix = extra_suffix = ''
         # Prefix the changes with a bit of extra body.
-        changes = ''.join([unicode(BODY_PREFIX) % commitvars,
+        changes = ''.join([BODY_PREFIX % commitvars,
                            extra_prefix,
                            changes,
                            extra_suffix,
-                           unicode(BODY_SUFFIX) % commitvars])
+                           BODY_SUFFIX % commitvars])
         # Colorize it using vim.
         changes_html = diff_to_html(changes)
         # Compile a mail and send.
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = unicode(SUBJECT) % commitvars
+        msg['Subject'] = SUBJECT % commitvars
         msg['From'] = MAIL_FROM
         msg['To'] = ', '.join(MAIL_TO)
         msg['Date'] = formatdate(localtime=True)
@@ -261,10 +268,10 @@ def get_stdin():
     data = []
     try:
         while True:
-            input = raw_input()
-            if not input:
+            in_ = input()
+            if not in_:
                 break
-            data.append(input)
+            data.append(in_)
     except EOFError:
         pass
     return '\n'.join(data)
@@ -292,7 +299,7 @@ elif is_daemon_child():
     try:
         decoded = json.loads(stdin.decode('utf-8'))
         send_mails(decoded)
-    except:
+    except Exception:
         backtrace = traceback.format_exc()
         msg = MIMEText(backtrace + '\n\n\n' + stdin)
         msg['Subject'] = 'ERROR in gitlab-hook-postcommit-coloremail'
@@ -305,6 +312,6 @@ elif is_daemon_child():
 
 else:
     # Output back to webserver.
-    print "Content-Type: text/plain\r\n\r\nOK"
+    print(b"Content-Type: text/plain\r\n\r\nOK")
 
 # vim: set ts=8 sw=4 sts=4 et ai tw=79:

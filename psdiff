@@ -62,9 +62,9 @@ def udiff(alines, blines):
     #     udifflib.filediff  # test existence
     # except (AttributeError, IOError, ImportError):
     import difflib
-    diff_func = (lambda a, b: difflib.unified_diff(a, b, lineterm=''))
-    # else:
-    #     diff_func = (lambda a, b: udifflib.filediff(a, b))
+
+    def diff_func(a, b):
+        return difflib.unified_diff(a, b, lineterm='')
 
     iter_ = iter(diff_func(alines, blines))
     for line in iter_:

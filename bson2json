@@ -57,7 +57,7 @@ def main():
                 decoded = decode_all(data)
                 sys.stdout.write(dumps(decoded, **kwargs) + '\n')
 
-        except IOError, e:
+        except IOError as e:
             if e.errno != errno.EPIPE:
                 sys.stderr.write('ERROR: %s\n' % e)
 
