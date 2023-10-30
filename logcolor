@@ -1,0 +1,28 @@
+#!/bin/sh
+# logcolor (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Quick and dirty script to colorize 2xx, 3xx, 4xx and 5xx status codes in
+# HTTP logs. Can be used with any logfile which has QUOTE SP STATUSCODE SP.
+#
+# Usage:
+#
+#   $ tail -f /var/log/nginx/access.log |
+#       grep --line-buf -vE '"GET /(static|media)|GET [^"]*" (200|30[0-9]) ' |
+#       logcolor
+#
+# Results: the same logs, but now the STATUSCODE has a color depending
+# on the first digit. 2xx is yellow, 3xx is green, 4xx is blue, 5xx is red.
+#
+C0=$(printf '\033[0m')
+CW=$(printf '\033[0;1m')
+CR=$(printf '\033[31;1m')
+CG=$(printf '\033[32;1m')
+CB=$(printf '\033[34;1m')
+CY=$(printf '\033[33;1m')
+exec sed -e '/" [0-9][0-9][0-9] /{
+    s/" \(2[0-9][0-9]\) /" '$CY'\1'$C0' /
+    s/" \(3[0-9][0-9]\) /" '$CG'\1'$C0' /
+    s/" \(4[0-9][0-9]\) /" '$CB'\1'$C0' /
+    s/" \(5[0-9][0-9]\) /" '$CR'\1'$C0' /
+    s/" \([016789][0-9][0-9]\) /" '$CW'\1'$C0' /
+}'

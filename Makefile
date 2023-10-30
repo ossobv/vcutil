@@ -41,6 +41,7 @@ BINS = \
 	kubectl-sh-wrapper \
 	linux-kernel-autoremove \
 	lldpscan \
+	logcolor \
 	make-master-secret-log \
 	mysql2csv \
 	mysqlparseslow \
