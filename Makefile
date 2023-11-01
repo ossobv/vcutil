@@ -52,6 +52,7 @@ BINS = \
 	psdiff \
 	pve-macaddr-security \
 	sadfscheck \
+	sermon \
 	sh-c \
 	snap-autoremove \
 	sys-is-vm \
