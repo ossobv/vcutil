@@ -726,13 +726,20 @@ def get_from_secret_storage(section):
         if not res:   # or True:
             import getpass
 
-            print('No password stored; add one?')
+            print('No password stored; add one?', attrs)
             print('username: ', end='')
             username = input().strip()
-            print('password: ', end='')
-            password = getpass.getpass()
+            password = getpass.getpass('password: ')
             user_pass = b64encode(
                 '{}:{}'.format(username, password).encode('utf-8'))
+            # FIXME: we should check auth first before storing..
+            # FIXME: we should ask for a new password if we get one of:
+            # fetch failed: [{'code': -32602, 'message': 'Invalid params.',
+            # 'data': 'Incorrect user name or password or account is \
+            # temporarily blocked.'}]
+            # fetch failed: [{'code': -32500, 'message': 'Application error.',
+            # 'data': 'Incorrect user name or password or account is \
+            # temporarily blocked.'}]
             coll.create_item(
                 'zabdig user/pass', attributes=attrs,
                 replace=True, secret=user_pass)
