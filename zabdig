@@ -804,6 +804,8 @@ if __name__ == '__main__':
             except ZConfigError:
                 print('no such section found in config file', file=sys.stderr)
                 sys.exit(1)
+        else:
+            args.section = lconf.section
 
         api = args.api or lconf.get('api')
         user = args.user or lconf.get('user')
