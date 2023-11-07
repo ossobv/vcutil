@@ -415,8 +415,6 @@ class ZHost(ZBaseHost):
     def __lt__(self, other):
         if self.name != other.name:
             return self.name < other.name
-        if self.host != other.host:
-            return self.host < other.host
         return self._hostinfo['hostid'] < other._hostinfo['hostid']
 
 
@@ -479,7 +477,21 @@ class ZInterface(object):
                         username=self.username,  # user->username since 6.0+
                         password=self.password))
             except ZInterfaceError as e:
-                raise ZLoginError(*e.args)
+                if e.args[0] == {
+                        'code': -32602, 'message': 'Invalid params.',
+                        'data': (
+                            'Invalid parameter "/": unexpected parameter '
+                            '"username".')}:
+                    try:
+                        self.token = self._zabbix_call(
+                            'user.login',
+                            PrivacyDict(
+                                user=self.username,
+                                password=self.password))
+                    except ZInterfaceError as e2:
+                        raise ZLoginError(*e.args) from e2
+                else:
+                    raise ZLoginError(*e.args) from e
 
     def get_alerts(self, severity, enabled_only=True):
         self._login()
