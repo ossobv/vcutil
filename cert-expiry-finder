@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2022
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2023
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -235,7 +235,8 @@ foreach_crl() {
     local line
     awk '
         /^-----BEGIN X509 CRL-----/{buf="";start=1}
-        /^-----END X509 CRL-----/{if(start){print buf};start=0}
+        /^-----END X509 CRL-----/{
+            if(start){gsub("\r","",buf);print buf};start=0}
         {if(start==2)buf=(buf $0);if(start)start=2}
     ' | while read -r line; do
         cat >$global_temp <<EOF
@@ -251,7 +252,8 @@ foreach_x509() {
     local line
     awk '
         /^-----BEGIN CERTIFICATE-----/{buf="";start=1}
-        /^-----END CERTIFICATE-----/{if(start){print buf};start=0}
+        /^-----END CERTIFICATE-----/{
+            if(start){gsub("\r","",buf);print buf};start=0}
         {if(start==2)buf=(buf $0);if(start)start=2}
     ' | while read -r line; do
         cat >$global_temp <<EOF
