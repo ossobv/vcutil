@@ -1,0 +1,29 @@
+#!/bin/sh
+# sermon (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# sermon, the serial monitor, is convenient for serial logs than screen(1).
+#
+# Usage:
+#
+#   sermon [-t] /dev/ttyUSB0 115200
+#
+# This sparks so much more joy than the Arduino 2.x IDE serial monitor.
+# See: https://github.com/arduino/arduino-ide/issues/289
+#
+set -eu
+test "${1:-}" = '-t' && { with_ts=true; shift; } || with_ts=false
+dev=${1:-/dev/ttyACM0}
+baud=${2:-115200}
+stty -F "$dev" "$baud" raw -clocal -echo || {
+    echo "Usage: ${0##*/} [-t] DEV BAUD" >&2; exit 1; }
+echo "${0##*/} [-t] DEV BAUD; now listening on $dev with $baud baud" >&2
+if $with_ts; then
+    exec perl -e 'use strict;use warnings;
+      use Time::HiRes qw(gettimeofday);use POSIX qw(strftime);
+      my ($nl,$t,$ut)=1;while(sysread STDIN,$b,1){
+      if($nl){($t,$ut)=gettimeofday;syswrite STDOUT,
+      (strftime "%H:%M:%S",localtime $t).(sprintf ".%06d: ",$ut);$nl=0}
+      $nl=1 if $b eq "\n";syswrite STDOUT,$b}' <"$dev"
+else
+    exec cat "$dev"
+fi
