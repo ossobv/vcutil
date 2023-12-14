@@ -44,6 +44,7 @@ BINS = \
 	logcolor \
 	make-master-secret-log \
 	mysql2csv \
+	mysqldumpdissect \
 	mysqlparseslow \
 	mysql-slave-skip-one-table \
 	mysql-slave-sync-table \

@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+# mysqldumpdissect (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#
+# Parse mysqldump output and split extended-insert style statements up
+# into individual statements.
+#
+# USAGE
+#   mysqldumpdissect [--coleq=TABLE=IDX:TYPE:EQ] -f /var/backup/mysqldump.sql
+#
+# DESCRIPTION
+#   Reads mysqldump file, parses the INSERT statements, which can be of
+#   the extended-insert type, and outputs them as individual statements.
+#   This allows for easier reading and/or grepping.
+#
+#   Additionally, binary blobs are encoded in the X'0123' notation so they
+#   can be copy-pasted easily.
+#
+#   By using the --coleq lookup, you can search for single groups of
+#   values. This can speed up the results by a lot.
+#
+#   For example --coleq=the_table=0:i:3 will look for INSERTs into
+#   the_table, where the 0th column has an integer value of 3.
+#
+#   Another example --coleq=the_table='2:s:John' will look for INSERTs into
+#   the_table, where the 2nd (0-based) column has a string value of "john".
+#
+#   Example of record extraction:
+#
+#       $ mysqldumpdissect --coleq=tbl=1:i:32 <<EOF
+#       INSERT INTO \`tbl\` VALUES ('alice',31),('bob',32),('charlie',12);
+#       EOF
+#
+#       INSERT INTO `tbl` VALUES ('bob',32);
+#
+#   Example of blob escaping:
+#
+#       $ printf "INSERT INTO \`tbl\` VALUES ('Hello \x01\x02\x03');" |
+#           ./mysqldumpdissect
+#
+#       INSERT INTO `tbl` VALUES (X'48656C6C6F20010203');
+#
+# RATIONALE
+#   > Why not dump with --skip-extended-insert in the first place?
+#
+#   For one, because a load of such a DB is a lot slower because
+#   each INSERT counts as a transaction. Also such a dump is bigger.
+#   And it's too late anyway, since you're looking at an extended
+#   INSERT dump now.
+#
+#   Additionally, the binary base16 encoding is very very nice if you have
+#   binary blobs in your dump. (Which the ossobv/pstore happens to have.)
+#
+# BUGS/CAVEATS
+#   * The dump is different because:
+#     - it does not contain the CREATE TABLE statements (missing feature);
+#     - double quotes are not uselessly escaped (a diff, but not a problem).
+#   * The --coleq rule match syntax is clunky and restrictive. Maybe do:
+#     table_name[colidx]=value and then add and/or.
+#   * The --coleq rule match probably fails on floats/decimals at the moment.
+#   * It is quite slow if you don't provide a --coleq. Likely there is
+#     very much time spent in _extract_rows. Some optimization or
+#     rewriting in a faster language might be in order.
+#
+import sys
+
+from argparse import ArgumentParser
+from base64 import b16encode
+from collections import namedtuple
+from io import UnsupportedOperation
+from os import fdopen
+
+
+class MatchRule(namedtuple('MatchRule', 'table c_idx c_match')):
+    @classmethod
+    def from_string(cls, s):
+        table, c_args = s.split('=', 1)
+        c_idx, c_type, c_match = c_args.split(':', 2)
+        c_idx = int(c_idx)
+        if c_type == 's':
+            c_match = c_match.encode()
+        elif c_type == 'i':
+            c_match = int(c_match)
+        else:
+            raise ValueError(c_type)
+        return cls(table, c_idx, c_match)
+
+    def matches_row(self, row):
+        return (row.columns[self.c_idx] == self.c_match)
+
+
+class Row:
+    # 0x20..0x7e
+    BIN7_SAFE = set([
+        9, 10, 13, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+        35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
+        53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+        71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+        89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104,
+        105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+        119, 120, 121, 122, 123, 124, 125, 126,
+    ])
+    # 0x20..0x7e + 0x80..0xff
+    BIN8_SAFE = BIN7_SAFE | set([
+        128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141,
+        142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155,
+        156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169,
+        170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183,
+        184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197,
+        198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211,
+        212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225,
+        226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239,
+        240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253,
+        254, 255,
+    ])
+    # TAB, LF, CR, single quote and backslash
+    UNSAFE = set([9, 10, 13, 39, 92])
+
+    def __init__(self, columns):
+        self.columns = columns
+
+    def as_bytes(self):
+        ret = []
+        for column in self.columns:
+            if isinstance(column, int):
+                ret.append(str(column).encode())
+            elif isinstance(column, (bytes, bytearray)):
+                ret.append(self._as_byte_column(column))
+            elif column is None:
+                ret.append(b'NULL')
+            else:
+                raise NotImplementedError((type(column), column))
+        return b','.join(ret)
+
+    @classmethod
+    def _as_byte_column(cls, column):
+        # Simple 7 bit safe? Possbibly escaping quote and backslash.
+        if all(ch in cls.BIN7_SAFE for ch in column):
+            if any(ch in cls.UNSAFE for ch in column):
+                column = cls._make_safe(column)
+            return b"'" + column + b"'"
+
+        # UTF-8 safe, no specials? Possbibly escaping quote and backslash.
+        if all(ch in cls.BIN8_SAFE for ch in column):
+            try:
+                column.decode('utf-8')
+            except UnicodeDecodeError:
+                pass
+            else:
+                if any(ch in cls.UNSAFE for ch in column):
+                    column = cls._make_safe(column)
+                # TODO: Do we want to prefix the value with _utf8?
+                return b"'" + column + b"'"
+
+        # Binary.
+        return b"X'" + b16encode(column) + b"'"
+
+    @classmethod
+    def _make_safe(cls, column):
+        return (column
+            .replace(b'\\', b'\\\\')
+            .replace(b"'", b"\\'")
+            .replace(b'\t', b'\\t')
+            .replace(b'\r', b'\\r')
+            .replace(b'\n', b'\\n'))
+
+
+class MysqlDumpParser:
+    ESCAPE_MAP = {
+        # https://dev.mysql.com/doc/refman/8.0/en/string-literals.html
+        ord('0'): ord('\0'),
+        ord("'"): ord("'"),
+        ord('"'): ord('"'),
+        ord('b'): ord('\b'),
+        ord('n'): ord('\n'),
+        ord('r'): ord('\r'),
+        ord('t'): ord('\t'),
+        # The ASCII 26 character can be encoded as \Z to enable you to work
+        # around the problem that ASCII 26 stands for END-OF-FILE on Windows.
+        ord('Z'): ord('\x1a'),
+        ord('\\'): ord('\\'),
+        # These may be escaped in LIKE queries, but are not escaped when not
+        # needed.
+        # ord('%'): ord('%'),
+        # ord('_'): ord('_'),
+    }
+
+    def __init__(self, fp):
+        self.fp = fp
+        self.run = 0
+
+    def find(self, rule):
+        try:
+            self.fp.seek(0)
+        except UnsupportedOperation:
+            if self.run > 0:
+                raise
+        self.run += 1
+
+        self._it = iter(self.fp)
+        try:
+            self._line = next(self._it)
+        except StopIteration:
+            self._it = self._line = None
+
+        while self._it:
+            try:
+                startswith = self._seek_to_insert_table(rule and rule.table)
+            except StopIteration:
+                self._it = self._line = None
+            else:
+                for row in self._extract_matching_rows(startswith, rule):
+                    yield startswith + b'(' + row.as_bytes() + b');'
+                if rule:
+                    break
+
+    def _seek_to_insert_table(self, table):
+        if table:
+            # FIXME: Assumes the table does not have a backtick or
+            # something other that needs escaping.
+            find = f'INSERT INTO `{table}` VALUES '.encode()
+        else:
+            # FIXME: We might not cope with strange table names with
+            # parentheses here.
+            find = f'INSERT INTO `'.encode()
+
+        line = self._line
+        while not line.startswith(find):
+            line = next(self._it)
+        assert line.startswith(find), line
+        self._line = line
+
+        up_to_lparen = line[0:line.index(b'(')]
+        return up_to_lparen
+
+    def _extract_matching_rows(self, startswith, rule):
+        rows = []
+
+        line = self._line
+        while line.startswith(startswith):
+            for row in self._extract_rows(line[len(startswith):]):
+                if not rule or rule.matches_row(row):
+                    yield row
+            try:
+                line = next(self._it)
+            except StopIteration:
+                self._it = self._line = None
+                return
+
+        assert not line.startswith(startswith), line
+        self._line = line
+
+    def _extract_rows(self, line):
+        idx = 0
+        state = 0
+        buffer = bytearray()
+        rows = []
+        columns = []
+        column_type = None
+        while True:
+            ch = line[idx]
+
+            # OUT_PAREN
+            if state == 0:
+                if ch == 0x28:  # "("
+                    state = 1   # IN_PAREN
+                else:
+                    assert False, (ch, idx, state, line[idx:idx+10])
+
+            # IN_PAREN
+            elif state == 1:
+                if ch == 0x27:    # "'"
+                    assert column_type is None, column_type
+                    column_type = str
+                    state = 2     # IN_STRING
+                elif ch in (0x2c, 0x29):  # "," or ")"
+                    assert column_type in (str, int), column_type
+                    if column_type == str:
+                        # Make sure we copy. We clear the array later.
+                        columns.append(bytes(buffer))
+                    elif buffer == b'NULL':
+                          columns.append(None)
+                    else:
+                        # FIXME: We do not cope with decimals/floats right now.
+                        assert b'.' not in buffer, (NotImplemented, buffer)
+                        columns.append(int(buffer.decode()))
+                    buffer.clear()
+                    column_type = None
+
+                    if ch == 0x2c:  # ","
+                        state = 1
+                    elif ch == 0x29:  # ")"
+                        state = 3     # AFTER_PAREN
+                else:
+                    assert column_type in (None, int), (
+                        column_type, idx, hex(ch), line[idx-10:idx+10])
+                    column_type = int
+                    buffer.append(ch)
+
+            # IN_STRING
+            elif state == 2:
+                if ch == 0x27:    # "'"
+                    if line[idx + 1] == 0x27:  # "'" so, "''" -> "'"
+                        # We do this unescaping here.
+                        buffer.append(0x27)
+                        idx += 1
+                    else:
+                        state = 1   # IN_PAREN
+                elif ch == 0x5c:    # "\\"
+                    # We do this unescaping here.
+                    try:
+                        buffer.append(self.ESCAPE_MAP[line[idx + 1]])
+                    except KeyError:
+                        assert False, (line[idx - 10:idx + 10], line[idx + 1])
+                    idx += 1
+                else:
+                    buffer.append(ch)
+
+            # AFTER_PAREN
+            elif state == 3:
+                rows.append(Row(columns))
+                columns = []
+                column_type = None
+
+                if ch == 0x2c:    # ","
+                    state = 0
+                elif ch == 0x3b:  # ";"
+                    assert line[idx:] in (b';\n', b';'), line[idx:]
+                    break
+
+            idx += 1
+
+        return rows
+
+
+def main():
+    parser = ArgumentParser(
+        prog='mysqldumpdissect',
+        description='''
+            Parse/scan through MySQL/MariaDB mysqldump output.
+            Especially suited for dumps created with --extended-insert
+            (the default) and for dumps which contain binary data
+            (blobs).''')
+    parser.add_argument(
+        '-f', '--filename', help='Read SQL from file instead of stdin')
+    parser.add_argument(
+        '--coleq', type=MatchRule.from_string, help=(
+            'Rule to match by column equality: '
+            'table_name=col_idx:valuetype:value'))
+    args = parser.parse_args()
+
+    # Not writing to sys.stdout.buffer because a prematurely closed stdout
+    # causes double exception noise:
+    #   Exception ignored in: <_io.TextIOWrapper name='<stdout>' mode='w'
+    #     encoding='utf-8'>
+    bin_stdout = fdopen(sys.stdout.fileno(), 'wb')
+
+    if args.filename is not None and args.filename != '-':
+        fp = open(args.filename, 'rb')
+    else:
+        fp = sys.stdin.buffer
+
+    try:
+        mdp = MysqlDumpParser(fp)
+        for statement in mdp.find(args.coleq):
+            try:
+                bin_stdout.write(statement + b'\n')
+            except BrokenPipeError:
+                bin_stdout = None
+                break  # happens e.g. when piping to head(1)
+    finally:
+        if args.filename:
+            fp.close()
+
+    if bin_stdout:
+        bin_stdout.close()
+
+
+if __name__ == '__main__':
+    main()
