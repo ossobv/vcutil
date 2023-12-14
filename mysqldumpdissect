@@ -60,6 +60,9 @@
 #   * It is quite slow if you don't provide a --coleq. Likely there is
 #     very much time spent in _extract_rows. Some optimization or
 #     rewriting in a faster language might be in order.
+#   * This was mainly tested with one mysqldump output file. If the
+#     format between outputs differs, then this script might croak. It should
+#     fail hard though and not produce good looking but corrupt data.
 #
 import sys
 
@@ -68,6 +71,8 @@ from base64 import b16encode
 from collections import namedtuple
 from io import UnsupportedOperation
 from os import fdopen
+
+USELESS_DQUOTE_ESCAPE = False
 
 
 class MatchRule(namedtuple('MatchRule', 'table c_idx c_match')):
@@ -112,8 +117,6 @@ class Row:
         240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253,
         254, 255,
     ])
-    # TAB, LF, CR, single quote and backslash
-    UNSAFE = set([9, 10, 13, 39, 92])
 
     def __init__(self, columns):
         self.columns = columns
@@ -133,35 +136,46 @@ class Row:
 
     @classmethod
     def _as_byte_column(cls, column):
-        # Simple 7 bit safe? Possbibly escaping quote and backslash.
-        if all(ch in cls.BIN7_SAFE for ch in column):
-            if any(ch in cls.UNSAFE for ch in column):
-                column = cls._make_safe(column)
+        used_chars = set(column)
+
+        # Simple 7 bit safe?
+        if used_chars.issubset(cls.BIN7_SAFE):
+            column = cls._make_safe(column)
             return b"'" + column + b"'"
 
-        # UTF-8 safe, no specials? Possbibly escaping quote and backslash.
-        if all(ch in cls.BIN8_SAFE for ch in column):
+        # UTF-8 safe, no specials?
+        if used_chars.issubset(cls.BIN8_SAFE):
             try:
                 column.decode('utf-8')
             except UnicodeDecodeError:
                 pass
             else:
-                if any(ch in cls.UNSAFE for ch in column):
-                    column = cls._make_safe(column)
+                column = cls._make_safe(column)
                 # TODO: Do we want to prefix the value with _utf8?
                 return b"'" + column + b"'"
 
         # Binary.
         return b"X'" + b16encode(column) + b"'"
 
-    @classmethod
-    def _make_safe(cls, column):
-        return (column
-            .replace(b'\\', b'\\\\')
-            .replace(b"'", b"\\'")
-            .replace(b'\t', b'\\t')
-            .replace(b'\r', b'\\r')
-            .replace(b'\n', b'\\n'))
+    if USELESS_DQUOTE_ESCAPE:
+        @classmethod
+        def _make_safe(cls, column):
+            return (column
+                .replace(b'\\', b'\\\\')
+                .replace(b"'", b"\\'")
+                .replace(b'"', b'\\"')  # mysqldump output compat?
+                .replace(b'\t', b'\\t')
+                .replace(b'\r', b'\\r')
+                .replace(b'\n', b'\\n'))
+    else:
+        @classmethod
+        def _make_safe(cls, column):
+            return (column
+                .replace(b'\\', b'\\\\')
+                .replace(b"'", b"\\'")
+                .replace(b'\t', b'\\t')
+                .replace(b'\r', b'\\r')
+                .replace(b'\n', b'\\n'))
 
 
 class MysqlDumpParser:
