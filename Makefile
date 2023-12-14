@@ -110,7 +110,9 @@ clean:
 test:
 	RUNTESTS=1 ./fwsniff && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./ip2net && printf '\342\234\205\n\n'
-	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && echo OK
+	RUNTESTS=1 ./mysqldumpdissect && printf '\342\234\205\n\n'
+	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
+	  printf '\342\234\205\n\n'
 
 deb:
 	# Make sure a valid email with PGP key is in the changelog

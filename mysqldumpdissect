@@ -61,8 +61,9 @@
 #     very much time spent in _extract_rows. Some optimization or
 #     rewriting in a faster language might be in order.
 #   * This was mainly tested with one mysqldump output file. If the
-#     format between outputs differs, then this script might croak. It should
-#     fail hard though and not produce good looking but corrupt data.
+#     mysqldump format is slightly different, then this script might
+#     croak. If this is the case it should fail hard, instead of
+#     producing good looking but corrupt data.
 #
 import sys
 
@@ -70,7 +71,7 @@ from argparse import ArgumentParser
 from base64 import b16encode
 from collections import namedtuple
 from io import UnsupportedOperation
-from os import fdopen
+from os import environ, fdopen
 
 USELESS_DQUOTE_ESCAPE = False
 
@@ -390,4 +391,40 @@ def main():
 
 
 if __name__ == '__main__':
+    if environ.get('RUNTESTS', '') not in ('', '0', 'n'):
+        from io import BytesIO
+        from unittest import TestCase, main
+
+        class MddTest(TestCase):
+            def test_example_passthrough(self):
+                mdp = MysqlDumpParser(BytesIO(
+                    b"-- blah at start\n"
+                    b"INSERT INTO `tbl` VALUES "
+                    b"('l\\'alice',31),('bob',32),('charlie',12);\n"
+                    b"INSERT INTO `tbl` VALUES "
+                    b"('Hello \x01\x02\x03',-1);\n"
+                    b"-- blah at eof\n"))
+                res = list(mdp.find(None))
+                self.assertEqual(res, [
+                    b"INSERT INTO `tbl` VALUES ('l\\'alice',31);",
+                    b"INSERT INTO `tbl` VALUES ('bob',32);",
+                    b"INSERT INTO `tbl` VALUES ('charlie',12);",
+                    b"INSERT INTO `tbl` VALUES (X'48656C6C6F20010203',-1);"])
+
+            def test_example_coleq(self):
+                mdp = MysqlDumpParser(BytesIO(
+                    b"INSERT INTO `tbl` VALUES "
+                    b"('alice',31),('bob',32),('charlie',12);"))
+                res = list(mdp.find(MatchRule.from_string('tbl=1:i:32')))
+                self.assertEqual(res, [
+                    b"INSERT INTO `tbl` VALUES ('bob',32);"])
+
+            def test_example_binblob(self):
+                mdp = MysqlDumpParser(BytesIO(
+                    b"INSERT INTO `tbl` VALUES "
+                    b"('Hello \x01\x02\x03');"))
+                res = list(mdp.find(None))
+                self.assertEqual(res, [
+                    b"INSERT INTO `tbl` VALUES (X'48656C6C6F20010203');"])
+
     main()
