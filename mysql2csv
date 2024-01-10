@@ -73,7 +73,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from os import utime
 
-from MySQLdb import connect, converters
+from MySQLdb import OperationalError, connect, converters
 
 try:
     from configparser import RawConfigParser
@@ -86,6 +86,10 @@ except ImportError:  # python2-
 DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
 EXAMPLE_UNTIL_DATE = datetime(2035, 1, 1)
+
+
+class ConfigError(ValueError):
+    pass
 
 
 def _make_conversion_safe(orig_conversion):
@@ -325,9 +329,16 @@ def dump2csv_and_prune(db_connection, kwargs):
     rows = describe_table(db_connection, table_name)
 
     # Figure out the interval/datatypes involved.
-    interval = Interval(
-        db_connection, table_name, sort_column,
-        period_size, until, extra_where)
+    try:
+        interval = Interval(
+            db_connection, table_name, sort_column,
+            period_size, until, extra_where)
+    except OperationalError as e:
+        if e.args[0] == 1054:
+            # Unknown column 'xyz' in 'field list'
+            raise ConfigError('there is no %r column in table %r' % (
+                sort_column, table_name))
+        raise
 
     # Check what column to use for the filenames.
     date_column_idx = None
@@ -343,7 +354,11 @@ def dump2csv_and_prune(db_connection, kwargs):
     else:
         is_monotonic = False
     if date_column is not None:
-        date_column_idx = rows.index(date_column)
+        try:
+            date_column_idx = rows.index(date_column)
+        except ValueError:
+            raise ConfigError('there is no %r column in table %r' % (
+                date_column, table_name))
 
     # Make filemanager that auto-opens files and auto-adds CSV headers.
     # This allows us to write to multiple files simultaneously. For instance
@@ -654,8 +669,13 @@ Supply --prune as argument to immediately prune the data after dumping it.
 
     # Connect and do work.
     conn = connect(conv=CONVERSIONS, **my_kwargs)
-    dump2csv_and_prune(conn, kwargs)
-    conn.close()
+    try:
+        dump2csv_and_prune(conn, kwargs)
+    except ConfigError as e:
+        print('\n%s: %s' % (sys.argv[0], e), file=sys.stderr)
+        exit(1)
+    finally:
+        conn.close()
 
     if not kwargs['quiet']:
         print()
