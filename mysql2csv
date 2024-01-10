@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2023 // Public Domain
+# mysql2csv (part of ossobv/vcutil) // wdoekes/2011-2024 // Public Domain
 #
 # This mysql2csv dump script is a convenient way to dump and/or prune
 # large tables. Instead of selecting all data at once, it takes chunks
@@ -417,14 +417,22 @@ def dump2csv_and_prune(db_connection, kwargs):
 
         # Prune immediately in equal sized chunks.
         if prune and row is not None:
-            if interval.type != datetime:
+            if interval.type == datetime:
+                cursor.execute(
+                    "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
+                        table_name,
+                        begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'),
+                        sort_column, sort_column,
+                        interval.end.strftime('%Y-%m-%d %H:%M:%S'),
+                        extra_where))
+            elif interval.type == int:
+                cursor.execute(
+                    "DELETE FROM %s WHERE %s <= %s AND %s < %s %s" % (
+                        table_name,
+                        interval.begin, sort_column, sort_column,
+                        interval.end, extra_where))
+            else:
                 raise NotImplementedError(interval.type)
-            cursor.execute(
-                "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
-                    table_name,
-                    begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'), sort_column,
-                    sort_column, interval.end.strftime('%Y-%m-%d %H:%M:%S'),
-                    extra_where))
             db_connection.commit()
             if not quiet:
                 sys.stdout.write('!')
