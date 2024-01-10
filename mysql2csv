@@ -54,6 +54,7 @@
 # - 2023-10-26: When sorting by integer, allow time based templates,
 #               by reading the time from another (unindexed) column.
 # - 2023-10-26: Rename -t/--template to -o/--output.
+# - 2024-01-10: Sanitize --prune parts after previous refactor.
 #
 # Caveats:
 # - mysql2csv clobbers existing files without asking!
@@ -412,36 +413,24 @@ def dump2csv_and_prune(db_connection, kwargs):
                 line='%s\n' % (','.join(to_string(i) for i in row),),
                 when=row[date_column_idx])
         if opened_new_file and not quiet:
-            sys.stdout.write('+')
+            sys.stdout.write('+')  # a new file was opened
             sys.stdout.flush()
 
         # Prune immediately in equal sized chunks.
         if prune and row is not None:
-            if interval.type == datetime:
-                cursor.execute(
-                    "DELETE FROM %s WHERE '%s' <= %s AND %s < '%s' %s" % (
-                        table_name,
-                        begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'),
-                        sort_column, sort_column,
-                        interval.end.strftime('%Y-%m-%d %H:%M:%S'),
-                        extra_where))
-            elif interval.type == int:
-                cursor.execute(
-                    "DELETE FROM %s WHERE %s <= %s AND %s < %s %s" % (
-                        table_name,
-                        interval.begin, sort_column, sort_column,
-                        interval.end, extra_where))
-            else:
-                raise NotImplementedError(interval.type)
+            cursor.execute(
+                "DELETE FROM %s WHERE %s <= %s AND %s < %s %s" % (
+                    table_name, begin_range_sql, sort_column,
+                    sort_column, end_range_sql, extra_where))
             db_connection.commit()
             if not quiet:
-                sys.stdout.write('!')
+                sys.stdout.write('!')  # a chunk was deleted
                 sys.stdout.flush()
 
         # Increase dates.
         interval.set_next()
         if not quiet:
-            sys.stdout.write('%s\b' % (r'\|/-'[caret_angle],))
+            sys.stdout.write('%s\b' % (r'\|/-'[caret_angle],))  # progress
             sys.stdout.flush()
             caret_angle = (caret_angle + 1) % 4
         if sleep:
