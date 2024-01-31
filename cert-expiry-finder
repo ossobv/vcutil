@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2023
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2024
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -35,6 +35,7 @@ enum_all_certs() {
     (
         enum_apache2_certs
         enum_dovecot_certs
+        enum_etcd_certs
         enum_gitlab_certs
         enum_grafana_agent_certs
         enum_haproxy_certs
@@ -65,6 +66,14 @@ enum_dovecot_certs() {
         -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
         s/^ssl_cert_file$s*=$s*\($S\+\).*/\1/p"
+}
+
+enum_etcd_certs() {
+    sed -e "
+        /^$s*\(cert\|trusted-ca\)-file:/"'!'"d
+        s/^[^:]*:$s*//
+        s/$s*$//
+    " /etc/etcd/etcd.conf.yml 2>/dev/null || true
 }
 
 enum_gitlab_certs() {
