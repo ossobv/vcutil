@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+# nbdig (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+#
+# Quickly query the netbox server for hosts and hostnames/IPs, using the
+# Netbox REST API.
+#
+# Usage examples:
+#
+#     $ nbdig walter  # or 'w?lter.*'
+#     walter.example.com              123.123.123.123
+#     walter.internal.lan             10.32.1.5
+#
+#     $ nbdig walter.internal.lan
+#     10.32.1.5
+#
+#     $ nbdig -x 10.32.1.5
+#     walter.internal.lan
+#
+# Configure by setting up a ~/.config/nbdig.ini with one section:
+#
+#     [netbox.example.com]
+#     api_url = https://netbox.example.com/api
+#     api_token = 0123456789abcdef0123456789abcdef01234567
+#
+from argparse import ArgumentParser
+from collections import namedtuple
+from configparser import ConfigParser, MissingSectionHeaderError
+from fnmatch import translate as glob_to_re
+from ipaddress import IPv4Address
+from json import dumps
+from os import path
+from re import IGNORECASE, compile as re_compile, split as re_split
+from sys import stderr
+
+import requests
+
+
+class StartupError(ValueError):
+    pass
+
+
+class Config(namedtuple('Config', 'api_url api_token')):
+    @classmethod
+    def from_defaults(cls):
+        return cls.from_ini(path.expanduser('~/.config/nbdig.ini'))
+
+    @classmethod
+    def from_ini(cls, filename):
+        ini = ConfigParser(
+            delimiters=('=',), allow_no_value=True,
+            inline_comment_prefixes=('#', ';'))
+        try:
+            ini.read(filename)
+        except MissingSectionHeaderError as e:
+            raise StartupError(f'{e} in in {filename}') from e
+        assert len(ini.sections()) == 1, ini.sections()
+        the_section = ini.sections()[0]
+        data = dict(ini.items(the_section))
+        try:
+            # api_url, with "/api": "https://netbox.example.com/api"
+            return cls(api_url=data['api_url'], api_token=data['api_token'])
+        except KeyError as e:
+            raise StartupError(
+                f'api_url or api_token not found in {filename}') from e
+
+
+class IpAddress(namedtuple('IpAddress', 'address iface vrf')):
+    pass
+
+
+class Host(namedtuple('Host', 'name ip_addresses')):
+    pass
+
+
+class ThinNetboxWrapper:
+    def __init__(self, config):
+        self._config = config
+
+    def _get_query(self, path, filters):
+        url = f'{self._config.api_url}{path}'
+        headers = {'Authorization': f'Token {self._config.api_token}'}
+        resp = requests.get(url, params=filters, headers=headers)
+        resp.raise_for_status()
+        return resp
+
+    def find_hostname(self, hostfragment):
+        if '*' in hostfragment or '?' in hostfragment:
+            params = [
+                ('name__ic', part) for part in re_split('[*?]+', hostfragment)]
+            # Alas. Multilpe name-searches will do an OR search. Take the
+            # largest string and hope it's the most narrow match.
+            params.sort(key=(lambda x: (-len(x[1]), x[1])))
+            params = params[0:1]
+            # Turn into a regex.
+            re_match = re_compile(glob_to_re(hostfragment), IGNORECASE)
+        else:
+            params = [('name__isw', hostfragment)]  # startswith!
+            # Turn into a regex. Make it a startswith match for now.
+            re_match = re_compile(glob_to_re(hostfragment + '*'), IGNORECASE)
+
+        # We'll need to get all the info in a second run. For large resultsets
+        # we want to trim them by globbing name first.
+        params.extend([('brief', 1), ('limit', 1000)])
+
+        # Get device ids.
+        ret = self._get_query('/dcim/devices/', params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented('pagination')
+        device_ids_exact = [
+            res['id'] for res in pages['results']
+            if res['name'].lower() == hostfragment.lower()]
+        device_ids = [
+            res['id'] for res in pages['results']
+            if re_match.match(res['name'])]
+
+        # Get virtual-machine ids.
+        ret = self._get_query('/virtualization/virtual-machines/', params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented('pagination')
+        virtual_machine_ids_exact = [
+            res['id'] for res in pages['results']
+            if res['name'].lower() == hostfragment.lower()]
+        virtual_machine_ids = [
+            res['id'] for res in pages['results']
+            if re_match.match(res['name'])]
+
+        if device_ids_exact or virtual_machine_ids_exact:
+            # Take only exact matches.
+            device_ids = device_ids_exact
+            virtual_machine_ids = virtual_machine_ids_exact
+
+        hosts = []
+
+        # Get actual info on the devices.
+        if device_ids:
+            params = [('id', device_id) for device_id in device_ids]
+            params.append(('exclude', 'config_context'))
+            ret = self._get_query('/dcim/devices/', params)
+            pages = ret.json()
+            assert pages['next'] is None, NotImplemented('pagination')
+            for device in pages['results']:
+                hosts.append(self._nb_device_to_host(device))
+
+        # Get actual info on the virtual machines.
+        if virtual_machine_ids:
+            params = [
+                ('id', virtual_machine_id)
+                for virtual_machine_id in virtual_machine_ids]
+            params.append(('exclude', 'config_context'))
+            ret = self._get_query('/virtualization/virtual-machines/', params)
+            pages = ret.json()
+            assert pages['next'] is None, NotImplemented('pagination')
+            for virtual_machine in pages['results']:
+                hosts.append(self._nb_virtual_machine_to_host(virtual_machine))
+
+        return hosts
+
+    def _nb_device_to_host(self, device):
+        name = device['name']
+        primary_ip = device['primary_ip']
+        # TODO: get _all_ IPs from primary_ip['url']
+        return Host(name=name, ip_addresses=[IpAddress(
+                address=IPv4Address(primary_ip['address'].rsplit('/', 1)[0]),
+                iface='?', vrf='?')])
+
+    def _nb_virtual_machine_to_host(self, virtual_machine):
+        name = virtual_machine['name']
+        primary_ip = virtual_machine['primary_ip']
+        # TODO: get _all_ IPs from primary_ip['url']
+        return Host(name=name, ip_addresses=[IpAddress(
+                address=IPv4Address(primary_ip['address'].rsplit('/', 1)[0]),
+                iface='?', vrf='?')])
+
+    def find_ip_address(self, ip_address):
+        params = [('address', ip_address), ('exclude', 'config_context')]
+        ret = self._get_query('/ipam/ip-addresses/', params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented('pagination')
+        try:
+            return self._find_ip_address(pages)
+        except KeyError as e:
+            print(f'error: {e}', file=stderr)
+            print('input: {}'.format(dumps(pages)), file=stderr)
+            raise
+
+    def _find_ip_address(self, pages):
+        results = pages['results']
+        assigned = []
+        for address in results:
+            # Discard network bits for now
+            ip_address = IPv4Address(address['address'].rsplit('/')[0])
+            vrf = address['vrf']['rd']
+            assignment = address['assigned_object']
+            iface = assignment['name']
+            if 'virtual_machine' in assignment:
+                name = assignment['virtual_machine']['name']
+                host = Host(name=name, ip_addresses=[
+                    IpAddress(address=ip_address, iface=iface, vrf=vrf)])
+                assigned.append(host)
+            elif 'device' in assignment:
+                name = assignment['device']['name']
+                host = Host(name=name, ip_addresses=[
+                    IpAddress(address=ip_address, iface=iface, vrf=vrf)])
+                assigned.append(host)
+            else:
+                raise NotImplementedError(assignment)
+
+        if pages['count'] != len(assigned):
+            raise ValueError('unhandled count: {}, got {}'.format(
+                pages, assigned))
+
+        return assigned
+
+
+def do_forward_lookup(nb, hostfragment, verbose=False):
+    hosts = nb.find_hostname(hostfragment)
+    if not hosts:
+        print('not found', file=stderr)
+        return
+
+    if not (len(hosts) == 1 and (
+            # exact match?
+            hostfragment == hosts[0].name or
+            # intentional * for exact match?
+            '*' in hostfragment or '?' in hostfragment)):
+        verbose = True
+
+    if verbose:
+        for host in hosts:
+            name = host.name
+            addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
+            print(f'{name!s:30}  {addr!s}')
+        return
+
+    ip_addresses = [str(ip.address) for ip in hosts[0].ip_addresses]
+    print('\n'.join(ip_addresses))
+
+
+def do_reverse_lookup(nb, ip, verbose=False):
+    hosts = nb.find_ip_address(ip)
+    if not hosts:
+        print('not found', file=stderr)
+        return
+
+    all_hostnames = set(h.name for h in hosts)
+    if len(all_hostnames) != 1:
+        verbose = True
+
+    if verbose:
+        for host in hosts:
+            print(host)
+        return
+
+    print(''.join(all_hostnames))
+
+
+def main():
+    parser = ArgumentParser(prog='nbdig', description='(zab)dig for netbox')
+    parser.add_argument('-x', metavar='IP', help='reverse lookup')
+    parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+    parser.add_argument('hostfragment', nargs='?')
+
+    args = parser.parse_args()
+    if args.x is not None and args.hostfragment is not None:
+        parser.error("supply either 'hostfragment' or -x 'IP', not both")
+    elif args.x is args.hostfragment is None:
+        parser.error("requires at least one argument")
+
+    try:
+        config = Config.from_defaults()
+    except StartupError as e:
+        parser.error(str(e))
+
+    nb = ThinNetboxWrapper(config)
+    if args.hostfragment is not None:
+        do_forward_lookup(nb, args.hostfragment, args.verbose)
+    elif args.x is not None:
+        do_reverse_lookup(nb, args.x, args.verbose)
+    else:
+        raise NotImplementedError('cannot get here')
+
+
+if __name__ == '__main__':
+    main()

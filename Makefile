@@ -48,6 +48,7 @@ BINS = \
 	mysqlparseslow \
 	mysql-slave-skip-one-table \
 	mysql-slave-sync-table \
+	nbdig \
 	pdns-sql-slave-prune \
 	pgpg \
 	psdiff \
