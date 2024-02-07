@@ -122,29 +122,32 @@ def from_size(s):
 
 
 def from_age(s):
-    if s.endswith(' years'):
-        n, years = s.split()
-        return int(int(n) * 86400 * 365.25)
-    if s.endswith(' months'):
-        n, months = s.split()
-        return int(int(n) * 86400 * 365.25 / 12)
-    if s.endswith(' weeks'):
-        n, weeks = s.split()
-        return int(int(n) * 86400 * 7)
-    if s.endswith(' days'):
-        n, days = s.split()
-        return int(int(n) * 86400)
-    if s.endswith(' hours'):
-        n, hours = s.split()
-        return int(int(n) * 3600)
-    if s == 'About an hour':
-        return 3600
-    if s.endswith(' minutes'):
-        n, minutes = s.split()
-        return int(int(n) * 60)
-    else:
-        raise NotImplementedError(s)
-    return s
+    n, tail = s.split(' ', 1)
+
+    if n.isdigit():
+        n = int(n)
+        if tail == 'years':
+            return int(n * 86400 * 365.25)
+        if tail == 'months':
+            return int(n * 86400 * 30.4375)
+        if tail == 'weeks':
+            return (n * 86400 * 7)
+        if tail == 'days':
+            return (n * 86400)
+        if tail == 'hours':
+            return (n * 3600)
+        if tail == 'minutes':
+            return (n * 60)
+        if tail == 'seconds':
+            return n
+
+    if n == 'About':
+        if tail == 'an hour':
+            return 3600
+        if tail == 'a minute':
+            return 60
+
+    raise NotImplementedError(s)
 
 
 def namespaces():
