@@ -1,3 +1,32 @@
+vcutil (1.43) stable; urgency=low
+
+  * Additions:
+    - fwsniff: Tool that can aid in setting up an (iptables) firewall in an
+      existing environment. After finding common/good traffic, it can be
+      filtered/excluded so new traffic is more easily identified.
+    - logcolor: New tool to colorize HTTP status codes in logs
+    - mysqldumpdissect: Tool that parses mysqldump --extended-insert output
+      and splits it up into individual rows. This is useful when trying to
+      recover only some records from a dump.
+    - sermon: Add serial monitor tool
+
+  * Improvements:
+    - cert-expiry-finder: Also /etc/etcd/etcd.conf.yml
+    - cert-expiry-finder: Cope with stray CRs in cert files
+    - ctre: Add internal docs about which age/lifetime is used where
+    - ctre: Do not break on Docker based systems (missing event timestamp)
+    - ctre: Handle more "human" time formats (N seconds ago, A minute ago)
+    - ip2net: Unbreak tests
+    - mysql2csv: Allow output filenames to use time from a different column
+    - mysql2csv: Alter caveats; fix file-close-mtime
+    - mysql2csv: Clarify errors when using invalid/unknown column
+    - mysql2csv: Correct pruning, especially for ID based sort
+    - tls-sniff-ciphers: Convert to python3
+    - zabdig: Re-enable support for zabbix 5.x
+    - zabdig: Various fixes to password/secretstorage handling
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 07 Feb 2024 12:24:28 +0100
+
 vcutil (1.42) stable; urgency=low
 
   * Improvements:
