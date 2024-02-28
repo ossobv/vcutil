@@ -82,6 +82,9 @@ class Host(namedtuple('Host', 'name ip_addresses')):
 
 
 class ThinNetboxWrapper:
+    NB_DEVS = '/dcim/devices/'
+    NB_VMS = '/virtualization/virtual-machines/'
+
     def __init__(self, config):
         self._config = config
 
@@ -111,56 +114,29 @@ class ThinNetboxWrapper:
         # we want to trim them by globbing name first.
         params.extend([('brief', 1), ('limit', 1000)])
 
-        # Get device ids.
-        ret = self._get_query('/dcim/devices/', params)
-        pages = ret.json()
-        assert pages['next'] is None, NotImplemented  # pagination
-        device_ids_exact = [
-            res['id'] for res in pages['results']
-            if res['name'].lower() == hostfragment.lower()]
-        device_ids = [
-            res['id'] for res in pages['results']
-            if re_match.match(res['name'])]
+        # Get device/VM ids.
+        dev_ids, dev_ids_x = self._search_for_ids(
+            self.NB_DEVS, params, hostfragment, re_match)
+        vm_ids, vm_ids_x = self._search_for_ids(
+            self.NB_VMS, params, hostfragment, re_match)
 
-        # Get virtual-machine ids.
-        ret = self._get_query('/virtualization/virtual-machines/', params)
-        pages = ret.json()
-        assert pages['next'] is None, NotImplemented  # pagination
-        virtual_machine_ids_exact = [
-            res['id'] for res in pages['results']
-            if res['name'].lower() == hostfragment.lower()]
-        virtual_machine_ids = [
-            res['id'] for res in pages['results']
-            if re_match.match(res['name'])]
+        # Are there any exact matches?
+        if dev_ids_x or vm_ids_x:
+            # Then take only exact matches.
+            dev_ids = dev_ids_x
+            vm_ids = vm_ids_x
 
-        if device_ids_exact or virtual_machine_ids_exact:
-            # Take only exact matches.
-            device_ids = device_ids_exact
-            virtual_machine_ids = virtual_machine_ids_exact
-
+        # Collect full info on the selected hosts.
         hosts = []
-
-        # Get actual info on the devices.
-        if device_ids:
-            params = [('id', device_id) for device_id in device_ids]
-            params.extend([('limit', 1000), ('exclude', 'config_context')])
-            ret = self._get_query('/dcim/devices/', params)
-            pages = ret.json()
-            assert pages['next'] is None, NotImplemented  # pagination
-            for device in pages['results']:
-                hosts.append(self._nb_device_or_vm_to_host(device))
-
-        # Get actual info on the virtual machines.
-        if virtual_machine_ids:
-            params = [
-                ('id', virtual_machine_id)
-                for virtual_machine_id in virtual_machine_ids]
-            params.extend([('limit', 1000), ('exclude', 'config_context')])
-            ret = self._get_query('/virtualization/virtual-machines/', params)
-            pages = ret.json()
-            assert pages['next'] is None, NotImplemented  # pagination
-            for virtual_machine in pages['results']:
-                hosts.append(self._nb_device_or_vm_to_host(virtual_machine))
+        for pth, ids in ((self.NB_DEVS, dev_ids), (self.NB_VMS, vm_ids)):
+            if ids:
+                params = [('id', id_) for id_ in ids]
+                params.extend([('limit', 1000), ('exclude', 'config_context')])
+                ret = self._get_query(pth, params)
+                pages = ret.json()
+                assert pages['next'] is None, NotImplemented  # pagination
+                for dev_or_vm in pages['results']:
+                    hosts.append(self._nb_device_or_vm_to_host(dev_or_vm))
 
         return hosts
 
@@ -178,6 +154,21 @@ class ThinNetboxWrapper:
             warn(f'{name}: no primary IP set')
 
         return Host(name=name, ip_addresses=ip_addresses)
+
+    def _search_for_ids(self, path, filters, exact_match, regex_match):
+        exact_match = exact_match.lower()
+
+        ret = self._get_query(path, filters)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented  # pagination
+        ids_exact = [
+            res['id'] for res in pages['results']
+            if res['name'].lower() == exact_match]
+        ids = [
+            res['id'] for res in pages['results']
+            if regex_match.match(res['name'])]
+
+        return ids, ids_exact
 
     def find_ip_address(self, ip_address):
         params = [('address', ip_address), ('exclude', 'config_context')]
