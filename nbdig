@@ -77,7 +77,7 @@ class IpAddress(namedtuple('IpAddress', 'address iface vrf')):
     pass
 
 
-class Host(namedtuple('Host', 'name ip_addresses')):
+class Host(namedtuple('Host', 'name ip_addresses extra')):
     pass
 
 
@@ -95,7 +95,7 @@ class ThinNetboxWrapper:
         resp.raise_for_status()
         return resp
 
-    def find_hostname(self, hostfragment):
+    def find_hostname(self, hostfragment, load_properties):
         if '*' in hostfragment or '?' in hostfragment:
             params = [
                 ('name__ic', part) for part in re_split('[*?]+', hostfragment)]
@@ -109,6 +109,8 @@ class ThinNetboxWrapper:
             params = [('name__isw', hostfragment)]  # startswith!
             # Turn into a regex. Make it a startswith match for now.
             re_match = re_compile(glob_to_re(hostfragment + '*'), IGNORECASE)
+
+        load_properties = load_properties or ()
 
         # We'll need to get all the info in a second run. For large resultsets
         # we want to trim them by globbing name first.
@@ -136,11 +138,12 @@ class ThinNetboxWrapper:
                 pages = ret.json()
                 assert pages['next'] is None, NotImplemented  # pagination
                 for dev_or_vm in pages['results']:
-                    hosts.append(self._nb_device_or_vm_to_host(dev_or_vm))
+                    hosts.append(self._nb_device_or_vm_to_host(
+                        dev_or_vm, load_properties=load_properties))
 
         return hosts
 
-    def _nb_device_or_vm_to_host(self, info):
+    def _nb_device_or_vm_to_host(self, info, load_properties):
         name = info['name']
         primary_ip = info['primary_ip']
         ip_addresses = []
@@ -153,7 +156,16 @@ class ThinNetboxWrapper:
         else:
             warn(f'{name}: no primary IP set')
 
-        return Host(name=name, ip_addresses=ip_addresses)
+        props = []
+        for prop in load_properties:
+            propvalue = (
+                info.get(prop) or
+                info.get('custom_fields', {}).get(prop, ''))
+            if propvalue:
+                props.append(f'{prop}={propvalue}')
+        extra = ' '.join(props)
+
+        return Host(name=name, ip_addresses=ip_addresses, extra=extra)
 
     def _search_for_ids(self, path, filters, exact_match, regex_match):
         exact_match = exact_match.lower()
@@ -194,7 +206,8 @@ class ThinNetboxWrapper:
             if 'virtual_machine' in assignment:
                 name = assignment['virtual_machine']['name']
                 host = Host(name=name, ip_addresses=[
-                    IpAddress(address=ip_address, iface=iface, vrf=vrf)])
+                    IpAddress(address=ip_address, iface=iface, vrf=vrf)],
+                    extra='')
                 assigned.append(host)
             elif 'device' in assignment:
                 name = assignment['device']['name']
@@ -211,8 +224,8 @@ class ThinNetboxWrapper:
         return assigned
 
 
-def do_forward_lookup(nb, hostfragment, verbose=False):
-    hosts = nb.find_hostname(hostfragment)
+def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
+    hosts = nb.find_hostname(hostfragment, load_properties)
     if not hosts:
         print('not found', file=stderr)
         return
@@ -228,7 +241,8 @@ def do_forward_lookup(nb, hostfragment, verbose=False):
         for host in hosts:
             name = host.name
             addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
-            print(f'{name!s:30}  {addr!s}')
+            extra = host.extra
+            print(f'{name!s:30}  {addr!s}  {extra}'.rstrip())
         return
 
     ip_addresses = [str(ip.address) for ip in hosts[0].ip_addresses]
@@ -258,6 +272,10 @@ def main():
     parser.add_argument(
         '-c', '--config', metavar='INI',
         help=f'configuration INI location (default: {INI_DEFAULT})')
+    parser.add_argument(
+        '-p', '--property', action='append', metavar='PROPERTY',
+        help=('extra properties to list for forward lookup; '
+              'e.g. machine_id, gocollect_id'))
     parser.add_argument('-x', metavar='IP', help='reverse lookup')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     parser.add_argument('hostfragment', nargs='?')
@@ -278,7 +296,8 @@ def main():
 
     nb = ThinNetboxWrapper(config)
     if args.hostfragment is not None:
-        do_forward_lookup(nb, args.hostfragment, args.verbose)
+        do_forward_lookup(
+            nb, args.hostfragment, args.property, args.verbose)
     elif args.x is not None:
         do_reverse_lookup(nb, args.x, args.verbose)
     else:
