@@ -74,7 +74,10 @@ def fetch_entries(fp):
 
     # Skip past headers
     while True:
-        line = next(it)
+        try:
+            line = next(it)
+        except StopIteration:
+            assert False, 'stopped mid-headers?'
         if line.startswith(b'#'):
             break
     assert line.startswith(b'#'), line
@@ -92,7 +95,11 @@ def fetch_entries(fp):
                 meta.append(line)
             else:
                 break
-            line = next(it)
+            try:
+                line = next(it)
+            except StopIteration:
+                assert False, 'stopped mid-entry?'
+                break
         assert not line.startswith(b'#'), line
 
         data = []
