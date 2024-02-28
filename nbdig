@@ -36,6 +36,9 @@ from warnings import warn
 import requests
 
 
+INI_DEFAULT = '~/.config/nbdig.ini'
+
+
 def net2ip(s):
     "'1.2.3.4/31' -> IPv4Address('1.2.3.4')"
     return IPv4Address(s.rsplit('/', 1)[0])
@@ -48,7 +51,7 @@ class StartupError(ValueError):
 class Config(namedtuple('Config', 'api_url api_token')):
     @classmethod
     def from_defaults(cls):
-        return cls.from_ini(path.expanduser('~/.config/nbdig.ini'))
+        return cls.from_ini(path.expanduser(INI_DEFAULT))
 
     @classmethod
     def from_ini(cls, filename):
@@ -261,6 +264,9 @@ def do_reverse_lookup(nb, ip, verbose=False):
 
 def main():
     parser = ArgumentParser(prog='nbdig', description='(zab)dig for netbox')
+    parser.add_argument(
+        '-c', '--config', metavar='INI',
+        help=f'configuration INI location (default: {INI_DEFAULT})')
     parser.add_argument('-x', metavar='IP', help='reverse lookup')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     parser.add_argument('hostfragment', nargs='?')
@@ -272,7 +278,10 @@ def main():
         parser.error("requires at least one argument")
 
     try:
-        config = Config.from_defaults()
+        if args.config is None:
+            config = Config.from_defaults()
+        else:
+            config = Config.from_ini(args.config)
     except StartupError as e:
         parser.error(str(e))
 
