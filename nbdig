@@ -113,6 +113,23 @@ class ThinNetboxWrapper:
 
         load_properties = load_properties or ()
 
+        for prop in load_properties:
+            if '=' in prop:
+                prop_lookup, prop_value = prop.split('=', 1)
+                if prop_value and prop_value[0] not in (
+                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                        'abcdefghijklmnopqrstuvwxyz'
+                        '0123456789_'):
+                    if prop_value[0] == '^':
+                        params.append((f'{prop_lookup}__isw', prop_value[1:]))
+                    else:
+                        raise NotImplementedError('unknown =-modifier')
+                else:
+                    # Do not use '{prop_lookup}__ie' here: it will break
+                    # fancy value lookup, like status=offline, where
+                    # status is a dict.
+                    params.append((prop_lookup, prop_value))
+
         # We'll need to get all the info in a second run. For large resultsets
         # we want to trim them by globbing name first.
         params.extend([('brief', 1), ('limit', 1000)])
@@ -171,16 +188,35 @@ class ThinNetboxWrapper:
     def _nb_extract_properties(self, info, load_properties):
         props = []
         for prop in load_properties:
-            dicts = (info, info['custom_fields'])
-            for dict_ in dicts:
-                if prop in dict_:
-                    props.append((prop, dict_[prop]))
-                    break
+            # Drop value lookup from the property.
+            prop = prop.split('=', 1)[0]
+
+            if prop.startswith('cf_'):
+                prop_lookup = prop[3:]
+                dict_ = info['custom_fields']
             else:
-                others = []
-                [others.extend(dict_.keys()) for dict_ in dicts]
+                prop_lookup = prop
+                dict_ = info
+
+            if prop_lookup in dict_:
+                # Some properties are a dictionary. Take the "machine" value.
+                if isinstance(dict_[prop_lookup], dict) and (
+                        'value' in dict_[prop_lookup]):
+                    props.append((prop, dict_[prop_lookup]['value']))
+                elif isinstance(dict_[prop_lookup], list) and any(
+                        'slug' in v for v in dict_[prop_lookup]):
+                    props.append((prop, '+'.join(
+                        v['slug'] for v in dict_[prop_lookup])))
+                else:
+                    props.append((prop, dict_[prop_lookup]))
+            else:
+                # FIXME: This warning might go off for properties that
+                # exist on devices but not on VMs; e.g. for 'rear_port_count'.
+                others = [k for k in info.keys() if k != 'custom_fields'] + [
+                    f'cf_{k}' for k in info['custom_fields']]
                 others = ', '.join(others)
                 warn(f'property {prop!r} not found. maybe: {others}')
+
         return props
 
     def _search_for_ids(self, path, filters, exact_match, regex_match):
@@ -310,8 +346,9 @@ def main():
         help=f'configuration INI location (default: {INI_DEFAULT})')
     parser.add_argument(
         '-p', '--property', action='append', metavar='PROPERTY',
-        help=('extra properties to list for forward lookup; '
-              'e.g. machine_id, gocollect_id'))
+        help=('extra properties to search/list for forward lookup; '
+              'e.g. status, or status=offline to filter directly; or '
+              'a custom field cf_machine_id=^2 that starts with a 2'))
     parser.add_argument('-x', metavar='IP', help='reverse lookup')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     parser.add_argument('hostfragment', nargs='?')
