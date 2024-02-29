@@ -294,7 +294,7 @@ def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
             name = host.name or '<null>'
             addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
             extra = host.extra
-            print(f'{name!s:30}  {addr!s}  {extra}'.rstrip())
+            print(f'{name!s:30}  {addr!s:15}  {extra}'.rstrip())
         return
 
     ip_addresses = [str(ip.address) for ip in hosts[0].ip_addresses]
