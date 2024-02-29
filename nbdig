@@ -99,7 +99,8 @@ class ThinNetboxWrapper:
     def find_hostname(self, hostfragment, load_properties):
         if '*' in hostfragment or '?' in hostfragment:
             params = [
-                ('name__ic', part) for part in re_split('[*?]+', hostfragment)]
+                ('name__ic', part)
+                for part in re_split('[*?]+', hostfragment) if part]
             # Alas. Multilpe name-searches will do an OR search. Take the
             # largest string and hope it's the most narrow match.
             params.sort(key=(lambda x: (-len(x[1]), x[1])))
@@ -111,6 +112,7 @@ class ThinNetboxWrapper:
             # Turn into a regex. Make it a startswith match for now.
             re_match = re_compile(glob_to_re(hostfragment + '*'), IGNORECASE)
 
+        show_properties = []
         load_properties = load_properties or ()
 
         for prop in load_properties:
@@ -129,6 +131,11 @@ class ThinNetboxWrapper:
                     # fancy value lookup, like status=offline, where
                     # status is a dict.
                     params.append((prop_lookup, prop_value))
+            else:
+                prop_lookup = prop
+
+            if prop_lookup not in show_properties:
+                show_properties.append(prop_lookup)
 
         # We'll need to get all the info in a second run. For large resultsets
         # we want to trim them by globbing name first.
@@ -157,14 +164,14 @@ class ThinNetboxWrapper:
                 assert pages['next'] is None, NotImplemented  # pagination
                 for dev_or_vm in pages['results']:
                     hosts.append(self._nb_device_or_vm_to_host(
-                        dev_or_vm, load_properties=load_properties))
+                        dev_or_vm, show_properties=show_properties))
 
         # Sort, and cope with Nones.
         hosts.sort(key=(lambda x: (x.name or '')))
 
         return hosts
 
-    def _nb_device_or_vm_to_host(self, info, load_properties):
+    def _nb_device_or_vm_to_host(self, info, show_properties):
         name = info['name']
         primary_ip = info['primary_ip']
         ip_addresses = []
@@ -181,16 +188,13 @@ class ThinNetboxWrapper:
             return '{}={}'.format(k, v or '')
 
         extra = ' '.join(kv(k, v) for k, v in self._nb_extract_properties(
-            info, load_properties))
+            info, show_properties))
 
         return Host(name=name, ip_addresses=ip_addresses, extra=extra)
 
-    def _nb_extract_properties(self, info, load_properties):
+    def _nb_extract_properties(self, info, show_properties):
         props = []
-        for prop in load_properties:
-            # Drop value lookup from the property.
-            prop = prop.split('=', 1)[0]
-
+        for prop in show_properties:
             if prop.startswith('cf_'):
                 prop_lookup = prop[3:]
                 dict_ = info['custom_fields']
