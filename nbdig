@@ -156,16 +156,28 @@ class ThinNetboxWrapper:
         else:
             warn(f'{name}: no primary IP set')
 
-        props = []
-        for prop in load_properties:
-            propvalue = (
-                info.get(prop) or
-                info.get('custom_fields', {}).get(prop, ''))
-            if propvalue:
-                props.append(f'{prop}={propvalue}')
-        extra = ' '.join(props)
+        def kv(k, v):
+            return '{}={}'.format(k, v or '')
+
+        extra = ' '.join(kv(k, v) for k, v in self._nb_extract_properties(
+            info, load_properties))
 
         return Host(name=name, ip_addresses=ip_addresses, extra=extra)
+
+    def _nb_extract_properties(self, info, load_properties):
+        props = []
+        for prop in load_properties:
+            dicts = (info, info['custom_fields'])
+            for dict_ in dicts:
+                if prop in dict_:
+                    props.append((prop, dict_[prop]))
+                    break
+            else:
+                others = []
+                [others.extend(dict_.keys()) for dict_ in dicts]
+                others = ', '.join(others)
+                warn(f'property {prop!r} not found. maybe: {others}')
+        return props
 
     def _search_for_ids(self, path, filters, exact_match, regex_match):
         exact_match = exact_match.lower()
