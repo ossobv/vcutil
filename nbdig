@@ -34,6 +34,7 @@ from sys import stderr
 from warnings import warn
 
 import requests
+import warnings
 
 
 INI_DEFAULT = '~/.config/nbdig.ini'
@@ -282,7 +283,27 @@ def do_reverse_lookup(nb, ip, verbose=False):
     print(''.join(all_hostnames))
 
 
+def formatwarning(message, category, filename, lineno, line=None):
+    """
+    Override default Warning layout, from:
+
+        /usr/bin/nbdig:174: UserWarning: DD6-B FREE: no primary IP set
+            warn(f'{name}: no primary IP set')
+
+    To:
+
+        nbdig:175: UserWarning: DD6-B FREE: no primary IP set
+    """
+    if stderr.isatty():
+        a, b = '\x1b[31;1m', '\x1b[0m'
+    return '{a}{basename}:{lineno}: {category}: {message}{b}\n'.format(
+        a=a, b=b, basename=path.basename(filename), lineno=lineno,
+        category=category.__name__, message=message)
+
+
 def main():
+    warnings.formatwarning = formatwarning  # noqa
+
     parser = ArgumentParser(prog='nbdig', description='(zab)dig for netbox')
     parser.add_argument(
         '-c', '--config', metavar='INI',
