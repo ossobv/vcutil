@@ -141,6 +141,9 @@ class ThinNetboxWrapper:
                     hosts.append(self._nb_device_or_vm_to_host(
                         dev_or_vm, load_properties=load_properties))
 
+        # Sort, and cope with Nones.
+        hosts.sort(key=(lambda x: (x.name or '')))
+
         return hosts
 
     def _nb_device_or_vm_to_host(self, info, load_properties):
@@ -187,10 +190,10 @@ class ThinNetboxWrapper:
         assert pages['next'] is None, NotImplemented  # pagination
         ids_exact = [
             res['id'] for res in pages['results']
-            if res['name'].lower() == exact_match]
+            if (res.get('name') or '').lower() == exact_match]
         ids = [
             res['id'] for res in pages['results']
-            if regex_match.match(res['name'])]
+            if regex_match.match(res.get('name') or '')]
 
         return ids, ids_exact
 
@@ -251,7 +254,7 @@ def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
 
     if verbose:
         for host in hosts:
-            name = host.name
+            name = host.name or '<null>'
             addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
             extra = host.extra
             print(f'{name!s:30}  {addr!s}  {extra}'.rstrip())
