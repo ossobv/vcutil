@@ -268,7 +268,8 @@ class ThinNetboxWrapper:
             elif 'device' in assignment:
                 name = assignment['device']['name']
                 host = Host(name=name, ip_addresses=[
-                    IpAddress(address=ip_address, iface=iface, vrf=vrf)])
+                    IpAddress(address=ip_address, iface=iface, vrf=vrf)],
+                    extra='')  # extra NotImplemented
                 assigned.append(host)
             else:
                 raise NotImplementedError(assignment)
@@ -376,6 +377,8 @@ def main():
         do_forward_lookup(
             nb, args.hostfragment, args.property, args.verbose)
     elif args.x is not None:
+        if args.property:
+            raise NotImplementedError('-x with -p not implemented')
         do_reverse_lookup(nb, args.x, args.verbose)
     else:
         raise NotImplementedError('cannot get here')
