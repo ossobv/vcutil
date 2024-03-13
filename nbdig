@@ -74,8 +74,11 @@ class Config(namedtuple('Config', 'api_url api_token')):
                 f'api_url or api_token not found in {filename}') from e
 
 
-class IpAddress(namedtuple('IpAddress', 'address iface vrf')):
-    pass
+class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
+    def __new__(cls, *args, **kwargs):
+        if 'is_primary' not in kwargs:
+            kwargs['is_primary'] = False
+        return super().__new__(cls, *args, **kwargs)
 
 
 class Host(namedtuple('Host', 'name ip_addresses extra')):
@@ -84,6 +87,7 @@ class Host(namedtuple('Host', 'name ip_addresses extra')):
 
 class ThinNetboxWrapper:
     NB_DEVS = '/dcim/devices/'
+    NB_IPADDR = '/ipam/ip-addresses/'
     NB_VMS = '/virtualization/virtual-machines/'
 
     def __init__(self, config):
@@ -96,7 +100,7 @@ class ThinNetboxWrapper:
         resp.raise_for_status()
         return resp
 
-    def find_hostname(self, hostfragment, load_properties):
+    def find_hostname(self, hostfragment, load_interfaces, load_properties):
         if '*' in hostfragment or '?' in hostfragment:
             params = [
                 ('name__ic', part)
@@ -111,6 +115,8 @@ class ThinNetboxWrapper:
             params = [('name__isw', hostfragment)]  # startswith!
             # Turn into a regex. Make it a startswith match for now.
             re_match = re_compile(glob_to_re(hostfragment + '*'), IGNORECASE)
+
+        assert load_interfaces in (False, True), load_interfaces
 
         show_properties = []
         load_properties = load_properties or ()
@@ -155,8 +161,17 @@ class ThinNetboxWrapper:
 
         # Collect full info on the selected hosts.
         hosts = []
-        for pth, ids in ((self.NB_DEVS, dev_ids), (self.NB_VMS, vm_ids)):
+        for pth, lookup_key, ids in (
+                (self.NB_DEVS, 'device_id', dev_ids),
+                (self.NB_VMS, 'virtual_machine_id', vm_ids)):
             if ids:
+                # Get interface infos.
+                if load_interfaces:
+                    interfaces_by_id = self._find_interfaces(lookup_key, ids)
+                else:
+                    interfaces_by_id = {}
+
+                # Get host infos.
                 params = [('id', id_) for id_ in ids]
                 params.extend([('limit', 1000), ('exclude', 'config_context')])
                 ret = self._get_query(pth, params)
@@ -164,23 +179,38 @@ class ThinNetboxWrapper:
                 assert pages['next'] is None, NotImplemented  # pagination
                 for dev_or_vm in pages['results']:
                     hosts.append(self._nb_device_or_vm_to_host(
-                        dev_or_vm, show_properties=show_properties))
+                        dev_or_vm, interfaces_by_id=interfaces_by_id,
+                        show_properties=show_properties))
 
         # Sort, and cope with Nones.
         hosts.sort(key=(lambda x: (x.name or '')))
 
         return hosts
 
-    def _nb_device_or_vm_to_host(self, info, show_properties):
+    def _nb_device_or_vm_to_host(
+            self, info, interfaces_by_id, show_properties):
+
         name = info['name']
-        primary_ip = info['primary_ip']
         ip_addresses = []
 
+        primary_ip = info['primary_ip']
         if primary_ip is not None:
-            # TODO: get _all_ IPs from primary_ip['url']
-            ip_addresses.append(IpAddress(
-                address=IPv4Address(net2ip(primary_ip['address'])),
-                iface='?', vrf='?'))
+            primary_ip = IpAddress(
+                is_primary=True,
+                address=net2ip(primary_ip['address']),
+                iface='?', vrf='?')
+
+        if info['id'] in interfaces_by_id:
+            ip_addresses.extend(interfaces_by_id[info['id']])
+            if primary_ip is not None:
+                for idx, ip in enumerate(ip_addresses):
+                    if ip.address == primary_ip.address:
+                        ip_addresses[idx] = IpAddress(
+                            is_primary=True, address=ip.address,
+                            iface=ip.iface, vrf=ip.vrf)
+                        break
+        elif primary_ip is not None:
+            ip_addresses.append(primary_ip)
         else:
             warn(f'{name}: no primary IP set')
 
@@ -191,6 +221,34 @@ class ThinNetboxWrapper:
             info, show_properties))
 
         return Host(name=name, ip_addresses=ip_addresses, extra=extra)
+
+    def _find_interfaces(self, lookup_key, ids):
+        assert lookup_key in ('device_id', 'virtual_machine_id'), lookup_key
+        lookup_short = lookup_key[0:-3]  # 'device', 'virtual_machine'
+
+        params = [(lookup_key, id_) for id_ in ids]
+        params.append(('limit', 1000))
+        ret = self._get_query(self.NB_IPADDR, params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented  # pagination
+
+        interfaces_by_id = {}
+        for interface in pages['results']:
+            assert interface['family'] == {'value': 4, 'label': 'IPv4'}, (
+                interface['id'], interface['address'], interface['family'])
+            assigned_address = net2ip(interface['address'])
+            assigned_vrf = interface.get('vrf', {}).get('rd')
+            assigned_to_id = interface['assigned_object'][lookup_short]['id']
+            assigned_iface = interface['assigned_object']['name']
+
+            if assigned_to_id not in interfaces_by_id:
+                interfaces_by_id[assigned_to_id] = []
+            interfaces_by_id[assigned_to_id].append(
+                IpAddress(
+                    address=assigned_address, iface=assigned_iface,
+                    vrf=assigned_vrf))
+
+        return interfaces_by_id
 
     def _nb_extract_properties(self, info, show_properties):
         props = []
@@ -256,14 +314,14 @@ class ThinNetboxWrapper:
         for address in results:
             # Discard network bits for now
             ip_address = net2ip(address['address'])
-            vrf = address['vrf']['rd']
+            vrf = address.get('vrf', {}).get('rd')
             assignment = address['assigned_object']
             iface = assignment['name']
             if 'virtual_machine' in assignment:
                 name = assignment['virtual_machine']['name']
                 host = Host(name=name, ip_addresses=[
                     IpAddress(address=ip_address, iface=iface, vrf=vrf)],
-                    extra='')
+                    extra='')  # extra NotImplemented
                 assigned.append(host)
             elif 'device' in assignment:
                 name = assignment['device']['name']
@@ -281,8 +339,55 @@ class ThinNetboxWrapper:
         return assigned
 
 
+def do_interface_lookup(
+        nb, hostfragment, interface_match, load_properties, verbose=False):
+
+    if load_properties:
+        raise NotImplementedError('not sure what to do with properties here')
+    load_properties = ()
+
+    hosts = nb.find_hostname(
+        hostfragment, load_interfaces=True, load_properties=load_properties)
+    if not hosts:
+        print('not found', file=stderr)
+        return
+
+    if verbose:
+        for host in hosts:
+            name = host.name or '<null>'
+            assert host.extra == '', host
+
+            # Sort. We want primary first.
+            ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
+                not x.is_primary, x.address, x.vrf, x.iface)))
+
+            for ip in ip_addresses:
+                if interface_match in ip.iface:
+                    addr, iface, vrf = ip.address, ip.iface, ip.vrf
+                    addr = f'[{addr}]' if ip.is_primary else f' {addr} '
+                    print(f'{name!s:30} {addr!s:17} {iface!s:15}  {vrf}')
+        return
+
+    # Concatenate to a big list.
+    ip_addresses = []
+    for host in hosts:
+        ip_addresses.extend(host.ip_addresses)
+
+    # Sort. We want primary first.
+    ip_addresses = sorted(ip_addresses, key=(lambda x: (
+        not x.is_primary, x.address, x.vrf, x.iface)))
+
+    ip_addresses = [
+        str(ip.address) for ip in ip_addresses
+        if interface_match in ip.iface]
+
+    print('\n'.join(ip_addresses))
+
+
 def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
-    hosts = nb.find_hostname(hostfragment, load_properties)
+    hosts = nb.find_hostname(
+        hostfragment, load_interfaces=False, load_properties=load_properties)
+
     if not hosts:
         print('not found', file=stderr)
         return
@@ -347,8 +452,10 @@ def main():
 
     parser = ArgumentParser(prog='nbdig', description='(zab)dig for netbox')
     parser.add_argument(
-        '-c', '--config', metavar='INI',
+        '-c', '--config', metavar='INIFILE',
         help=f'configuration INI location (default: {INI_DEFAULT})')
+    parser.add_argument(
+        '-i', '--iface', metavar='IFACE', help='interface lookup')
     parser.add_argument(
         '-p', '--property', action='append', metavar='PROPERTY',
         help=('extra properties to search/list for forward lookup; '
@@ -374,8 +481,12 @@ def main():
 
     nb = ThinNetboxWrapper(config)
     if args.hostfragment is not None:
-        do_forward_lookup(
-            nb, args.hostfragment, args.property, args.verbose)
+        if args.iface is None:
+            do_forward_lookup(
+                nb, args.hostfragment, args.property, args.verbose)
+        else:
+            do_interface_lookup(
+                nb, args.hostfragment, args.iface, args.property, args.verbose)
     elif args.x is not None:
         if args.property:
             raise NotImplementedError('-x with -p not implemented')
