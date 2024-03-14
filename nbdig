@@ -237,7 +237,7 @@ class ThinNetboxWrapper:
             assert interface['family'] == {'value': 4, 'label': 'IPv4'}, (
                 interface['id'], interface['address'], interface['family'])
             assigned_address = net2ip(interface['address'])
-            assigned_vrf = interface.get('vrf', {}).get('rd')
+            assigned_vrf = (interface.get('vrf') or {}).get('rd', None)
             assigned_to_id = interface['assigned_object'][lookup_short]['id']
             assigned_iface = interface['assigned_object']['name']
 
@@ -314,7 +314,7 @@ class ThinNetboxWrapper:
         for address in results:
             # Discard network bits for now
             ip_address = net2ip(address['address'])
-            vrf = address.get('vrf', {}).get('rd')
+            vrf = (address.get('vrf') or {}).get('rd', None)
             assignment = address['assigned_object']
             iface = assignment['name']
             if 'virtual_machine' in assignment:
@@ -363,8 +363,10 @@ def do_interface_lookup(
 
             for ip in ip_addresses:
                 if interface_match in ip.iface:
-                    addr, iface, vrf = ip.address, ip.iface, ip.vrf
-                    addr = f'[{addr}]' if ip.is_primary else f' {addr} '
+                    addr = (
+                        f'[{ip.address}]' if ip.is_primary
+                        else f' {ip.address} ')
+                    iface, vrf = ip.iface or '-', ip.vrf or '-'
                     print(f'{name!s:30} {addr!s:17} {iface!s:15}  {vrf}')
         return
 
