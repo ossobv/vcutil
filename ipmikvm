@@ -54,7 +54,7 @@ if ! command -v unpack200 >/dev/null; then
     fi
 fi
 
-for binary in java unzip curl awk base64 grep sed; do
+for binary in java unzip curl awk base64 grep sed flock; do
     if ! command -v "$binary" >/dev/null; then
         echo "'$binary' not found" >/dev/stderr
         exit 1
@@ -344,10 +344,15 @@ get_app_jar() {
     umask 0077  # storing latest.jnlp here; might contain temp passwords
     test -d "$app_cache_dir" || mkdir -p "$app_cache_dir" || exit 1
     echo "$launch_jnlp" >"$app_cache_dir/latest.jnlp"
+
+    LOCKFD=4
+    exec 4<>"$app_cache_dir/lock"
+    flock $LOCKFD
     if ! test -f "$app_cache_dir/$app_jar"; then
         install_ikvm_application "$launch_jnlp" "$app_cache_dir" >&2 || exit 1
         test -f "$app_cache_dir/$app_jar" || exit 1
     fi
+    flock -u $LOCKFD
     echo "$app_cache_dir/$app_jar"
 }
 # SYNOPSIS: get_app_jar JNLP_DATA APP_CACHE_DIR
@@ -457,7 +462,7 @@ install_ikvm_application() {
         elif curl "$remote_path.pack.gz" -sS --fail -ko "$local_path.pack.gz" &&
                 file --brief --mime "$local_path.pack.gz" |
                 grep -E '^application/gzip' &&
-                gunzip "$local_path.pack.gz" &&
+                gunzip -f "$local_path.pack.gz" &&
                 unpack200 "$local_path.pack" "$local_path"; then
             :
         else
