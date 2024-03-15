@@ -33,10 +33,35 @@
 # - JViewer-unknown-version that comes with Quanta BMC
 #
 # See also: ipmiview
-#
-test -z "$HOME" && echo 'missing $HOME' && exit 1
+if test -z "$APP_CACHE_DIR"; then
+    if ! test -z "$HOME" && test -d "$HOME/.local/lib/ipmikvm"; then
+        APP_CACHE_DIR="$HOME/.local/lib/ipmikvm"
+    else
+        APP_CACHE_DIR="${XDG_CACHE_HOME:-${HOME?}/.cache}/ipmikvm"
+    fi
+fi
 set -u
-APP_CACHE_DIR="$HOME/.local/lib/ipmikvm"
+
+if ! command -v unpack200 >/dev/null; then
+    JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-8-openjdk}"
+    if ! test -d "$JAVA_HOME"; then
+        echo "$JAVA_HOME and unpack200 is missing" >/dev/stderr
+        exit 1
+    else
+        unpack200() {
+            "$JAVA_HOME/bin/unpack200" "$@"
+        }
+    fi
+fi
+
+for binary in java unzip curl awk base64 grep sed; do
+    if ! command -v "$binary" >/dev/null; then
+        echo "'$binary' not found" >/dev/stderr
+        exit 1
+    fi
+done
+
+mkdir -p "$APP_CACHE_DIR"
 
 IP=
 USER=
@@ -484,3 +509,4 @@ else
 fi
 
 exec_app "$JAR" "$CLASS" "$@"
+# vim: colorcolumn=80 tabstop=4 softtabstop=4 shiftwidth=4 expandtab:
