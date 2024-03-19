@@ -316,21 +316,28 @@ class ThinNetboxWrapper:
             ip_address = net2ip(address['address'])
             vrf = (address.get('vrf') or {}).get('rd', None)
             assignment = address['assigned_object']
-            iface = assignment['name']
-            if 'virtual_machine' in assignment:
+
+            if not assignment:
+                # FIXME: Host or NoHost?
+                host = Host(name=None, ip_addresses=[
+                    IpAddress(address=ip_address, iface=None, vrf=None)],
+                    extra='')
+            elif 'virtual_machine' in assignment:
+                iface = assignment['name']
                 name = assignment['virtual_machine']['name']
                 host = Host(name=name, ip_addresses=[
                     IpAddress(address=ip_address, iface=iface, vrf=vrf)],
                     extra='')  # extra NotImplemented
-                assigned.append(host)
             elif 'device' in assignment:
+                iface = assignment['name']
                 name = assignment['device']['name']
                 host = Host(name=name, ip_addresses=[
                     IpAddress(address=ip_address, iface=iface, vrf=vrf)],
                     extra='')  # extra NotImplemented
-                assigned.append(host)
             else:
                 raise NotImplementedError(assignment)
+
+            assigned.append(host)
 
         if pages['count'] != len(assigned):
             raise ValueError('unhandled count: {}, got {}'.format(
