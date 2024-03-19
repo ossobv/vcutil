@@ -346,6 +346,49 @@ class ThinNetboxWrapper:
         return assigned
 
 
+def show_ipaddresses(hosts, interface_match=None):
+    # Concatenate to a big list.
+    ip_addresses = []
+    for host in hosts:
+        ip_addresses.extend(host.ip_addresses)
+
+    # Sort. We want primary first.
+    ip_addresses = sorted(ip_addresses, key=(lambda x: (
+        not x.is_primary, x.address, x.vrf, x.iface)))
+
+    ip_addresses = [
+        str(ip.address) for ip in ip_addresses
+        if interface_match is None or interface_match in ip.iface]
+
+    print('\n'.join(ip_addresses))
+
+
+def show_name_addr_extra(hosts):
+    for host in hosts:
+        name = host.name or '<null>'
+        addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
+        extra = host.extra
+        print(f'{name!s:30}  {addr!s:15}  {extra}'.rstrip())
+
+
+def show_name_addr_iface_vrf(hosts, interface_match=None):
+    for host in hosts:
+        name = host.name or '<null>'
+        assert host.extra == '', host
+
+        # Sort. We want primary first.
+        ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
+            not x.is_primary, x.address, x.vrf, x.iface)))
+
+        for ip in ip_addresses:
+            if interface_match is None or interface_match in ip.iface:
+                addr = (
+                    f'[{ip.address}]' if ip.is_primary
+                    else f' {ip.address} ')
+                iface, vrf = ip.iface or '-', ip.vrf or '-'
+                print(f'{name!s:30} {addr!s:17} {iface!s:15}  {vrf}')
+
+
 def do_interface_lookup(
         nb, hostfragment, interface_match, load_properties, verbose=False):
 
@@ -360,37 +403,9 @@ def do_interface_lookup(
         return
 
     if verbose:
-        for host in hosts:
-            name = host.name or '<null>'
-            assert host.extra == '', host
-
-            # Sort. We want primary first.
-            ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
-                not x.is_primary, x.address, x.vrf, x.iface)))
-
-            for ip in ip_addresses:
-                if interface_match in ip.iface:
-                    addr = (
-                        f'[{ip.address}]' if ip.is_primary
-                        else f' {ip.address} ')
-                    iface, vrf = ip.iface or '-', ip.vrf or '-'
-                    print(f'{name!s:30} {addr!s:17} {iface!s:15}  {vrf}')
-        return
-
-    # Concatenate to a big list.
-    ip_addresses = []
-    for host in hosts:
-        ip_addresses.extend(host.ip_addresses)
-
-    # Sort. We want primary first.
-    ip_addresses = sorted(ip_addresses, key=(lambda x: (
-        not x.is_primary, x.address, x.vrf, x.iface)))
-
-    ip_addresses = [
-        str(ip.address) for ip in ip_addresses
-        if interface_match in ip.iface]
-
-    print('\n'.join(ip_addresses))
+        show_name_addr_iface_vrf(hosts, interface_match)
+    else:
+        show_ipaddresses(hosts, interface_match)
 
 
 def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
@@ -409,15 +424,10 @@ def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
         verbose = True
 
     if verbose:
-        for host in hosts:
-            name = host.name or '<null>'
-            addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
-            extra = host.extra
-            print(f'{name!s:30}  {addr!s:15}  {extra}'.rstrip())
-        return
-
-    ip_addresses = [str(ip.address) for ip in hosts[0].ip_addresses]
-    print('\n'.join(ip_addresses))
+        show_name_addr_extra(hosts)
+    else:
+        # There is only one host, but the function functions the same.
+        show_ipaddresses(hosts)
 
 
 def do_reverse_lookup(nb, ip, verbose=False):
@@ -426,16 +436,11 @@ def do_reverse_lookup(nb, ip, verbose=False):
         print('not found', file=stderr)
         return
 
-    all_hostnames = set(h.name for h in hosts)
-    if len(all_hostnames) != 1:
-        verbose = True
-
     if verbose:
-        for host in hosts:
-            print(host)
-        return
-
-    print(''.join(all_hostnames))
+        show_name_addr_iface_vrf(hosts)
+    else:
+        all_hostnames = set(h.name for h in hosts)
+        print('\n'.join(sorted(all_hostnames)))
 
 
 def formatwarning(message, category, filename, lineno, line=None):
