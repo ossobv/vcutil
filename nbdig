@@ -316,24 +316,21 @@ class ThinNetboxWrapper:
             ip_address = net2ip(address['address'])
             vrf = (address.get('vrf') or {}).get('rd', None)
             assignment = address['assigned_object']
+            iface = (assignment['name'] if assignment else None)
+            ipaddr = IpAddress(address=ip_address, iface=iface, vrf=vrf)
+            extra = address['dns_name'] or address['description']
 
             if not assignment:
                 # FIXME: Host or NoHost?
-                host = Host(name=None, ip_addresses=[
-                    IpAddress(address=ip_address, iface=None, vrf=None)],
-                    extra='')
+                host = Host(name=None, ip_addresses=[ipaddr], extra=extra)
             elif 'virtual_machine' in assignment:
-                iface = assignment['name']
                 name = assignment['virtual_machine']['name']
-                host = Host(name=name, ip_addresses=[
-                    IpAddress(address=ip_address, iface=iface, vrf=vrf)],
-                    extra='')  # extra NotImplemented
+                # 'extra' is NotImplemented
+                host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
             elif 'device' in assignment:
-                iface = assignment['name']
                 name = assignment['device']['name']
-                host = Host(name=name, ip_addresses=[
-                    IpAddress(address=ip_address, iface=iface, vrf=vrf)],
-                    extra='')  # extra NotImplemented
+                # 'extra' is NotImplemented
+                host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
             else:
                 raise NotImplementedError(assignment)
 
@@ -374,7 +371,9 @@ def show_name_addr_extra(hosts):
 def show_name_addr_iface_vrf(hosts, interface_match=None):
     for host in hosts:
         name = host.name or '<null>'
-        assert host.extra == '', host
+        extra = host.extra
+        if extra:
+            extra = '"{extra}"'.format(extra=extra.replace('"', '""'))
 
         # Sort. We want primary first.
         ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
@@ -386,7 +385,9 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
                     f'[{ip.address}]' if ip.is_primary
                     else f' {ip.address} ')
                 iface, vrf = ip.iface or '-', ip.vrf or '-'
-                print(f'{name!s:30} {addr!s:17} {iface!s:15}  {vrf}')
+                print(
+                    f'{name!s:30} {addr!s:17} {iface!s:15}  '
+                    f'{vrf!s:15}  {extra}'.rstrip())
 
 
 def do_interface_lookup(
