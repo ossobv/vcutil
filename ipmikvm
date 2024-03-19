@@ -61,8 +61,6 @@ for binary in java unzip curl awk base64 grep sed flock; do
     fi
 done
 
-mkdir -p "$APP_CACHE_DIR"
-
 IP=
 USER=
 PASS=
@@ -445,7 +443,6 @@ install_ikvm_application() {
         s#.* href="\([^"]*\).jar".*version="\([^"]*\)".*#\1__V\2.jar#
         s#.* href="\([^"]*\).jar".*#\1.jar#' | sort -u)
     set -x
-    mkdir -p "$destdir"
     cd "$destdir"
     local path local_path remote_path
     for path in $jars $nativelibs; do
