@@ -16,8 +16,8 @@
 #     $ nbdig -x 10.32.1.5
 #     walter.internal.lan
 #
-#     $ nbdig -x 10.32.1.5 -t
-#     10.32.0.0/16                    ROOT
+#     $ nbdig -x 10.32.1.0/24 -t
+#     10.32.0.0/22                    ROOT
 #       10.32.1.0/24                  container /24
 #         10.32.1.0/27                usable /31 space
 #           10.32.1.4/31              walter.internal.lan
@@ -29,6 +29,7 @@
 #     api_token = 0123456789abcdef0123456789abcdef01234567
 #
 from argparse import ArgumentParser
+from bisect import insort
 from collections import namedtuple
 from configparser import ConfigParser, MissingSectionHeaderError
 from fnmatch import translate as glob_to_re
@@ -360,17 +361,53 @@ class ThinNetboxWrapper:
         return assigned
 
     def find_networks(self, cidr):
-        # cidr = IPv4Network(cidr)
-        params = [('contains', cidr), ('exclude', 'config_context')]
+        cidr = IPv4Network(cidr)
+        params = [('limit', 1000), ('contains', str(cidr))]
         ret = self._get_query(self.NB_PREFIX, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
-            return self._find_networks(pages)
+            supernets = self._find_networks(pages)
         except KeyError as e:
             print(f'error: {e}', file=stderr)
             print('input: {}'.format(dumps(pages)), file=stderr)
             raise
+
+        params = [('limit', 1000), ('within', str(cidr))]
+        ret = self._get_query(self.NB_PREFIX, params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented  # pagination
+        try:
+            subnets = self._find_networks(pages)
+        except KeyError as e:
+            print(f'error: {e}', file=stderr)
+            print('input: {}'.format(dumps(pages)), file=stderr)
+            raise
+
+        # Merge supernets and subnets.
+        if supernets and subnets:
+            assert len(supernets) == 1 and subnets, (
+                supernets, subnets)
+
+            def attach(children, subnets):
+                if not children:
+                    children.extend(subnets)
+                    return True
+
+                assert len(children) == 1, children
+                if attach(children[0].children, subnets):
+                    pprefix = children[0].prefix
+                    assert all(s.prefix.subnet_of(pprefix) for s in subnets), (
+                        children[0], subnets)
+                return False
+
+            attach(supernets, subnets)
+        elif supernets:
+            pass
+        elif subnets:
+            supernets = subnets
+
+        return supernets
 
     def _find_networks(self, pages):
         results = pages['results']
@@ -383,8 +420,7 @@ class ThinNetboxWrapper:
             nets.append(net)
 
         # Sort networks: larger first.
-        nets.sort(key=(lambda x: (
-            x.prefix.prefixlen, x.prefix.network_address)))
+        nets.sort(key=(lambda x: x.prefix.prefixlen))
 
         # Move smaller networks into larger ones if possible.
         i = len(nets) - 1
@@ -395,10 +431,19 @@ class ThinNetboxWrapper:
                 if larger_net.prefix.prefixlen > small_net.prefix.prefixlen:
                     break  # quit early
                 if small_net.prefix.subnet_of(larger_net.prefix):
-                    larger_net.children.append(small_net)
+                    # Sorted insert so children stay sorted by prefix.
+                    insort(larger_net.children, small_net)
                     nets.pop(i)
                     break
             i -= 1
+
+        # Sort everything. This time not by prefixlen, but by prefix.
+        def childsort(children):
+            for child in children:
+                childsort(child.children)
+            children.sort()
+
+        childsort(nets)
 
         return nets
 
