@@ -87,9 +87,23 @@ class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
             kwargs['is_primary'] = False
         return super().__new__(cls, *args, **kwargs)
 
+    @property
+    def safeiface(self):
+        if not self.iface:
+            return '-'
+        if self.iface.startswith('GigabitEthernet'):
+            return f'GE{self.iface[15:]}'
+        return self.iface
+
+    @property
+    def safevrf(self):
+        return self.vrf or '-'
+
 
 class Host(namedtuple('Host', 'name ip_addresses extra')):
-    pass
+    @property
+    def safename(self):
+        return self.name or '<null>'  # or '-'?
 
 
 class Network(namedtuple('Network', 'prefix description children')):
@@ -467,15 +481,13 @@ def show_ipaddresses(hosts, interface_match=None):
 
 def show_name_addr_extra(hosts):
     for host in hosts:
-        name = host.name or '<null>'
         addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
-        extra = host.extra
-        print(f'{name!s:30}  {addr!s:15}  {extra}'.rstrip())
+        print(f'{host.safename!s:30}  {addr!s:15}  {host.extra}'.rstrip())
 
 
 def show_name_addr_iface_vrf(hosts, interface_match=None):
     for host in hosts:
-        name = host.name or '<null>'
+        name = host.safename
         extra = host.extra
         if extra:
             extra = '"{extra}"'.format(extra=extra.replace('"', '""'))
@@ -489,10 +501,9 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
                 addr = (
                     f'[{ip.address}]' if ip.is_primary
                     else f' {ip.address} ')
-                iface, vrf = ip.iface or '-', ip.vrf or '-'
                 print(
-                    f'{name!s:30} {addr!s:17} {iface!s:15}  '
-                    f'{vrf!s:15}  {extra}'.rstrip())
+                    f'{name!s:30} {addr!s:17} {ip.safeiface!s:15}  '
+                    f'{ip.safevrf!s:15}  {extra}'.rstrip())
 
 
 def do_interface_lookup(
@@ -556,7 +567,7 @@ def do_reverse_lookup(nb, ip_or_cidr, tree=False, verbose=False):
         show_name_addr_iface_vrf(hosts)
     elif hosts:
         assert not networks
-        all_hostnames = set(h.name for h in hosts)
+        all_hostnames = set(h.safename for h in hosts)
         print('\n'.join(sorted(all_hostnames)))
     else:
         def print_nets(nets, indent=''):
