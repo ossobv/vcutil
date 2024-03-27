@@ -1,3 +1,17 @@
+vcutil (1.44) stable; urgency=low
+
+  * Additions:
+    - nbdig: Add dig(1) like tool that interfaces with Netbox and does forward
+      and reverse hostname lookups.
+
+  * Improvements:
+    - ipmikvm: Add flock(1) around the install commands to make it
+      possible to run it in parallel.
+    - ipmikvm: Improve detection of unpack200 location.
+    - mysqlparseslow: Quick and dirty read problem explanations
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 27 Mar 2024 15:03:22 +0100
+
 vcutil (1.43) stable; urgency=low
 
   * Additions:
