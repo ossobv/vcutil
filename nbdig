@@ -98,6 +98,7 @@ class Network(namedtuple('Network', 'prefix description children')):
 class ThinNetboxWrapper:
     NB_DEVS = '/dcim/devices/'
     NB_IPADDR = '/ipam/ip-addresses/'
+    NB_PREFIX = '/ipam/prefixes/'
     NB_VMS = '/virtualization/virtual-machines/'
 
     def __init__(self, config):
@@ -314,7 +315,7 @@ class ThinNetboxWrapper:
         params = [
             ('address', str(cidr.network_address)),
             ('exclude', 'config_context')]
-        ret = self._get_query('/ipam/ip-addresses/', params)
+        ret = self._get_query(self.NB_IPADDR, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
@@ -361,7 +362,7 @@ class ThinNetboxWrapper:
     def find_networks(self, cidr):
         # cidr = IPv4Network(cidr)
         params = [('contains', cidr), ('exclude', 'config_context')]
-        ret = self._get_query('/ipam/prefixes/', params)
+        ret = self._get_query(self.NB_PREFIX, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
