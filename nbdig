@@ -311,20 +311,20 @@ class ThinNetboxWrapper:
     def find_ip_address(self, ip_address):
         cidr = IPv4Network(ip_address)
         if cidr.prefixlen != 32:
-            raise NotImplementedError(
-                'finding multiple IPs is not implemented; try --tree')
-        params = [
-            ('address', str(cidr.network_address)),
-            ('exclude', 'config_context')]
+            params = [('limit', 1000), ('parent', str(cidr))]
+        else:
+            params = [('limit', 1000), ('address', str(cidr.network_address))]
         ret = self._get_query(self.NB_IPADDR, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
-            return self._find_ip_address(pages)
+            hosts = self._find_ip_address(pages)
         except KeyError as e:
             print(f'error: {e}', file=stderr)
             print('input: {}'.format(dumps(pages)), file=stderr)
             raise
+
+        return hosts
 
     def _find_ip_address(self, pages):
         results = pages['results']
