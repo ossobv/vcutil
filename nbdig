@@ -106,7 +106,20 @@ class Host(namedtuple('Host', 'name ip_addresses extra')):
 
 
 class Network(namedtuple('Network', 'prefix description children')):
-    pass
+    def merge(self, subnets):
+        if not self.children:
+            assert all(s.prefix.subnet_of(self.prefix) for s in subnets), (
+                self, subnets)
+            self.children.extend(subnets)
+            return
+
+        assert len(self.children) == 1, self.children
+        self.children[0].merge(subnets)
+
+    def sort(self):
+        for child in self.children:
+            child.sort()
+        self.children.sort()
 
 
 class ThinNetboxWrapper:
@@ -401,20 +414,7 @@ class ThinNetboxWrapper:
         if supernets and subnets:
             assert len(supernets) == 1 and subnets, (
                 supernets, subnets)
-
-            def attach(children, subnets):
-                if not children:
-                    children.extend(subnets)
-                    return True
-
-                assert len(children) == 1, children
-                if attach(children[0].children, subnets):
-                    pprefix = children[0].prefix
-                    assert all(s.prefix.subnet_of(pprefix) for s in subnets), (
-                        children[0], subnets)
-                return False
-
-            attach(supernets, subnets)
+            supernets[0].merge(subnets)
         elif supernets:
             pass
         elif subnets:
@@ -449,13 +449,9 @@ class ThinNetboxWrapper:
                     break
             i -= 1
 
-        # Sort everything. This time not by prefixlen, but by prefix.
-        def childsort(children):
-            for child in children:
-                childsort(child.children)
-            children.sort()
-
-        childsort(nets)
+        # nets is now a recursive structure. Sort it, this time by prefix.
+        [net.sort() for net in nets]    # let the Network()s sort themselves
+        nets.sort()                     # sort the Network()s
 
         return nets
 
