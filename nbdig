@@ -16,6 +16,12 @@
 #     $ nbdig -x 10.32.1.5
 #     walter.internal.lan
 #
+#     $ nbdig -x 10.32.1.5 -t
+#     10.32.0.0/16                    ROOT
+#       10.32.1.0/24                  container /24
+#         10.32.1.0/27                usable /31 space
+#           10.32.1.4/31              walter.internal.lan
+#
 # Configure by setting up a ~/.config/nbdig.ini with one section:
 #
 #     [netbox.example.com]
@@ -26,7 +32,7 @@ from argparse import ArgumentParser
 from collections import namedtuple
 from configparser import ConfigParser, MissingSectionHeaderError
 from fnmatch import translate as glob_to_re
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
 from json import dumps
 from os import path
 from re import IGNORECASE, compile as re_compile, split as re_split
@@ -82,6 +88,10 @@ class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
 
 
 class Host(namedtuple('Host', 'name ip_addresses extra')):
+    pass
+
+
+class Network(namedtuple('Network', 'prefix description children')):
     pass
 
 
@@ -297,7 +307,13 @@ class ThinNetboxWrapper:
         return ids, ids_exact
 
     def find_ip_address(self, ip_address):
-        params = [('address', ip_address), ('exclude', 'config_context')]
+        cidr = IPv4Network(ip_address)
+        if cidr.prefixlen != 32:
+            raise NotImplementedError(
+                'finding multiple IPs is not implemented; try --tree')
+        params = [
+            ('address', str(cidr.network_address)),
+            ('exclude', 'config_context')]
         ret = self._get_query('/ipam/ip-addresses/', params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
@@ -341,6 +357,49 @@ class ThinNetboxWrapper:
                 pages, assigned))
 
         return assigned
+
+    def find_networks(self, cidr):
+        # cidr = IPv4Network(cidr)
+        params = [('contains', cidr), ('exclude', 'config_context')]
+        ret = self._get_query('/ipam/prefixes/', params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented  # pagination
+        try:
+            return self._find_networks(pages)
+        except KeyError as e:
+            print(f'error: {e}', file=stderr)
+            print('input: {}'.format(dumps(pages)), file=stderr)
+            raise
+
+    def _find_networks(self, pages):
+        results = pages['results']
+        nets = []
+        for res in results:
+            net = Network(
+                prefix=IPv4Network(res['prefix']),
+                description=res['description'],
+                children=[])
+            nets.append(net)
+
+        # Sort networks: larger first.
+        nets.sort(key=(lambda x: (
+            x.prefix.prefixlen, x.prefix.network_address)))
+
+        # Move smaller networks into larger ones if possible.
+        i = len(nets) - 1
+        while i > 0:
+            small_net = nets[i]
+            for j in range(i - 1, -1, -1):
+                larger_net = nets[j]
+                if larger_net.prefix.prefixlen > small_net.prefix.prefixlen:
+                    break  # quit early
+                if small_net.prefix.subnet_of(larger_net.prefix):
+                    larger_net.children.append(small_net)
+                    nets.pop(i)
+                    break
+            i -= 1
+
+        return nets
 
 
 def show_ipaddresses(hosts, interface_match=None):
@@ -431,17 +490,36 @@ def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
         show_ipaddresses(hosts)
 
 
-def do_reverse_lookup(nb, ip, verbose=False):
-    hosts = nb.find_ip_address(ip)
-    if not hosts:
+def do_reverse_lookup(nb, ip_or_cidr, tree=False, verbose=False):
+    if not tree:
+        hosts = nb.find_ip_address(ip_or_cidr)
+        networks = None
+    elif tree and not verbose:
+        hosts = None
+        networks = nb.find_networks(ip_or_cidr)
+    else:
+        raise NotImplementedError(
+            'lookup with networks and multiple hosts not implemented')
+
+    if not hosts and not networks:
         print('not found', file=stderr)
         return
 
     if verbose:
+        assert hosts and not networks
         show_name_addr_iface_vrf(hosts)
-    else:
+    elif hosts:
+        assert not networks
         all_hostnames = set(h.name for h in hosts)
         print('\n'.join(sorted(all_hostnames)))
+    else:
+        def print_nets(nets, indent=''):
+            for net in nets:
+                indent_addr = f'{indent}{net.prefix}'
+                print(f'{indent_addr!s:30}  {net.description}')
+                print_nets(net.children, indent=(indent + '  '))
+
+        print_nets(networks)
 
 
 def formatwarning(message, category, filename, lineno, line=None):
@@ -476,7 +554,9 @@ def main():
         help=('extra properties to search/list for forward lookup; '
               'e.g. status, or status=offline to filter directly; or '
               'a custom field cf_machine_id=^2 that starts with a 2'))
-    parser.add_argument('-x', metavar='IP', help='reverse lookup')
+    parser.add_argument(
+        '-t', '--tree', action='store_true', help='show network tree for -x')
+    parser.add_argument('-x', metavar='NET', help='reverse lookup (IP or net)')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     parser.add_argument('hostfragment', nargs='?')
 
@@ -498,14 +578,15 @@ def main():
     if args.hostfragment is not None:
         if args.iface is None:
             do_forward_lookup(
-                nb, args.hostfragment, args.property, args.verbose)
+                nb, args.hostfragment, args.property, verbose=args.verbose)
         else:
             do_interface_lookup(
-                nb, args.hostfragment, args.iface, args.property, args.verbose)
+                nb, args.hostfragment, args.iface, args.property,
+                verbose=args.verbose)
     elif args.x is not None:
         if args.property:
             raise NotImplementedError('-x with -p not implemented')
-        do_reverse_lookup(nb, args.x, args.verbose)
+        do_reverse_lookup(nb, args.x, tree=args.tree, verbose=args.verbose)
     else:
         raise NotImplementedError('cannot get here')
 
