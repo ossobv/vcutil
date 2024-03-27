@@ -29,7 +29,6 @@
 #     api_token = 0123456789abcdef0123456789abcdef01234567
 #
 from argparse import ArgumentParser
-from bisect import insort
 from collections import namedtuple
 from configparser import ConfigParser, MissingSectionHeaderError
 from fnmatch import translate as glob_to_re
@@ -445,8 +444,7 @@ class ThinNetboxWrapper:
                 if larger_net.prefix.prefixlen > small_net.prefix.prefixlen:
                     break  # quit early
                 if small_net.prefix.subnet_of(larger_net.prefix):
-                    # Sorted insert so children stay sorted by prefix.
-                    insort(larger_net.children, small_net)
+                    larger_net.children.append(small_net)
                     nets.pop(i)
                     break
             i -= 1
