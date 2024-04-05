@@ -49,7 +49,9 @@ if ! command -v unpack200 >/dev/null; then
         exit 1
     else
         unpack200() {
-            "$JAVA_HOME/bin/unpack200" "$@"
+            local exe="$JAVA_HOME/jre/bin/unpack200"
+            test ! -e "$exe" && exe="$JAVA_HOME/bin/unpack200"
+            "$exe" "$@"
         }
     fi
 fi
