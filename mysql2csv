@@ -86,6 +86,8 @@ except ImportError:  # python2-
 DEFAULT_FILENAME = '%(database)s.%(table)s.%%Y%%m.csv'
 DEFAULT_SLEEP_TIME = 0.005  # sleep N secs every iteration, easing server load
 EXAMPLE_UNTIL_DATE = datetime(2035, 1, 1)
+ONE_HOUR = timedelta(seconds=3600)
+TWO_HOURS = timedelta(seconds=7200)
 
 
 class ConfigError(ValueError):
@@ -205,6 +207,9 @@ class Interval(object):
             self.end = self.begin + self.period
             self.last = self._max_seq  # inclusive!
 
+        self._maybe_dst_issues = (
+            self.type == datetime and period_size < 7200)
+
     def _set_min(self):
         self._min_seq = self._find_min('(1 = 1)')
         if self._min_seq is None:
@@ -232,28 +237,61 @@ class Interval(object):
         else:
             raise NotImplementedError(self._until)
 
+        query = "SELECT MAX(%s) FROM %s WHERE %s %s" % (
+            self._seq_column, self._table_name, where, self._extra_where)
+        # #print(query)
         cursor = self._db.cursor()
-        cursor.execute(
-            "SELECT MAX(%s) FROM %s WHERE %s %s" % (
-                self._seq_column, self._table_name, where, self._extra_where))
+        cursor.execute(query)
         ret = cursor.fetchall()
         self._max_seq = ret[0][0]  # inclusive!
 
     def _find_min(self, where):
+        query = "SELECT MIN(%s) FROM %s WHERE %s %s" % (
+            self._seq_column, self._table_name, where, self._extra_where)
+        # #print(query)
         cursor = self._db.cursor()
-        cursor.execute(
-            "SELECT MIN(%s) FROM %s WHERE %s %s" % (
-                self._seq_column, self._table_name, where, self._extra_where))
+        cursor.execute(query)
         ret = cursor.fetchall()
         return ret[0][0]
 
     def set_next(self):
-        self.begin, self.end = self.end, self.end + self.period
+        if self._maybe_dst_issues and has_crossed_dst(
+                self._db, self.end, self.period):
+            # For certain columns, string/time comparisons can fail during
+            # DST changes, for example:
+            #   TABLE auth (ts timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)
+            #   mysql> SELECT MIN(ts) FROM auth\G
+            #   min(ts): 2014-10-26 02:00:02
+            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 02:00:00' <= ts
+            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+            #   COUNT(*): 0
+            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 01:59:59' <= ts
+            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
+            #   COUNT(*): 256
+            # For DATETIME columns, the problem does not occur.
+            # As a workaround we'll have to do an extra check to see if
+            # we've just crossed a DST line and add more time to the
+            # query.
+            #
+            # Keep begin time, but extend end time if needed.
+            self.end = self.begin + TWO_HOURS
+        else:
+            self.begin, self.end = self.end, self.end + self.period
 
     def seek_next(self):
-        self.begin = self._find_min("(%s >= '%s')" % (
-            self._seq_column, self.end.strftime('%Y-%m-%d %H:%M:%S'),))
-        self.end = self.begin + self.period
+        if self._maybe_dst_issues and has_crossed_dst(
+                self._db, self.begin, self.period):
+            # Lower begin time, extend end time.
+            self.begin = self._find_min("(%s >= '%s')" % (
+                self._seq_column,
+                (self.begin - self.period).strftime('%Y-%m-%d %H:%M:%S'),))
+            self.begin = self.begin - ONE_HOUR
+            self.end = self.begin + TWO_HOURS
+        else:
+            # Normal.
+            self.begin = self._find_min("(%s >= '%s')" % (
+                self._seq_column, self.end.strftime('%Y-%m-%d %H:%M:%S'),))
+            self.end = self.begin + self.period
 
 
 class FileManager(object):
@@ -374,26 +412,8 @@ def dump2csv_and_prune(db_connection, kwargs):
     caret_angle = 0
     while interval.begin <= interval.last:
         if interval.type == datetime:
-            # For certain columns, string/time comparisons can fail during
-            # DST changes, for example:
-            #   TABLE auth (ts timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)
-            #   mysql> SELECT MIN(ts) FROM auth\G
-            #   min(ts): 2014-10-26 02:00:02
-            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 02:00:00' <= ts
-            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
-            #   COUNT(*): 0
-            #   > SELECT COUNT(*) FROM auth WHERE '2014-10-26 01:59:59' <= ts
-            #       AND ts < '2014-10-26 03:00:00' ORDER BY ts\G
-            #   COUNT(*): 256
-            # For DATETIME columns, the problem does not occur.
-            # As a workaround we'll have to do an extra check to see if
-            # we've just crossed a DST line and add more time to the
-            # query.
-            extra_seconds = has_crossed_dst(db_connection, interval.begin)
-            begin_date_hack = (
-                interval.begin - timedelta(seconds=extra_seconds))
             begin_range_sql = "'%s'" % (
-                begin_date_hack.strftime('%Y-%m-%d %H:%M:%S'),)
+                interval.begin.strftime('%Y-%m-%d %H:%M:%S'),)
             end_range_sql = "'%s'" % (
                 interval.end.strftime('%Y-%m-%d %H:%M:%S'),)
         else:
@@ -401,13 +421,13 @@ def dump2csv_and_prune(db_connection, kwargs):
             end_range_sql = interval.end
 
         # Query a bit of data and write to file.
-        sql = (
+        query = (
             "SELECT * FROM %s WHERE %s <= %s AND %s < %s %s "
             "ORDER BY %s" % (
                 table_name, begin_range_sql, sort_column,
                 sort_column, end_range_sql, extra_where, sort_column))
-        # #print(sql)
-        cursor.execute(sql)
+        # #print(query)
+        cursor.execute(query)
 
         row = None
         cursorit = iter(cursor)
@@ -463,16 +483,19 @@ def describe_table(db_connection, table_name):
     return ret
 
 
-def has_crossed_dst(db_connection, begin_date):
+def has_crossed_dst(db_connection, begin_date, period):
     cursor = db_connection.cursor()
     cursor.execute(
         "SELECT (UNIX_TIMESTAMP('%s') - UNIX_TIMESTAMP('%s')) AS v" % (
             begin_date.strftime('%Y-%m-%d %H:%M:%S'),
-            (begin_date - timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')))
+            (begin_date - period).strftime('%Y-%m-%d %H:%M:%S')))
     ret = cursor.fetchall()
-    if ret[0][0] == 1:
-        return 0
-    return 1  # ret[0][0] == 3601?
+    found = ret[0][0]
+    expected = period.total_seconds()
+    if found == expected:
+        return False
+    assert found in (expected - 3600, expected + 3600), ret
+    return True
 
 
 def to_string(data):
