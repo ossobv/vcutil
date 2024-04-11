@@ -283,7 +283,10 @@ class MysqlDumpParser:
 
             # IN_PAREN
             elif state == 1:
-                if ch == 0x27:    # "'"
+                if ch in (0x09, 0x20):
+                    assert column_type is None, (
+                        idx, column_type, line[idx:idx + 10])
+                elif ch == 0x27:    # "'"
                     assert column_type is None, (
                         idx, column_type, line[idx:idx + 10])
                     column_type = str
