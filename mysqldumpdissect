@@ -161,7 +161,8 @@ class Row:
     if USELESS_DQUOTE_ESCAPE:
         @classmethod
         def _make_safe(cls, column):
-            return (column
+            return (
+                column
                 .replace(b'\\', b'\\\\')
                 .replace(b"'", b"\\'")
                 .replace(b'"', b'\\"')  # mysqldump output compat?
@@ -171,7 +172,8 @@ class Row:
     else:
         @classmethod
         def _make_safe(cls, column):
-            return (column
+            return (
+                column
                 .replace(b'\\', b'\\\\')
                 .replace(b"'", b"\\'")
                 .replace(b'\t', b'\\t')
@@ -236,7 +238,7 @@ class MysqlDumpParser:
         else:
             # FIXME: We might not cope with strange table names with
             # parentheses here.
-            find = f'INSERT INTO `'.encode()
+            find = 'INSERT INTO `'.encode()
 
         line = self._line
         while not line.startswith(find):
@@ -248,8 +250,6 @@ class MysqlDumpParser:
         return up_to_lparen
 
     def _extract_matching_rows(self, startswith, rule):
-        rows = []
-
         line = self._line
         while line.startswith(startswith):
             for row in self._extract_rows(line[len(startswith):]):
@@ -279,21 +279,22 @@ class MysqlDumpParser:
                 if ch == 0x28:  # "("
                     state = 1   # IN_PAREN
                 else:
-                    assert False, (ch, idx, state, line[idx:idx+10])
+                    assert False, (ch, idx, state, line[idx:idx + 10])
 
             # IN_PAREN
             elif state == 1:
                 if ch == 0x27:    # "'"
-                    assert column_type is None, column_type
+                    assert column_type is None, (
+                        idx, column_type, line[idx:idx + 10])
                     column_type = str
                     state = 2     # IN_STRING
                 elif ch in (0x2c, 0x29):  # "," or ")"
-                    assert column_type in (str, int), column_type
+                    assert column_type in (str, int), (idx, column_type)
                     if column_type == str:
                         # Make sure we copy. We clear the array later.
                         columns.append(bytes(buffer))
                     elif buffer == b'NULL':
-                          columns.append(None)
+                        columns.append(None)
                     else:
                         # FIXME: We do not cope with decimals/floats right now.
                         assert b'.' not in buffer, (NotImplemented, buffer)
@@ -393,7 +394,7 @@ def main():
 if __name__ == '__main__':
     if environ.get('RUNTESTS', '') not in ('', '0', 'n'):
         from io import BytesIO
-        from unittest import TestCase, main
+        from unittest import TestCase, main as unittest_main
 
         class MddTest(TestCase):
             def test_example_passthrough(self):
@@ -427,4 +428,6 @@ if __name__ == '__main__':
                 self.assertEqual(res, [
                     b"INSERT INTO `tbl` VALUES (X'48656C6C6F20010203');"])
 
-    main()
+        unittest_main()
+    else:
+        main()
