@@ -1,7 +1,8 @@
 #!/bin/sh
 # sermon (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
 #
-# sermon, the serial monitor, is convenient for serial logs than screen(1).
+# sermon, the serial monitor, is more convenient for serial logs than
+# screen(1).
 #
 # Usage:
 #
