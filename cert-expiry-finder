@@ -294,11 +294,32 @@ expiry_after() {
     esac
 }
 
+list_k8s_cert_expiry_days() {
+    local name namespace notafter unixtime delta context
+    if ! command -v kubectl >/dev/null; then
+        return
+    fi
+    kubectl config get-contexts --no-headers -oname | while read -r context
+    do
+        kubectl get cert --context="$context" -A -ojson \
+            | jq -r '.items[] | (.metadata.name + " " +
+                     .metadata.namespace + " " + .status.notAfter)' \
+            | while read name namespace notafter
+        do
+            unixtime=$(date --date="$notafter" +%s)
+            delta=$(((unixtime - global_t0) / 86400))
+            printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
+                   $delta "$namespace" "$name" "$context"
+        done
+    done
+}
+
 if test $# -eq 0; then
     list_cert_expiry_days $(enum_all_certs)
+    list_k8s_cert_expiry_days
 elif test $# -eq 1 && test "$1" = "--min"; then
-    list_cert_expiry_days $(enum_all_certs) |
-    awk '{if(n==""||$1<n){n=$1}}END{if(n!=""){print n}else{exit 1}}'
+    ( list_cert_expiry_days $(enum_all_certs); list_k8s_cert_expiry_days ) |
+        awk '{if(n==""||$1<n){n=$1}}END{if(n!=""){print n}else{exit 1}}'
 elif test $# -eq 1 && test -e "$1"; then
     list_cert_expiry_days "$1"
     #expiry_after "$1"
