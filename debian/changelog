@@ -1,3 +1,21 @@
+vcutil (1.45) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Added k8s cert expiry finding by querying 'get cert'
+      of all locally available kubectl contexts
+    - ctre: Cope with Label-less containers (moby?)
+    - ipmikvm: try harder to find unpack200
+    - mysql2csv: Hack the summer->wintertime hackery some more
+    - mysqldumpdissect: Handle (manual) queries with spaces too
+    - mysqldumpdissect: PEP cleanup
+    - nbdig: Allow -x SUBNET to find multiple hosts
+    - nbdig: Cope with empty values in -x [-t] output
+    - nbdig: Refactoring
+    - nbdig: When doing -x -t look both to larger and smaller subnets
+    - sermon: Fix typo in docs
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Mon, 22 Apr 2024 13:15:04 +0200
+
 vcutil (1.44) stable; urgency=low
 
   * Additions:
