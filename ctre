@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ctre (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+# ctre (part of ossobv/vcutil) // wdoekes/2023-2024 // Public Domain
 #
 # Enhanced CTR (containerd CLI)
 #
@@ -52,6 +52,10 @@ IMAGE_STARTS_DB = '/var/spool/ctre/image_starts'
 Blob = namedtuple('Blob', 'ns digest size age')
 Event = namedtuple('Event', 'unixtime ns action data')
 Image = namedtuple('Image', 'ns digest ref size age')
+
+
+class Skip(ValueError):
+    pass
 
 
 def split_by_header(lines):
@@ -328,24 +332,13 @@ def remove_containers():
 
         container_objects = []
         for container_id in containers.split('\n'):
-            out = check_output(
-                ['ctr', '-n', ns, 'containers', 'info', container_id]
-                ).decode().strip()
-            json = loads(out)
-            assert json['ID'] == container_id
-            container_objects.append({
-                'id': container_id,
-                'k8s.ns': json['Labels'].get(
-                    'io.kubernetes.pod.namespace', container_id),
-                'k8s.pod': json['Labels'].get(
-                    'io.kubernetes.pod.name', container_id),
-                'k8s.container': json['Labels'].get(
-                    'io.kubernetes.container.name', '[{}]'.format(
-                        json['Labels'].get('io.cri-containerd.kind'))),
-                # TODO: Use timestamps?
-                'created': json['CreatedAt'],
-                'updated': json['UpdatedAt'],
-            })
+            try:
+                container_objects.append(_get_container_info(ns, container_id))
+            except Skip:
+                pass
+            except (AttributeError, KeyError) as e:
+                print('(container info error)', ns, container_id, e)
+                breakpoint()
 
         container_objects.sort(key=(
             lambda x: (x['k8s.ns'], x['k8s.pod'], x['updated'])))
@@ -365,6 +358,33 @@ def remove_containers():
                 print(
                     '(deleted container)', ns, obj['k8s.ns'], obj['k8s.pod'],
                     obj['k8s.container'], obj['created'])
+
+
+def _get_container_info(ns, container_id):
+    out = check_output(
+        ['ctr', '-n', ns, 'containers', 'info', container_id]
+        ).decode().strip()
+    json = loads(out)
+    assert json['ID'] == container_id
+
+    if 'Labels' not in json or json['Labels'] is None:
+        assert json['Image'] == '', (ns, container_id, json['Image'])
+        print('(no labels in container, skipping)', ns, container_id)
+        raise Skip
+
+    return {
+        'id': container_id,
+        'k8s.ns': json['Labels'].get(
+            'io.kubernetes.pod.namespace', container_id),
+        'k8s.pod': json['Labels'].get(
+            'io.kubernetes.pod.name', container_id),
+        'k8s.container': json['Labels'].get(
+            'io.kubernetes.container.name', '[{}]'.format(
+                json['Labels'].get('io.cri-containerd.kind'))),
+        # TODO: Use timestamps?
+        'created': json['CreatedAt'],
+        'updated': json['UpdatedAt'],
+    }
 
 
 def prune_content_references():
@@ -658,11 +678,14 @@ def main():
 
             # Remove the curated images.
             remove_images(res)
-            # Enumerate and try to remove all containers. Those that are
-            # running cannot be removed.
+
+            # We could do the following even when !res, but we choose to only
+            # do them when we appear to have more work anyway:
+            # - Enumerate and try to remove all containers. Those that are
+            #   running cannot be removed.
             remove_containers()
-            # Prune the content. Not entirely sure what this does, but it
-            # does clean up stuff that is unused.
+            # - Prune the content. Not entirely sure what this does, but it
+            #   does clean up stuff that is unused.
             prune_content_references()
 
     elif len(argv) == 2 and argv[1] == 'record-image-starts':

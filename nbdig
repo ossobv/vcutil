@@ -16,8 +16,8 @@
 #     $ nbdig -x 10.32.1.5
 #     walter.internal.lan
 #
-#     $ nbdig -x 10.32.1.5 -t
-#     10.32.0.0/16                    ROOT
+#     $ nbdig -x 10.32.1.0/24 -t
+#     10.32.0.0/22                    ROOT
 #       10.32.1.0/24                  container /24
 #         10.32.1.0/27                usable /31 space
 #           10.32.1.4/31              walter.internal.lan
@@ -86,18 +86,46 @@ class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
             kwargs['is_primary'] = False
         return super().__new__(cls, *args, **kwargs)
 
+    @property
+    def safeiface(self):
+        if not self.iface:
+            return '-'
+        if self.iface.startswith('GigabitEthernet'):
+            return f'GE{self.iface[15:]}'
+        return self.iface
+
+    @property
+    def safevrf(self):
+        return self.vrf or '-'
+
 
 class Host(namedtuple('Host', 'name ip_addresses extra')):
-    pass
+    @property
+    def safename(self):
+        return self.name or '<null>'  # or '-'?
 
 
 class Network(namedtuple('Network', 'prefix description children')):
-    pass
+    def merge(self, subnets):
+        if not self.children:
+            assert all(s.prefix.subnet_of(self.prefix) for s in subnets), (
+                self, subnets)
+            self.children.extend(subnets)
+            return
+
+        assert len(self.children) == 1, self.children
+        self.children[0].merge(subnets)
+
+    def sort(self):
+        for child in self.children:
+            child.sort()
+        self.children.sort()
 
 
 class ThinNetboxWrapper:
     NB_DEVS = '/dcim/devices/'
     NB_IPADDR = '/ipam/ip-addresses/'
+    NB_PREFIX = '/ipam/prefixes/'
     NB_VMS = '/virtualization/virtual-machines/'
 
     def __init__(self, config):
@@ -309,20 +337,20 @@ class ThinNetboxWrapper:
     def find_ip_address(self, ip_address):
         cidr = IPv4Network(ip_address)
         if cidr.prefixlen != 32:
-            raise NotImplementedError(
-                'finding multiple IPs is not implemented; try --tree')
-        params = [
-            ('address', str(cidr.network_address)),
-            ('exclude', 'config_context')]
-        ret = self._get_query('/ipam/ip-addresses/', params)
+            params = [('limit', 1000), ('parent', str(cidr))]
+        else:
+            params = [('limit', 1000), ('address', str(cidr.network_address))]
+        ret = self._get_query(self.NB_IPADDR, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
-            return self._find_ip_address(pages)
+            hosts = self._find_ip_address(pages)
         except KeyError as e:
             print(f'error: {e}', file=stderr)
             print('input: {}'.format(dumps(pages)), file=stderr)
             raise
+
+        return hosts
 
     def _find_ip_address(self, pages):
         results = pages['results']
@@ -359,17 +387,40 @@ class ThinNetboxWrapper:
         return assigned
 
     def find_networks(self, cidr):
-        # cidr = IPv4Network(cidr)
-        params = [('contains', cidr), ('exclude', 'config_context')]
-        ret = self._get_query('/ipam/prefixes/', params)
+        cidr = IPv4Network(cidr)
+        params = [('limit', 1000), ('contains', str(cidr))]
+        ret = self._get_query(self.NB_PREFIX, params)
         pages = ret.json()
         assert pages['next'] is None, NotImplemented  # pagination
         try:
-            return self._find_networks(pages)
+            supernets = self._find_networks(pages)
         except KeyError as e:
             print(f'error: {e}', file=stderr)
             print('input: {}'.format(dumps(pages)), file=stderr)
             raise
+
+        params = [('limit', 1000), ('within', str(cidr))]
+        ret = self._get_query(self.NB_PREFIX, params)
+        pages = ret.json()
+        assert pages['next'] is None, NotImplemented  # pagination
+        try:
+            subnets = self._find_networks(pages)
+        except KeyError as e:
+            print(f'error: {e}', file=stderr)
+            print('input: {}'.format(dumps(pages)), file=stderr)
+            raise
+
+        # Merge supernets and subnets.
+        if supernets and subnets:
+            assert len(supernets) == 1 and subnets, (
+                supernets, subnets)
+            supernets[0].merge(subnets)
+        elif supernets:
+            pass
+        elif subnets:
+            supernets = subnets
+
+        return supernets
 
     def _find_networks(self, pages):
         results = pages['results']
@@ -382,8 +433,7 @@ class ThinNetboxWrapper:
             nets.append(net)
 
         # Sort networks: larger first.
-        nets.sort(key=(lambda x: (
-            x.prefix.prefixlen, x.prefix.network_address)))
+        nets.sort(key=(lambda x: x.prefix.prefixlen))
 
         # Move smaller networks into larger ones if possible.
         i = len(nets) - 1
@@ -398,6 +448,10 @@ class ThinNetboxWrapper:
                     nets.pop(i)
                     break
             i -= 1
+
+        # nets is now a recursive structure. Sort it, this time by prefix.
+        [net.sort() for net in nets]    # let the Network()s sort themselves
+        nets.sort()                     # sort the Network()s
 
         return nets
 
@@ -421,15 +475,13 @@ def show_ipaddresses(hosts, interface_match=None):
 
 def show_name_addr_extra(hosts):
     for host in hosts:
-        name = host.name or '<null>'
         addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
-        extra = host.extra
-        print(f'{name!s:30}  {addr!s:15}  {extra}'.rstrip())
+        print(f'{host.safename!s:30}  {addr!s:15}  {host.extra}'.rstrip())
 
 
 def show_name_addr_iface_vrf(hosts, interface_match=None):
     for host in hosts:
-        name = host.name or '<null>'
+        name = host.safename
         extra = host.extra
         if extra:
             extra = '"{extra}"'.format(extra=extra.replace('"', '""'))
@@ -443,10 +495,9 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
                 addr = (
                     f'[{ip.address}]' if ip.is_primary
                     else f' {ip.address} ')
-                iface, vrf = ip.iface or '-', ip.vrf or '-'
                 print(
-                    f'{name!s:30} {addr!s:17} {iface!s:15}  '
-                    f'{vrf!s:15}  {extra}'.rstrip())
+                    f'{name!s:30} {addr!s:17} {ip.safeiface!s:15}  '
+                    f'{ip.safevrf!s:15}  {extra}'.rstrip())
 
 
 def do_interface_lookup(
@@ -510,7 +561,7 @@ def do_reverse_lookup(nb, ip_or_cidr, tree=False, verbose=False):
         show_name_addr_iface_vrf(hosts)
     elif hosts:
         assert not networks
-        all_hostnames = set(h.name for h in hosts)
+        all_hostnames = set(h.safename for h in hosts)
         print('\n'.join(sorted(all_hostnames)))
     else:
         def print_nets(nets, indent=''):
