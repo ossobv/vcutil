@@ -301,10 +301,11 @@ list_k8s_cert_expiry_days() {
     fi
     kubectl config get-contexts --no-headers -oname | while read -r context
     do
-        kubectl get cert --context="$context" -A -ojson \
-            | jq -r '.items[] | (.metadata.name + " " +
-                     .metadata.namespace + " " + .status.notAfter)' \
-            | while read name namespace notafter
+        kubectl get certificates.cert-manager.io --context="$context" \
+                -A -ojson |
+            jq -r '.items[] | (.metadata.name + " " +
+                .metadata.namespace + " " + .status.notAfter)' |
+            while read name namespace notafter
         do
             unixtime=$(date --date="$notafter" +%s)
             delta=$(((unixtime - global_t0) / 86400))
