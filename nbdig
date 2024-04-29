@@ -584,6 +584,7 @@ def formatwarning(message, category, filename, lineno, line=None):
 
         nbdig:175: UserWarning: DD6-B FREE: no primary IP set
     """
+    a = b = ''
     if stderr.isatty():
         a, b = '\x1b[31;1m', '\x1b[0m'
     return '{a}{basename}:{lineno}: {category}: {message}{b}\n'.format(
