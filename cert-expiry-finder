@@ -215,7 +215,7 @@ list_cert_expiry_days() {
 
 enumerate_crl_expiry_seconds() {
     local line date subject
-    foreach_crl -noout -issuer -nextupdate < "$1" | awk '
+    foreach_crl -noout -issuer -nextupdate | awk '
         /^issuer=/{sub(/^[^=]*=/, "");subj=$0}
         /^nextUpdate=/{
             sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
@@ -229,7 +229,7 @@ enumerate_crl_expiry_seconds() {
 
 enumerate_x509_expiry_seconds() {
     local line date subject
-    foreach_x509 -noout -subject -dates < "$1" | awk '
+    foreach_x509 -noout -subject -dates | awk '
         /^subject=/{sub(/^[^=]*=/, "");subj=$0}
         /^notAfter=/{sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
     ' | while IFS='|' read -r date subject; do
@@ -286,10 +286,10 @@ expiry_after() {
     file=$1
     case $file in
     *.crl|*/crl.pem)
-        enumerate_crl_expiry_seconds "$file"
+        enumerate_crl_expiry_seconds <"$file"
         ;;
     *)
-        enumerate_x509_expiry_seconds "$file"
+        enumerate_x509_expiry_seconds <"$file"
         ;;
     esac
 }
@@ -312,6 +312,24 @@ list_k8s_cert_expiry_days() {
             printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
                    $delta "$namespace" "$name" "$context"
         done
+
+        kubectl get secrets -A --field-selector=type=kubernetes.io/tls \
+                --no-headers -ojson --context="$context" |
+            jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name +
+                " " + .metadata.namespace + " " +
+                .metadata["annotations"]["cert-manager.io/issuer-group"])' |
+            while read -r cert name namespace annotations
+        do
+            if test -z "$annotations"; then
+                echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
+                    while read -r seconds subject; do
+                        delta=$((seconds / 86400))
+                        printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s) %s\n' \
+                        $delta "$namespace" "$name" "$context" "$subject"
+                    done
+            fi
+        done
+
     done
 }
 
