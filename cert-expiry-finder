@@ -174,10 +174,12 @@ enum_ser_certs() {
         s/^$s*tls_certificate$s*=$s*\"\($S*\)\".*/\1/p"
 
     # modparam("tls", "certificate", "XYZ")
+    local mp=modparam
+    local crt=certificate
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
-        s/^$s*modparam(\"tls\(_mgm\)\?\",$s*\"certificate\"$s*,$s*\"\([^\"]*\)\".*/\2/p"
+        s/^$s*$mp(\"tls\(_mgm\)\?\",$s*\"$crt\"$s*,$s*\"\([^\"]*\)\".*/\2/p"
 }
 
 enum_systemd_certs() {
@@ -199,11 +201,12 @@ enum_zabbix_certs() {
 }
 
 list_k8s_cert_expiry_days() {
-    local name namespace notafter unixtime delta context
     if ! command -v kubectl >/dev/null; then
         return
     fi
 
+    local name namespace notafter expiry unixtime context
+    local title=Kubernetes
     kubectl config get-contexts --no-headers -oname |
     while read -r context; do
         # Get certificate expiry dates from certificates.cert-manager.io
@@ -213,14 +216,15 @@ list_k8s_cert_expiry_days() {
                .status.notAfter)' |
         while read name namespace notafter; do
             unixtime=$(date --date="$notafter" +%s)
-            delta=$(((unixtime - global_t0) / 86400))
-            printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
-                   $delta "$namespace" "$name" "$context"
+            expiry=$(((unixtime - global_t0) / 86400))
+            printf '%-7d %s (NS = %s, CRT = %s, CTX = %s)\n' \
+                   $expiry "$title" "$namespace" "$name" "$context"
         done
 
         # Get certificate expiry dates from secrets, but only if they
         # are not annotated with cert-manager.io (because we did those
         # already)
+        local cert annotations extra
         kubectl --context="$context" get secrets -A \
                 --field-selector=type=kubernetes.io/tls -ojson |
         jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name + " " +
@@ -229,10 +233,11 @@ list_k8s_cert_expiry_days() {
         while read -r cert name namespace annotations; do
             if test -z "$annotations"; then
                 echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
-                while read -r seconds subject; do
-                    delta=$((seconds / 86400))
-                    printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s) %s\n' \
-                    $delta "$namespace" "$name" "$context" "$subject"
+                while read -r expiry extra; do
+                    expiry=$((expiry / 86400))
+                    printf '%-7d %s (NS = %s, CRT = %s, CTX = %s, %s)\n' \
+                        $expiry "$title" "$namespace" "$name" "$context" \
+                        "$extra"
                 done
             fi
         done
@@ -246,7 +251,7 @@ list_local_cert_expiry_days() {
         expiry_after "$file" | while IFS=' ' read -r expiry extra; do
             if test -n "$expiry"; then
                 expiry=$((expiry / 86400))
-                test -z "$extra" || extra=" $extra"
+                test -z "$extra" || extra=" ($extra)"
                 printf '%-7d %s%s\n' $expiry "$file" "$extra"
             else
                 echo "expiry parse error: $file" >&2
@@ -265,7 +270,7 @@ enumerate_crl_expiry_seconds() {
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
         delta=$((unixtime - global_t0))
-        echo "$delta ($subject)"
+        echo "$delta $subject"
     done
 }
 
@@ -278,7 +283,7 @@ enumerate_x509_expiry_seconds() {
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
         delta=$((unixtime - global_t0))
-        echo "$delta ($subject)"
+        echo "$delta $subject"
     done
 }
 
@@ -316,13 +321,6 @@ EOF
     done
 }
 
-date_to_unixtime() {
-    local line
-    while read -r line; do
-        date --date="$line" +%s
-    done
-}
-
 expiry_after() {
     local file
     file=$1
@@ -340,6 +338,7 @@ list_cert_expiry_days() {
     list_local_cert_expiry_days $(enum_all_certs)
     list_k8s_cert_expiry_days
 }
+
 
 if test $# -eq 0; then
     list_cert_expiry_days
