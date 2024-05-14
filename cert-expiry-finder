@@ -198,7 +198,49 @@ enum_zabbix_certs() {
             s/^TLSCertFile$s*=$s*\($S*\).*/\1/p"
 }
 
-list_cert_expiry_days() {
+list_k8s_cert_expiry_days() {
+    local name namespace notafter unixtime delta context
+    if ! command -v kubectl >/dev/null; then
+        return
+    fi
+
+    kubectl config get-contexts --no-headers -oname |
+    while read -r context; do
+        # Get certificate expiry dates from certificates.cert-manager.io
+        kubectl --context="$context" get certificates.cert-manager.io -A \
+            -ojson |
+        jq -r '.items[] | (.metadata.name + " " + .metadata.namespace + " " +
+               .status.notAfter)' |
+        while read name namespace notafter; do
+            unixtime=$(date --date="$notafter" +%s)
+            delta=$(((unixtime - global_t0) / 86400))
+            printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
+                   $delta "$namespace" "$name" "$context"
+        done
+
+        # Get certificate expiry dates from secrets, but only if they
+        # are not annotated with cert-manager.io (because we did those
+        # already)
+        kubectl --context="$context" get secrets -A \
+                --field-selector=type=kubernetes.io/tls -ojson |
+        jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name + " " +
+               .metadata.namespace + " " +
+               .metadata.annotations["cert-manager.io/issuer-group"])' |
+        while read -r cert name namespace annotations; do
+            if test -z "$annotations"; then
+                echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
+                while read -r seconds subject; do
+                    delta=$((seconds / 86400))
+                    printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s) %s\n' \
+                    $delta "$namespace" "$name" "$context" "$subject"
+                done
+            fi
+        done
+
+    done
+}
+
+list_local_cert_expiry_days() {
     local file expiry extra
     for file in "$@"; do
         expiry_after "$file" | while IFS=' ' read -r expiry extra; do
@@ -214,7 +256,7 @@ list_cert_expiry_days() {
 }
 
 enumerate_crl_expiry_seconds() {
-    local line date subject
+    local date subject
     foreach_crl -noout -issuer -nextupdate | awk '
         /^issuer=/{sub(/^[^=]*=/, "");subj=$0}
         /^nextUpdate=/{
@@ -228,7 +270,7 @@ enumerate_crl_expiry_seconds() {
 }
 
 enumerate_x509_expiry_seconds() {
-    local line date subject
+    local date subject
     foreach_x509 -noout -subject -dates | awk '
         /^subject=/{sub(/^[^=]*=/, "");subj=$0}
         /^notAfter=/{sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
@@ -282,7 +324,7 @@ date_to_unixtime() {
 }
 
 expiry_after() {
-    local file date tn td
+    local file
     file=$1
     case $file in
     *.crl|*/crl.pem)
@@ -294,53 +336,18 @@ expiry_after() {
     esac
 }
 
-list_k8s_cert_expiry_days() {
-    local name namespace notafter unixtime delta context
-    if ! command -v kubectl >/dev/null; then
-        return
-    fi
-    kubectl config get-contexts --no-headers -oname | while read -r context
-    do
-        kubectl get certificates.cert-manager.io --context="$context" \
-                -A -ojson |
-            jq -r '.items[] | (.metadata.name + " " +
-                .metadata.namespace + " " + .status.notAfter)' |
-            while read name namespace notafter
-        do
-            unixtime=$(date --date="$notafter" +%s)
-            delta=$(((unixtime - global_t0) / 86400))
-            printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
-                   $delta "$namespace" "$name" "$context"
-        done
-
-        kubectl get secrets -A --field-selector=type=kubernetes.io/tls \
-                --no-headers -ojson --context="$context" |
-            jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name +
-                " " + .metadata.namespace + " " +
-                .metadata["annotations"]["cert-manager.io/issuer-group"])' |
-            while read -r cert name namespace annotations
-        do
-            if test -z "$annotations"; then
-                echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
-                    while read -r seconds subject; do
-                        delta=$((seconds / 86400))
-                        printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s) %s\n' \
-                        $delta "$namespace" "$name" "$context" "$subject"
-                    done
-            fi
-        done
-
-    done
+list_cert_expiry_days() {
+    list_local_cert_expiry_days $(enum_all_certs)
+    list_k8s_cert_expiry_days
 }
 
 if test $# -eq 0; then
-    list_cert_expiry_days $(enum_all_certs)
-    list_k8s_cert_expiry_days
+    list_cert_expiry_days
 elif test $# -eq 1 && test "$1" = "--min"; then
-    ( list_cert_expiry_days $(enum_all_certs); list_k8s_cert_expiry_days ) |
+    list_cert_expiry_days |
         awk '{if(n==""||$1<n){n=$1}}END{if(n!=""){print n}else{exit 1}}'
 elif test $# -eq 1 && test -e "$1"; then
-    list_cert_expiry_days "$1"
+    list_local_cert_expiry_days "$1"
     #expiry_after "$1"
 else
     cat >&2 << __EOF__
