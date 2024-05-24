@@ -9,7 +9,7 @@
 # Usage:
 #
 #   $ ipmikvm
-#   Usage: ipmikvm [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS
+#   Usage: ipmikvm [-c config-dict-file] [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS
 #
 #   $ ipmikvm 10.11.12.13 -P otherpassword
 #   (connects KVM console on IPMI device at 10.11.12.13)
@@ -64,6 +64,7 @@ for binary in java unzip curl awk base64 grep sed flock; do
 done
 
 IP=
+DICT="$HOME/.config/ipmikvm/dict"
 USER=
 PASS=
 USERS='ADMIN '
@@ -75,11 +76,11 @@ PROXY_PORT_MAPPING='80:5980 443:5943 623:5923 5900:5959'
 PROXY_IP=  # dynamic?
 
 # Use getopt(1) to reorder arguments
-eval set --"$(getopt -- 'hu:P:L:' "$@")"
+eval set --"$(getopt -- 'hc:u:P:L:' "$@")"
 
 usage() {
     test ${1:-1} -ne 0 && exec >&2  # non-zero? write to stderr
-    echo "Usage: $0 [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS"
+    echo "Usage: $0 [-c config-dict-file] [-u ADMIN] [-P ADMIN] IP.ADD.RE.SS"
     echo
     echo "If you're setting up an ssh tunnel, you can specify a local IP"
     echo "like 127.75.86.77 and do this:"
@@ -89,9 +90,10 @@ usage() {
     echo "  $0 -L 127.0.0.2 IP.ADD.RE.SS"
     echo
     echo "Usernames, passwords and machine aliases may be specified in"
-    echo "~/.config/ipmikvm/dict - as ALIAS ADDRESS USER PASS - one per"
-    echo "line. When ALIAS and ADDRESS are *, the USER and PASS will be"
-    echo "tried consecutively for (otherwise) unmatched aliases/addresses."
+    echo "~/.config/ipmikvm/dict (or the file set with -c)"
+    echo "- as ALIAS ADDRESS USER PASS - one per line. When ALIAS and"
+    echo "ADDRESS are *, the USER and PASS will be tried consecutively"
+    echo "for (otherwise) unmatched aliases/addresses."
     exit ${1:-1}
 }
 
@@ -109,9 +111,10 @@ curl() {
     command curl "$url" "$@"
 }
 
-while getopts 'hu:P:L:' OPTION; do
+while getopts 'hc:u:P:L:' OPTION; do
     case "$OPTION" in
     h) usage 0;;
+    c) DICT=$OPTARG;;
     u) USER=$OPTARG;;
     P) PASS=$OPTARG;;
     L) PROXY_IP=$OPTARG;;
@@ -126,21 +129,23 @@ IP=${1:-}; shift
 test -z "$IP" && usage
 
 # Try the aliases/password file.
-DICT="$HOME/.config/ipmikvm/dict"
-if test -s "$DICT"; then
-    # Alias match
-    LINES=$(awk "/^ *[^#]/{if(NF>=4&&(\$1==\"$IP\"||\$2==\"$IP\")){
-        print \$0;exit}}" "$DICT")
-    if test -n "$LINES"; then
-        IP=$(echo "$LINES" | awk '{print $2}')
-        test -z "$USER" && USER=$(echo "$LINES" | awk '{print $3}')
-        test -z "$PASS" && PASS=$(echo "$LINES" | awk '{print $4}')
-    elif test -z "$USER" && test -z "$PASS"; then
-        # No user/pass supplied. Then get all the * * matches.
-        USERS=$(awk '/^ *[^#]/{if(NF>=4&&$1=="*"&&$2=="*"){
-            printf "%s ", $3}}' "$DICT")
-        PASSES=$(awk '/^ *[^#]/{if(NF>=4&&$1=="*"&&$2=="*"){
-            printf "%s ", $4}}' "$DICT")
+if test -e "$DICT"; then
+    DICTDATA=$(cat "$DICT")
+    if test -n "$DICTDATA"; then
+        # Alias match
+        LINES=$(printf '%s\n' "$DICTDATA" | awk "/^ *[^#]/{
+            if(NF>=4&&(\$1==\"$IP\"||\$2==\"$IP\")){print \$0;exit}}")
+        if test -n "$LINES"; then
+            IP=$(echo "$LINES" | awk '{print $2}')
+            test -z "$USER" && USER=$(echo "$LINES" | awk '{print $3}')
+            test -z "$PASS" && PASS=$(echo "$LINES" | awk '{print $4}')
+        elif test -z "$USER" && test -z "$PASS"; then
+            # No user/pass supplied. Then get all the * * matches.
+            USERS=$(printf '%s\n' "$DICTDATA" | awk '/^ *[^#]/{
+                if(NF>=4&&$1=="*"&&$2=="*"){printf "%s ", $3}}')
+            PASSES=$(printf '%s\n' "$DICTDATA" | awk '/^ *[^#]/{
+                if(NF>=4&&$1=="*"&&$2=="*"){printf "%s ", $4}}')
+        fi
     fi
 fi
 test -n "$USER" && USERS="$USER "; USER=
