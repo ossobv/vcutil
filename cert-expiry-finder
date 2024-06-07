@@ -212,8 +212,10 @@ list_k8s_cert_expiry_days() {
         # Get certificate expiry dates from certificates.cert-manager.io
         kubectl --context="$context" get certificates.cert-manager.io -A \
             -ojson |
-        jq -r '.items[] | (.metadata.name + " " + .metadata.namespace + " " +
-               .status.notAfter)' |
+        jq -r '.items[] | select(.status.conditions[0]["status"]=="True" and
+            .status.conditions[0]["reason"]=="Ready") |
+            (.metadata.name + " " + .metadata.namespace + " " +
+            .status.notAfter)' |
         while read name namespace notafter; do
             unixtime=$(date --date="$notafter" +%s)
             expiry=$(((unixtime - global_t0) / 86400))
