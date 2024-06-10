@@ -362,22 +362,22 @@ class ThinNetboxWrapper:
             assignment = address['assigned_object']
             iface = (assignment['name'] if assignment else None)
             ipaddr = IpAddress(address=ip_address, iface=iface, vrf=vrf)
-            extra = address['dns_name'] or address['description']
 
-            if not assignment:
-                # FIXME: Host or NoHost?
-                host = Host(name=None, ip_addresses=[ipaddr], extra=extra)
-            elif 'virtual_machine' in assignment:
-                name = assignment['virtual_machine']['name']
-                # 'extra' is NotImplemented
-                host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
-            elif 'device' in assignment:
-                name = assignment['device']['name']
-                # 'extra' is NotImplemented
-                host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
+            if assignment:
+                if 'virtual_machine' in assignment:
+                    name = assignment['virtual_machine']['name']
+                elif 'device' in assignment:
+                    name = assignment['device']['name']
+                else:
+                    raise NotImplementedError(assignment)
+                extra = address['dns_name'] or address['description']
+            elif address['dns_name'] and address['description']:
+                name, extra = address['dns_name'], address['description']
             else:
-                raise NotImplementedError(assignment)
+                name = address['dns_name'] or None
+                extra = address['dns_name'] or address['description'] or ''
 
+            host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
             assigned.append(host)
 
         if pages['count'] != len(assigned):
