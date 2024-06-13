@@ -174,10 +174,12 @@ enum_ser_certs() {
         s/^$s*tls_certificate$s*=$s*\"\($S*\)\".*/\1/p"
 
     # modparam("tls", "certificate", "XYZ")
+    local mp=modparam
+    local crt=certificate
     find /etc/kamailio/ /etc/opensips/ /etc/ser/ \
         '(' -type f -o -type l ')' -name '*.cfg' -print0 2>/dev/null |
     xargs --no-run-if-empty -0 sed -ne "
-        s/^$s*modparam(\"tls\(_mgm\)\?\",$s*\"certificate\"$s*,$s*\"\([^\"]*\)\".*/\2/p"
+        s/^$s*$mp(\"tls\(_mgm\)\?\",$s*\"$crt\"$s*,$s*\"\([^\"]*\)\".*/\2/p"
 }
 
 enum_systemd_certs() {
@@ -198,13 +200,60 @@ enum_zabbix_certs() {
             s/^TLSCertFile$s*=$s*\($S*\).*/\1/p"
 }
 
-list_cert_expiry_days() {
+list_k8s_cert_expiry_days() {
+    if ! command -v kubectl >/dev/null; then
+        return
+    fi
+
+    local name namespace notafter expiry unixtime context
+    local title=Kubernetes
+    kubectl config get-contexts --no-headers -oname |
+    while read -r context; do
+        # Get certificate expiry dates from certificates.cert-manager.io
+        kubectl --context="$context" get certificates.cert-manager.io -A \
+            -ojson |
+        jq -r '.items[] | select(.status.conditions[0]["status"]=="True" and
+            .status.conditions[0]["reason"]=="Ready") |
+            (.metadata.name + " " + .metadata.namespace + " " +
+            .status.notAfter)' |
+        while read name namespace notafter; do
+            unixtime=$(date --date="$notafter" +%s)
+            expiry=$(((unixtime - global_t0) / 86400))
+            printf '%-7d %s (NS = %s, CRT = %s, CTX = %s)\n' \
+                   $expiry "$title" "$namespace" "$name" "$context"
+        done
+
+        # Get certificate expiry dates from secrets, but only if they
+        # are not annotated with cert-manager.io (because we did those
+        # already)
+        local cert annotations extra
+        kubectl --context="$context" get secrets -A \
+                --field-selector=type=kubernetes.io/tls -ojson |
+        jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name + " " +
+               .metadata.namespace + " " +
+               .metadata.annotations["cert-manager.io/issuer-group"])' |
+        while read -r cert name namespace annotations; do
+            if test -z "$annotations"; then
+                echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
+                while read -r expiry extra; do
+                    expiry=$((expiry / 86400))
+                    printf '%-7d %s (NS = %s, CRT = %s, CTX = %s, %s)\n' \
+                        $expiry "$title" "$namespace" "$name" "$context" \
+                        "$extra"
+                done
+            fi
+        done
+
+    done
+}
+
+list_local_cert_expiry_days() {
     local file expiry extra
     for file in "$@"; do
         expiry_after "$file" | while IFS=' ' read -r expiry extra; do
             if test -n "$expiry"; then
                 expiry=$((expiry / 86400))
-                test -z "$extra" || extra=" $extra"
+                test -z "$extra" || extra=" ($extra)"
                 printf '%-7d %s%s\n' $expiry "$file" "$extra"
             else
                 echo "expiry parse error: $file" >&2
@@ -214,8 +263,8 @@ list_cert_expiry_days() {
 }
 
 enumerate_crl_expiry_seconds() {
-    local line date subject
-    foreach_crl -noout -issuer -nextupdate < "$1" | awk '
+    local date subject
+    foreach_crl -noout -issuer -nextupdate | awk '
         /^issuer=/{sub(/^[^=]*=/, "");subj=$0}
         /^nextUpdate=/{
             sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
@@ -223,20 +272,20 @@ enumerate_crl_expiry_seconds() {
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
         delta=$((unixtime - global_t0))
-        echo "$delta ($subject)"
+        echo "$delta $subject"
     done
 }
 
 enumerate_x509_expiry_seconds() {
-    local line date subject
-    foreach_x509 -noout -subject -dates < "$1" | awk '
+    local date subject
+    foreach_x509 -noout -subject -dates | awk '
         /^subject=/{sub(/^[^=]*=/, "");subj=$0}
         /^notAfter=/{sub(/^[^=]*=/, "");tm=$0;print tm "|" subj;tm=0;subj=""}
     ' | while IFS='|' read -r date subject; do
         local unixtime delta
         unixtime=$(date --date="$date" +%s)
         delta=$((unixtime - global_t0))
-        echo "$delta ($subject)"
+        echo "$delta $subject"
     done
 }
 
@@ -274,54 +323,32 @@ EOF
     done
 }
 
-date_to_unixtime() {
-    local line
-    while read -r line; do
-        date --date="$line" +%s
-    done
-}
-
 expiry_after() {
-    local file date tn td
+    local file
     file=$1
     case $file in
     *.crl|*/crl.pem)
-        enumerate_crl_expiry_seconds "$file"
+        enumerate_crl_expiry_seconds <"$file"
         ;;
     *)
-        enumerate_x509_expiry_seconds "$file"
+        enumerate_x509_expiry_seconds <"$file"
         ;;
     esac
 }
 
-list_k8s_cert_expiry_days() {
-    local name namespace notafter unixtime delta context
-    if ! command -v kubectl >/dev/null; then
-        return
-    fi
-    kubectl config get-contexts --no-headers -oname | while read -r context
-    do
-        kubectl get cert --context="$context" -A -ojson \
-            | jq -r '.items[] | (.metadata.name + " " +
-                     .metadata.namespace + " " + .status.notAfter)' \
-            | while read name namespace notafter
-        do
-            unixtime=$(date --date="$notafter" +%s)
-            delta=$(((unixtime - global_t0) / 86400))
-            printf '%-7d Kubernetes (NS = %s, CRT = %s, CTX = %s)\n' \
-                   $delta "$namespace" "$name" "$context"
-        done
-    done
+list_cert_expiry_days() {
+    list_local_cert_expiry_days $(enum_all_certs)
+    list_k8s_cert_expiry_days
 }
 
+
 if test $# -eq 0; then
-    list_cert_expiry_days $(enum_all_certs)
-    list_k8s_cert_expiry_days
+    list_cert_expiry_days
 elif test $# -eq 1 && test "$1" = "--min"; then
-    ( list_cert_expiry_days $(enum_all_certs); list_k8s_cert_expiry_days ) |
+    list_cert_expiry_days |
         awk '{if(n==""||$1<n){n=$1}}END{if(n!=""){print n}else{exit 1}}'
 elif test $# -eq 1 && test -e "$1"; then
-    list_cert_expiry_days "$1"
+    list_local_cert_expiry_days "$1"
     #expiry_after "$1"
 else
     cat >&2 << __EOF__

@@ -37,7 +37,10 @@ if True:
 rec_mgr = Gtk.RecentManager.get_default()
 
 for arg in sys.argv[1:]:
-    os.utime(arg, None)
+    try:
+        os.utime(arg, None)
+    except PermissionError:
+        pass  # don't care if we cannot set mtime (for other people's files)
     rec_mgr.add_item(Gio.File.new_for_path(arg).get_uri())
 
 GLib.idle_add(Gtk.main_quit)
