@@ -1,3 +1,15 @@
+vcutil (1.46) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Also scan manual kubernetes tls certs
+    - cert-expire-finder: Ignore non ready cert-manager certificates
+    - ipmikvm: Add -c to use custom config file
+    - nbdig: Do not crash on warnings to non-tty
+    - nbdig: Show IP dns/description for -x if no dev/vm is assigned
+    - xdg-recent: Ignore permissions errors during optional setting of mtime
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 13 Jun 2024 10:37:45 +0200
+
 vcutil (1.45) stable; urgency=low
 
   * Improvements:
