@@ -211,7 +211,7 @@ list_k8s_cert_expiry_days() {
     while read -r context; do
         # Get certificate expiry dates from certificates.cert-manager.io
         kubectl --context="$context" get certificates.cert-manager.io -A \
-            -ojson |
+            -ojson 2>/dev/null |
         jq -r '.items[] | select(.status.conditions[0]["status"]=="True" and
             .status.conditions[0]["reason"]=="Ready") |
             (.metadata.name + " " + .metadata.namespace + " " +
