@@ -226,14 +226,25 @@ list_k8s_cert_expiry_days() {
         # Get certificate expiry dates from secrets, but only if they
         # are not annotated with cert-manager.io (because we did those
         # already)
-        local cert annotations extra
+        local cert annotations extra tls_used_by_ingress
+        tls_used_by_ingress=$(
+            kubectl --context="$context" get ingress -A -o json |
+            jq -r '.items[]|.metadata.namespace+"."+.spec.tls[]?.secretName' |
+            sort -u)
         kubectl --context="$context" get secrets -A \
                 --field-selector=type=kubernetes.io/tls -ojson |
         jq -r '.items[] | (.data["tls.crt"] + " " + .metadata.name + " " +
                .metadata.namespace + " " +
                .metadata.annotations["cert-manager.io/issuer-group"])' |
         while read -r cert name namespace annotations; do
-            if test -z "$annotations"; then
+            if test -n "$annotations"; then
+                :  # has annotation, skip
+            elif ! echo "$tls_used_by_ingress" |
+                    grep -qxF "$namespace.$name"; then
+                # TODO: It would be nice if we did see these in some cases;
+                # these secrets could contain client certs for instance.
+                :  # $namespace.$name not used in any ingress
+            else
                 echo "$cert" | base64 -d | enumerate_x509_expiry_seconds |
                 while read -r expiry extra; do
                     expiry=$((expiry / 86400))
