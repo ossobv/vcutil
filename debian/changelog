@@ -1,3 +1,10 @@
+vcutil (1.48) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Remove debug print.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 04 Jul 2024 12:18:45 +0200
+
 vcutil (1.47) stable; urgency=low
 
   * Improvements:
