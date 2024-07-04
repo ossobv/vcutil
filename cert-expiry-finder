@@ -243,7 +243,6 @@ list_k8s_cert_expiry_days() {
             kubectl --context="$context" get ns kube-system -o \
                 jsonpath="{.metadata.labels.$k8s_label}")
         test -n "$context_includes" || context_includes=$includes
-        echo "[[ $context_includes ]]"
 
         if test "$((context_includes & 1))" -ne 0; then
             # Get certificate expiry dates from certificates.cert-manager.io
