@@ -1,3 +1,11 @@
+vcutil (1.47) stable; urgency=low
+
+  * Improvements:
+    - cert-expiry-finder: Various fixes so we can exclude K8S values again,
+      depending on which cluster this is done on.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 04 Jul 2024 12:04:47 +0200
+
 vcutil (1.46) stable; urgency=low
 
   * Improvements:
