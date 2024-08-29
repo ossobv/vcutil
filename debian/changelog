@@ -1,3 +1,15 @@
+vcutil (1.49) stable; urgency=low
+
+  * Additions:
+    - llssh: Tool for easy ssh from Cumulus to link-local unconfigured
+      ossobuntu (live installation media)
+
+  * Improvements:
+    - cert-expiry-finder: Also check grafana alloy certificates in
+      /etc/alloy/config.alloy
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 29 Aug 2024 12:45:43 +0200
+
 vcutil (1.48) stable; urgency=low
 
   * Improvements:
