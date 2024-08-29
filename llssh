@@ -1,0 +1,54 @@
+#!/usr/bin/python
+# llssh (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+#
+# Helper script to ssh to (otherwise unconfigured) link-local IPv6 peers
+# from Cumulus switches.
+#
+# Steps:
+# - the peer must have lldpd running so we can get the mac-address
+# - we ask our lldpd for mac address on the interface
+# - we calculate the link-local IPv6 address
+# - we construct the right 'ip vrf exec ... ssh link-local-address' invocation
+#
+# Usage:
+#   llssh iface [ssh_options] [command [arguments]]
+#   (where iface is the network interface/port)
+#
+# Example:
+#   llssh swp12 -l myuser echo 'hi from $(hostname)'
+#
+# Notes:
+# - currently it requires lldpcli and jq; we might make a version that takes
+#   a manual mac address and doesn't require jq (python is needed for
+#   mac-to-link-local-ip conversion)
+#
+import os
+import sys
+from subprocess import check_output
+
+iface = sys.argv[1]  # "swp12"
+assert all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789' for ch in iface), iface
+
+# Get the mac address from LLDP, using lldpcli and fetching the mac from
+# the selected port/interface.
+mac = check_output(('''
+  sudo lldpcli sh ne -f json | jq -r '.lldp[] | .interface[] | select(.name == "%s") | .port[0].id[] | select(.type == "mac") | .value'
+''' % (iface,)).strip(), shell=True)
+
+# Translate mac address to standard link local IP. This way we only need
+# lldpd on the other end: we can get the mac address and calculate what
+# the link-local IP will be.
+mac_as_ints = [int(x, 16) for x in mac.split(':')]
+ip6addr = 'fe80::%02x%02x:%02xff:fe%02x:%02x%02x' % tuple(
+    [mac_as_ints[0] ^ 2] + mac_as_ints[1:])
+dst_address = '%s%%%s' % (ip6addr, iface)
+
+# On Cumulus switches, we must select the correct VRF or we get the
+# 'mgmt' VRF. Using 'default' works.
+# Add '-l myusername' if needed.
+os.execve(
+    '/sbin/ip',
+    ['ip', 'vrf', 'exec', 'default',
+     'ssh', '-oStrictHostKeychecking=no', '-oUserKnownHostsFile=/dev/null',
+     dst_address] + sys.argv[2:],
+    os.environ)
