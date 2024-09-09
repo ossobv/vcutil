@@ -284,7 +284,7 @@ _get_launch_jnlp_quanta() {
     local temp="$4"
 
     local url="https://$management_ip/api"
-    local data
+    local data=""
     local csrf
 
     until test -z "$users"; do
