@@ -1,5 +1,5 @@
 #!/bin/sh -eu
-# wvpn (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
+# wvpn (part of ossobv/vcutil) // wdoekes/2021,2024 // Public Domain
 #
 # Helps out when you have a bunch of openvpn clients on your machine.
 #
@@ -205,17 +205,20 @@ _alias_to_interfaces() {
 }
 
 _ensure_started() {
+    local ifname ifnames
+    ifname=$(_alias_to_interfaces "$1") || return
     # (truncate interface names to 15 chars)
-    _test_and_list \
-        "$(_alias_to_interfaces "$1" | sed -e 's/\(.\{15\}\).*/\1/')"
+    ifname=$(echo "$ifname" | sed -e 's/\(.\{15\}\).*/\1/')
+    _test_and_list "$ifname"
 }
 
 _ensure_stopped() {
+    local ifname ifnames
+    ifname=$(_alias_to_interfaces "$1") || return
     # (truncate interface names to 15 chars)
-    local ifnames="$(_alias_to_interfaces "$1" |
-        sed -e 's/\(.\{15\}\).*/\1/')"
-    local ifname
-    test -z "$ifnames" &&  # no argument: all vpns
+    ifname=$(echo "$ifname" | sed -e 's/\(.\{15\}\).*/\1/')
+    # Set ifnames to ifname or all-interfaces if no arg
+    test -n "$ifname" && ifnames=$ifname ||
         ifnames=$(_list_expected_vpn_interfaces)
     for ifname in $ifnames; do
         _stop_interface "$ifname"
@@ -254,9 +257,9 @@ else
     for arg in "$@"; do
         # Does not start with a colon?
         if test "$arg" = "${arg#:}"; then
-            _ensure_started "$arg"
+            _ensure_started "$arg" || true
         else
-            _ensure_stopped "${arg#:}"
+            _ensure_stopped "${arg#:}" || true
         fi
     done
 fi
