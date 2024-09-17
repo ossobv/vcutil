@@ -187,7 +187,8 @@ _test_and_list() {
 
 _alias_to_interfaces() {
     # Convert name/alias to interface name (including "vpn-" prefix).
-    local alias="$(echo "$1" | head -n1 | grep '^[A-Za-z_][A-Za-z0-9@_-]*$')"
+    local alias="$(
+        echo "$1" | head -n1 | grep '^[A-Za-z0-9_][A-Za-z0-9@_-]*$')"
     if test "$1" != "$alias"; then
         echo "$0: bad alias/interface name: '$1'" >&2
         exit 1
