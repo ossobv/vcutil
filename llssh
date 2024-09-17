@@ -18,39 +18,116 @@
 #   llssh swp12 -l myuser echo 'hi from $(hostname)'
 #
 # Notes:
-# - currently it requires lldpcli and jq; we might make a version that takes
-#   a manual mac address and doesn't require jq (python is needed for
-#   mac-to-link-local-ip conversion)
-# - the script assumes that the user has "lldpcli" access; it might need
-#   to be in the adm group for that
+# - This script is in python because of the non-trivial (for (ba)sh) MAC
+#   to IPv6 LL address conversion.
+# - The script assumes that the user has "lldpcli" access; it may need
+#   to be in the adm group for that. We might also amend this with options
+#   to pass the IPv6 address or MAC on the command line directly.
 #
-import os
 import sys
-from subprocess import check_output
+from json import loads
+from os import environ, execve
+from subprocess import CalledProcessError, check_output
+from unittest import TestCase, main as unittest_main
 
-iface = sys.argv[1]  # "swp12"
-assert all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789' for ch in iface), iface
 
-# Get the mac address from LLDP, using lldpcli and fetching the mac from
-# the selected port/interface.
-mac = check_output(('''
-  lldpcli sh ne -f json | jq -r '.lldp[] | .interface[] | select(.name == "%s") | .port[0].id[] | select(.type == "mac") | .value'
-''' % (iface,)).strip(), shell=True)  # ^- fixme jq eruit, import json erin..
+def lldpcli_show_neighbors():
+    """
+    Run 'lldpcli show neighbors -f json0'
 
-# Translate mac address to standard link local IP. This way we only need
-# lldpd on the other end: we can get the mac address and calculate what
-# the link-local IP will be.
-mac_as_ints = [int(x, 16) for x in mac.split(':')]
-ip6addr = 'fe80::%02x%02x:%02xff:fe%02x:%02x%02x' % tuple(
-    [mac_as_ints[0] ^ 2] + mac_as_ints[1:])
-dst_address = '%s%%%s' % (ip6addr, iface)
+    Previously we would do -f json, but json0 seems to provide the same
+    output on several different systems.
+    """
+    try:
+        output = check_output(['lldpcli', 'show', 'neighbors', '-f', 'json0'])
+    except (CalledProcessError, FileNotFoundError):
+        output = check_output([
+            'sudo', 'lldpcli', 'show', 'neighbors', '-f', 'json0'])
+    output = output.decode('utf-8', 'replace')
+    return output
 
-# On Cumulus switches, we must select the correct VRF or we get the
-# 'mgmt' VRF. Using 'default' works.
-# Add '-l myusername' if needed.
-os.execve(
-    '/sbin/ip',
-    ['ip', 'vrf', 'exec', 'default',
-     'ssh', '-oStrictHostKeychecking=no', '-oUserKnownHostsFile=/dev/null',
-     dst_address] + sys.argv[2:],
-    os.environ)
+
+def mac_from_lldpcli(lldpcli_show_neighbors_js, iface):
+    """
+    Extract the mac address from the lldpcli show neighbors output
+
+    lldpcli sh ne -f json0 | jq -r '
+        .lldp[] | .interface[] | select(.name == "%s") | .port[0].id[] |
+        select(.type == "mac") | .value'
+    """
+    data = loads(lldpcli_show_neighbors_js)
+    for lldp in data['lldp']:
+        for interface in lldp['interface']:
+            if interface['name'] == iface:
+                for port in interface['port']:
+                    for id_ in port['id']:
+                        if id_['type'] == 'mac':
+                            return id_['value']
+    raise ValueError('not found')
+
+
+def link_local_v6_from_mac(mac):
+    """
+    Translate mac address to standard link local IP
+
+    This way we only need lldpd on the other end: we can get the mac
+    address and calculate what the link-local IP will be.
+    """
+    mac_as_ints = [int(x, 16) for x in mac.split(':')]
+    ip6addr = 'fe80::%02x%02x:%02xff:fe%02x:%02x%02x' % tuple(
+        [mac_as_ints[0] ^ 2] + mac_as_ints[1:])
+    return ip6addr
+
+
+class MiscTests(TestCase):
+    def test_mac_from_lldpcli(self):
+        iface = 'swp41'
+        mac = 'c0:ff:ee:be:ee:ff'
+        input_ = '''{"lldp":[{"interface":[{"name":"swp41","via":"LLDP",
+            "rid":"52","age":"158 days, 21:57:30","chassis":[{"id":[{"type":
+            "mac","value":"c0:ff:ee:be:ee:ff"}],"name":[{"value":
+            "natgw.dr.osso.nl"}],"descr":[{"value":"Ubuntu 20.04.3"}],
+            "mgmt-ip":[{"value":"10.20.30.1"},{"value":
+            "fe80::c0ff:eeba:beb0:0b1e"}],"capability":[{"type":"Bridge",
+            "enabled":false},{"type":"Router","enabled":true},{"type":"Wlan",
+            "enabled":false},{"type":"Station","enabled":false}]}],"port":
+            [{"id":[{"type":"mac","value":"c0:ff:ee:be:ee:ff"}],"descr":
+            [{"value":"enp1s0"}],"ttl":[{"value":"120"}]}]}]}]}'''
+        self.assertEqual(mac, mac_from_lldpcli(input_, iface))
+
+    def test_link_local_v6_from_mac(self):
+        mac = 'c0:ff:ee:be:ee:ff'
+        ip6addr = 'fe80::c2ff:eeff:febe:eeff'
+        self.assertEqual(ip6addr, link_local_v6_from_mac(mac))
+
+
+def main():
+    iface = sys.argv[1]  # "swp12"
+    assert all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789' for ch in iface), (
+        iface)
+
+    # Get the mac address from LLDP, using lldpcli and fetching the AC from
+    # the selected port/interface.
+    hwaddr = mac_from_lldpcli(lldpcli_show_neighbors(), iface)
+    # Turn hardware address into LL v6 address.
+    ip6addr = link_local_v6_from_mac(hwaddr)
+    # Add interface (older-python compatible for older systems).
+    dstaddr = '%s%%%s' % (ip6addr, iface)  # "fe80::1%swp12"
+
+    # On Cumulus switches, we must select the correct VRF or we get the
+    # 'mgmt' VRF. Using 'default' works. This also works on other modern
+    # systems. You can add '-l myusername' and other command line
+    # options as appropriate.
+    execve(
+        '/sbin/ip',
+        ['ip', 'vrf', 'exec', 'default',
+         'ssh', '-oStrictHostKeychecking=no', '-oUserKnownHostsFile=/dev/null',
+         dstaddr] + sys.argv[2:],
+        environ)
+
+
+if __name__ == '__main__':
+    if environ.get('RUNTESTS', '') not in ('', '0'):
+        unittest_main()
+    else:
+        main()
