@@ -21,6 +21,8 @@
 # - currently it requires lldpcli and jq; we might make a version that takes
 #   a manual mac address and doesn't require jq (python is needed for
 #   mac-to-link-local-ip conversion)
+# - the script assumes that the user has "lldpcli" access; it might need
+#   to be in the adm group for that
 #
 import os
 import sys
@@ -32,8 +34,8 @@ assert all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789' for ch in iface), iface
 # Get the mac address from LLDP, using lldpcli and fetching the mac from
 # the selected port/interface.
 mac = check_output(('''
-  sudo lldpcli sh ne -f json | jq -r '.lldp[] | .interface[] | select(.name == "%s") | .port[0].id[] | select(.type == "mac") | .value'
-''' % (iface,)).strip(), shell=True)
+  lldpcli sh ne -f json | jq -r '.lldp[] | .interface[] | select(.name == "%s") | .port[0].id[] | select(.type == "mac") | .value'
+''' % (iface,)).strip(), shell=True)  # ^- fixme jq eruit, import json erin..
 
 # Translate mac address to standard link local IP. This way we only need
 # lldpd on the other end: we can get the mac address and calculate what
