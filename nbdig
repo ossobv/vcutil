@@ -253,6 +253,15 @@ class ThinNetboxWrapper:
             warn(f'{name}: no primary IP set')
 
         def kv(k, v):
+            if isinstance(v, dict):
+                if 'slug' in v:
+                    v = v['slug']
+                elif 'name' in v:
+                    v = v['name']
+                elif 'id' in v:
+                    v = v['id']
+                else:
+                    assert False, v
             return '{}={}'.format(k, v or '')
 
         extra = ' '.join(kv(k, v) for k, v in self._nb_extract_properties(
