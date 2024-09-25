@@ -80,11 +80,23 @@ class Config(namedtuple('Config', 'api_url api_token')):
                 f'api_url or api_token not found in {filename}') from e
 
 
-class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
+class IpAddress(namedtuple('IpAddress', 'address name iface vrf is_primary')):
     def __new__(cls, *args, **kwargs):
         if 'is_primary' not in kwargs:
             kwargs['is_primary'] = False
         return super().__new__(cls, *args, **kwargs)
+
+    def as_primary(self):
+        return IpAddress(
+            address=self.address, name=self.name,
+            iface=self.iface, vrf=self.vrf,
+            is_primary=True)
+
+    @property
+    def optname(self):
+        if not self.name:
+            return ''
+        return '"{}"'.format(self.name.replace('"', '""'))
 
     @property
     def safeiface(self):
@@ -99,7 +111,19 @@ class IpAddress(namedtuple('IpAddress', 'address iface vrf is_primary')):
         return self.vrf or '-'
 
 
-class Host(namedtuple('Host', 'name ip_addresses extra')):
+class Host(namedtuple('Host', 'name ip_addresses details')):
+    def __new__(cls, *args, **kwargs):
+        if 'details' not in kwargs:
+            kwargs['details'] = None
+        return super().__new__(cls, *args, **kwargs)
+
+    @property
+    def optdetails(self):
+        if not self.details:
+            return ''
+        return '{{{}}}'.format(
+            self.details.replace('{', '').replace('}', ''))
+
     @property
     def safename(self):
         return self.name or '<null>'  # or '-'?
@@ -234,18 +258,15 @@ class ThinNetboxWrapper:
         primary_ip = info['primary_ip']
         if primary_ip is not None:
             primary_ip = IpAddress(
-                is_primary=True,
-                address=net2ip(primary_ip['address']),
-                iface='?', vrf='?')
+                address=net2ip(primary_ip['address']), name='?',  # with '?'?
+                iface='?', vrf='?', is_primary=True)
 
         if info['id'] in interfaces_by_id:
             ip_addresses.extend(interfaces_by_id[info['id']])
             if primary_ip is not None:
                 for idx, ip in enumerate(ip_addresses):
                     if ip.address == primary_ip.address:
-                        ip_addresses[idx] = IpAddress(
-                            is_primary=True, address=ip.address,
-                            iface=ip.iface, vrf=ip.vrf)
+                        ip_addresses[idx] = ip.as_primary()
                         break
         elif primary_ip is not None:
             ip_addresses.append(primary_ip)
@@ -264,10 +285,10 @@ class ThinNetboxWrapper:
                     assert False, v
             return '{}={}'.format(k, v or '')
 
-        extra = ' '.join(kv(k, v) for k, v in self._nb_extract_properties(
+        details = ' '.join(kv(k, v) for k, v in self._nb_extract_properties(
             info, show_properties))
 
-        return Host(name=name, ip_addresses=ip_addresses, extra=extra)
+        return Host(name=name, ip_addresses=ip_addresses, details=details)
 
     def _find_interfaces(self, lookup_key, ids):
         assert lookup_key in ('device_id', 'virtual_machine_id'), lookup_key
@@ -290,10 +311,11 @@ class ThinNetboxWrapper:
 
             if assigned_to_id not in interfaces_by_id:
                 interfaces_by_id[assigned_to_id] = []
+            assigned_name = (interface['dns_name'] or interface['description'])
             interfaces_by_id[assigned_to_id].append(
                 IpAddress(
-                    address=assigned_address, iface=assigned_iface,
-                    vrf=assigned_vrf))
+                    address=assigned_address, name=assigned_name,
+                    iface=assigned_iface, vrf=assigned_vrf))
 
         return interfaces_by_id
 
@@ -370,7 +392,6 @@ class ThinNetboxWrapper:
             vrf = (address.get('vrf') or {}).get('rd', None)
             assignment = address['assigned_object']
             iface = (assignment['name'] if assignment else None)
-            ipaddr = IpAddress(address=ip_address, iface=iface, vrf=vrf)
 
             if assignment:
                 if 'virtual_machine' in assignment:
@@ -379,14 +400,16 @@ class ThinNetboxWrapper:
                     name = assignment['device']['name']
                 else:
                     raise NotImplementedError(assignment)
-                extra = address['dns_name'] or address['description']
+                ip_name = address['dns_name'] or address['description']
             elif address['dns_name'] and address['description']:
-                name, extra = address['dns_name'], address['description']
+                name, ip_name = address['dns_name'], address['description']
             else:
                 name = address['dns_name'] or None
-                extra = address['dns_name'] or address['description'] or ''
+                ip_name = address['dns_name'] or address['description'] or ''
 
-            host = Host(name=name, ip_addresses=[ipaddr], extra=extra)
+            ipaddr = IpAddress(
+                address=ip_address, name=ip_name, iface=iface, vrf=vrf)
+            host = Host(name=name, ip_addresses=[ipaddr])
             assigned.append(host)
 
         if pages['count'] != len(assigned):
@@ -485,15 +508,13 @@ def show_ipaddresses(hosts, interface_match=None):
 def show_name_addr_extra(hosts):
     for host in hosts:
         addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
-        print(f'{host.safename!s:30}  {addr!s:15}  {host.extra}'.rstrip())
+        print(f'{host.safename!s:30}  {addr!s:15}  {host.optdetails}'.rstrip())
 
 
 def show_name_addr_iface_vrf(hosts, interface_match=None):
     for host in hosts:
-        name = host.safename
-        extra = host.extra
-        if extra:
-            extra = '"{extra}"'.format(extra=extra.replace('"', '""'))
+        host_name = host.safename
+        host_details = host.optdetails
 
         # Sort. We want primary first.
         ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
@@ -504,8 +525,14 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
                 addr = (
                     f'[{ip.address}]' if ip.is_primary
                     else f' {ip.address} ')
+
+                if host_details:
+                    extra = host_details
+                else:
+                    extra = ip.optname
+
                 print(
-                    f'{name!s:30} {addr!s:17} {ip.safeiface!s:15}  '
+                    f'{host_name!s:30} {addr!s:17} {ip.safeiface!s:15}  '
                     f'{ip.safevrf!s:15}  {extra}'.rstrip())
 
 
