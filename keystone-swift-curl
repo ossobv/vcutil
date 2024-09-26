@@ -1,5 +1,5 @@
 #!/bin/sh
-# keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022-2023
+# keystone-swift-curl (part of ossobv/vcutil) // wdoekes/2022-2024
 #   // Public Domain
 #
 # Helper shell script to do simple GET/PUT/HEAD/DELETE in OpenStack Swift
@@ -296,14 +296,18 @@ swift_put() {
             dd if=/proc/self/fd/0 bs=$mb skip=$chunk_off count=$chunk_mbs \
                 status=none | swift_do PUT "$file/$(printf %08d $n)" \
                     -H "Transfer-Encoding: chunked" -T /dev/stdin "$@"
-            printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
+            if test "${QUIET:-0}" = 0; then
+                printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
+            fi
         done
         swift_do PUT "$file" -H "X-Object-Manifest: $SWIFT_CONTAINER/$file" \
             --data-binary ''
     else
         swift_do PUT "$file" -H "Transfer-Encoding: chunked" \
             -T /proc/self/fd/0 "$@"
-        printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
+        if test "${QUIET:-0}" = 0; then
+            printf '\033[F%s \n' "$(date -Iseconds)"  # on prev line
+        fi
     fi
 }
 
