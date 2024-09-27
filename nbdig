@@ -507,7 +507,7 @@ def show_ipaddresses(hosts, interface_match=None):
 
 def show_name_addr_extra(hosts):
     for host in hosts:
-        addr = ' '.join(str(ip.address) for ip in host.ip_addresses)
+        addr = ' '.join(str(ip.address) for ip in host.ip_addresses) or '-'
         print(f'{host.safename!s:30}  {addr!s:15}  {host.optdetails}'.rstrip())
 
 
