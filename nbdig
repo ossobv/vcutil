@@ -184,16 +184,25 @@ class ThinNetboxWrapper:
         load_properties = load_properties or ()
 
         for prop in load_properties:
+            # See API docs:
+            # https://demo.netbox.dev/static/docs/rest-api/filtering/
             if '=' in prop:
                 prop_lookup, prop_value = prop.split('=', 1)
                 if prop_value and prop_value[0] not in (
                         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
                         'abcdefghijklmnopqrstuvwxyz'
                         '0123456789_'):
-                    if prop_value[0] == '^':
+                    if prop_value[0] == '^' and len(prop_value) > 1:
                         params.append((f'{prop_lookup}__isw', prop_value[1:]))
+                    elif prop_value[0] == '^':
+                        # Exclude "exactly empty", so include non-empty.
+                        params.append((f'{prop_lookup}__nie', ''))
+                        # For numeric fields, including only 0 and above.
+                        params.append((f'{prop_lookup}__gte', '0'))
                     else:
-                        raise NotImplementedError('unknown =-modifier')
+                        raise NotImplementedError(
+                            'known =-modifiers are: =EQUALS =^STARTSWITH '
+                            '(use =^ to match for non-empty)')
                 else:
                     # Do not use '{prop_lookup}__ie' here: it will break
                     # fancy value lookup, like status=offline, where
