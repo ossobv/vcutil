@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-# mysqldumpdissect (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+# mysqldumpdissect (part of ossobv/vcutil) // wdoekes/2023-2024
+#   // Public Domain
 #
 # Parse mysqldump output and split extended-insert style statements up
 # into individual statements.
 #
 # USAGE
-#   mysqldumpdissect [--coleq=TABLE=IDX:TYPE:EQ] -f /var/backup/mysqldump.sql
+#   mysqldumpdissect [--coleq=TABLE=IDX:TYPE:EQ]* -f /var/backup/mysqldump.sql
 #
 # DESCRIPTION
 #   Reads mysqldump file, parses the INSERT statements, which can be of
@@ -39,6 +40,19 @@
 #
 #       INSERT INTO `tbl` VALUES (X'48656C6C6F20010203');
 #
+#   Using multiple --coleq expressions is supported. Matches on the same table
+#   and different columns are AND-ed. Matches on different tables or on the
+#   same column are OR-ed:
+#
+#       # This matches rows with 32 OR 33 in the 1st column:
+#       --coleq=tbl=1:i:32
+#       --coleq=tbl=1:i:33
+#
+#       # This matches only rows with 32 in the 1st column AND 'jack' in the
+#       # 2nd column:
+#       --coleq=tbl=1:i:32
+#       --coleq=tbl=2:s:jack
+#
 # RATIONALE
 #   > Why not dump with --skip-extended-insert in the first place?
 #
@@ -55,7 +69,7 @@
 #     - it does not contain the CREATE TABLE statements (missing feature);
 #     - double quotes are not uselessly escaped (a diff, but not a problem).
 #   * The --coleq rule match syntax is clunky and restrictive. Maybe do:
-#     table_name[colidx]=value and then add and/or.
+#     table_name[colidx]=value.
 #   * The --coleq rule match probably fails on floats/decimals at the moment.
 #   * It is quite slow if you don't provide a --coleq. Likely there is
 #     very much time spent in _extract_rows. Some optimization or
@@ -71,12 +85,13 @@ from argparse import ArgumentParser
 from base64 import b16encode
 from collections import namedtuple
 from io import UnsupportedOperation
+from itertools import product
 from os import environ, fdopen
 
 USELESS_DQUOTE_ESCAPE = False
 
 
-class MatchRule(namedtuple('MatchRule', 'table c_idx c_match')):
+class MatchRule(namedtuple('MatchRule', 'table c_matches')):
     @classmethod
     def from_string(cls, s):
         table, c_args = s.split('=', 1)
@@ -88,10 +103,10 @@ class MatchRule(namedtuple('MatchRule', 'table c_idx c_match')):
             c_match = int(c_match)
         else:
             raise ValueError(c_type)
-        return cls(table, c_idx, c_match)
+        return cls(table.encode(), ((c_idx, c_match),))
 
     def matches_row(self, row):
-        return (row.columns[self.c_idx] == self.c_match)
+        return all(row.columns[k] == v for (k, v) in self.c_matches)
 
 
 class Row:
@@ -205,7 +220,7 @@ class MysqlDumpParser:
         self.fp = fp
         self.run = 0
 
-    def find(self, rule):
+    def find(self, rules=()):
         try:
             self.fp.seek(0)
         except UnsupportedOperation:
@@ -219,41 +234,71 @@ class MysqlDumpParser:
         except StopIteration:
             self._it = self._line = None
 
+        # We'll seek to the INSERT INTO `..`, and remove the tables we've
+        # found.
+        tables_to_seek = set(rule.table for rule in rules) or None
+
         while self._it:
             try:
-                startswith = self._seek_to_insert_table(rule and rule.table)
+                startswith, current_table = self._seek_to_insert_table(
+                    tables_to_seek)
             except StopIteration:
                 self._it = self._line = None
             else:
-                for row in self._extract_matching_rows(startswith, rule):
-                    yield startswith + b'(' + row.as_bytes() + b');'
-                if rule:
-                    break
+                table_rules = None
+                if rules:
+                    table_rules = [
+                        rule for rule in rules if rule.table == current_table]
+                    assert table_rules, 'expected rules, else the seek failed'
 
-    def _seek_to_insert_table(self, table):
-        if table:
-            # FIXME: Assumes the table does not have a backtick or
-            # something other that needs escaping.
-            find = f'INSERT INTO `{table}` VALUES '.encode()
-        else:
-            # FIXME: We might not cope with strange table names with
-            # parentheses here.
-            find = 'INSERT INTO `'.encode()
+                for row in self._extract_matching_rows(
+                        startswith, table_rules):
+                    yield startswith + b'(' + row.as_bytes() + b');'
+
+                # If we have rules, we might be able to quit early.
+                if rules:
+                    # We've now processed current_table. Remove it from
+                    # the tables_to_seek so we can quit early.
+                    tables_to_seek.remove(current_table)
+                    if not tables_to_seek:
+                        # Quit early.
+                        break
+
+    def _seek_to_insert_table(self, relevant_tables=None):
+        find = b'INSERT INTO `'
 
         line = self._line
-        while not line.startswith(find):
+        while True:
+            while not line.startswith(find):
+                line = next(self._it)
+            assert line.startswith(find), line
+
+            backtick_idx = line.index(96, 13)  # ord('`'), len('INSERT INTO `')
+            # FIXME: We might not cope with strange table names with
+            # embedded backticks here.
+            found_table_name = line[13:backtick_idx]
+            assert line[backtick_idx + 1] == 32, line
+
+            if relevant_tables is None or found_table_name in relevant_tables:
+                self._line = line
+                break
+
+            # The current line is not a match. Seek past it.
+            not_find = line[0:backtick_idx + 2]  # 'INSERT INTO `abc` '
             line = next(self._it)
-        assert line.startswith(find), line
-        self._line = line
+            while line.startswith(not_find):
+                line = next(self._it)
 
-        up_to_lparen = line[0:line.index(b'(')]
-        return up_to_lparen
+        up_to_lparen = line[0:line.index(40, backtick_idx + 2)]  # ord('(')
+        return up_to_lparen, found_table_name
 
-    def _extract_matching_rows(self, startswith, rule):
+    def _extract_matching_rows(self, startswith, rules):
         line = self._line
         while line.startswith(startswith):
             for row in self._extract_rows(line[len(startswith):]):
-                if not rule or rule.matches_row(row):
+                if not rules:
+                    yield row
+                elif any(rule.matches_row(row) for rule in rules):
                     yield row
             try:
                 line = next(self._it)
@@ -351,6 +396,65 @@ class MysqlDumpParser:
         return rows
 
 
+def merge_coleq(matchrules):
+    """
+    Merge list of --coleq args for sane AND/OR behaviour.
+
+    BEWARE: Uses itertools.product(). This will explode fast if you attempt to
+    use many lookups on the same table.
+
+    Example input:
+
+        --coleq the_table=1:i:123
+        --coleq the_table=1:i:65535
+        --coleq the_table=2:s:alice
+        --coleq the_table=2:s:bob
+        --coleq other_table=3:s:other_match
+
+    Turns into these OR-matches that have internal AND-matches:
+
+        MatchRule('the_table', ((1, 123), (2, 'alice')))
+        MatchRule('the_table', ((1, 123), (2, 'bob')))
+        MatchRule('the_table', ((1, 65535), (2, 'alice')))
+        MatchRule('the_table', ((1, 65535), (2, 'bob')))
+        MatchRule('other_table', ((3, 'other_match'),))
+    """
+    table_idx_rules = {}
+    for matchrule in matchrules:
+        if matchrule.table not in table_idx_rules:
+            table_idx_rules[matchrule.table] = {}
+        idx_rules = table_idx_rules[matchrule.table]
+
+        for c_idx, c_match in matchrule.c_matches:
+            if c_idx not in idx_rules:
+                idx_rules[c_idx] = []
+            rules = idx_rules[c_idx]
+            rules.append(c_match)
+            assert len(set(type(rule) for rule in rules)) == 1, 'diff types?'
+
+    # Sort everything:
+    # - tables by name
+    # - keys by index
+    # - values lexicographically
+    merged_rules = []
+    for table, idx_rules in sorted(table_idx_rules.items()):
+        # (1: [32, 33]), (2, ['john'])
+        flat_rules = list(sorted(idx_rules.items()))
+        # [1, 2]
+        flat_keys = [k for k, v in flat_rules]
+        # [[32, 33], ['john']]
+        flat_values = [list(sorted(v)) for k, v in flat_rules]
+        for new_matches_values in product(*flat_values):
+            # [32, 'john'] => [(1, 32), (2, 'john')]
+            # [33, 'john'] => [(1, 33), (2, 'john')]
+            new_matches = tuple(
+                (flat_keys[idx], new_match_value)
+                for idx, new_match_value in enumerate(new_matches_values))
+            merged_rules.append(MatchRule(table, new_matches))
+
+    return tuple(merged_rules)
+
+
 def main():
     parser = ArgumentParser(
         prog='mysqldumpdissect',
@@ -362,9 +466,14 @@ def main():
     parser.add_argument(
         '-f', '--filename', help='Read SQL from file instead of stdin')
     parser.add_argument(
-        '--coleq', type=MatchRule.from_string, help=(
+        '--coleq', action='append', type=MatchRule.from_string, help=(
             'Rule to match by column equality: '
-            'table_name=col_idx:valuetype:value'))
+            '"table_name=col_idx:valuetype:value". '
+            'Note that col_idx is 0-based. '
+            'The valuetype is i for integers and s for strings. '
+            'Multiple --coleq expressions are allowed and are AND-ed or '
+            'OR-ed depending on what they match: different column on the '
+            'same table results in an AND-match.'))
     args = parser.parse_args()
 
     # Not writing to sys.stdout.buffer because a prematurely closed stdout
@@ -380,7 +489,11 @@ def main():
 
     try:
         mdp = MysqlDumpParser(fp)
-        for statement in mdp.find(args.coleq):
+
+        # Merge coleq args so we get sane AND/OR behaviour:
+        coleqs = merge_coleq(args.coleq or [])
+
+        for statement in mdp.find(coleqs):
             try:
                 bin_stdout.write(statement + b'\n')
             except BrokenPipeError:
@@ -400,36 +513,117 @@ if __name__ == '__main__':
         from unittest import TestCase, main as unittest_main
 
         class MddTest(TestCase):
+            def test_coleq_from_string(self):
+                rule = MatchRule.from_string('tbl=1:i:32')
+                self.assertEqual(rule.table, b'tbl')
+                self.assertEqual(rule.c_matches, ((1, 32),))
+
+                rule = MatchRule.from_string('tbl2=2:s:33')
+                self.assertEqual(rule.table, b'tbl2')
+                self.assertEqual(rule.c_matches, ((2, b'33'),))
+
             def test_example_passthrough(self):
                 mdp = MysqlDumpParser(BytesIO(
                     b"-- blah at start\n"
-                    b"INSERT INTO `tbl` VALUES "
+                    b"INSERT INTO `tbl_x` VALUES "
                     b"('l\\'alice',31),('bob',32),('charlie',12);\n"
-                    b"INSERT INTO `tbl` VALUES "
+                    b"INSERT INTO `tbl_x` VALUES "
+                    b"('david',NULL);\n"
+                    b"INSERT INTO `tbl_y` VALUES "
                     b"('Hello \x01\x02\x03',-1);\n"
                     b"-- blah at eof\n"))
-                res = list(mdp.find(None))
+                res = list(mdp.find())
                 self.assertEqual(res, [
-                    b"INSERT INTO `tbl` VALUES ('l\\'alice',31);",
-                    b"INSERT INTO `tbl` VALUES ('bob',32);",
-                    b"INSERT INTO `tbl` VALUES ('charlie',12);",
-                    b"INSERT INTO `tbl` VALUES (X'48656C6C6F20010203',-1);"])
+                    b"INSERT INTO `tbl_x` VALUES ('l\\'alice',31);",
+                    b"INSERT INTO `tbl_x` VALUES ('bob',32);",
+                    b"INSERT INTO `tbl_x` VALUES ('charlie',12);",
+                    b"INSERT INTO `tbl_x` VALUES ('david',NULL);",
+                    b"INSERT INTO `tbl_y` VALUES (X'48656C6C6F20010203',-1);"])
 
             def test_example_coleq(self):
                 mdp = MysqlDumpParser(BytesIO(
-                    b"INSERT INTO `tbl` VALUES "
-                    b"('alice',31),('bob',32),('charlie',12);"))
-                res = list(mdp.find(MatchRule.from_string('tbl=1:i:32')))
+                    # Matches alice.
+                    b"INSERT INTO `tbl_a` VALUES ('alice',26);\n"
+                    # Skipped, wrong table.
+                    b"INSERT INTO `tbl_x` VALUES"
+                    b" ('alice',31),('bob',32),('charlie',12);\n"
+                    # Skipped, no match.
+                    b"INSERT INTO `tbl_y` VALUES ('aaron',1);\n"
+                    # Matches bob.
+                    b"INSERT INTO `tbl_y` VALUES"
+                    b" ('alice',31),('bob',32),('charlie',12);\n"
+                    # Matches emily.
+                    b"INSERT INTO `tbl_y` VALUES"
+                    b" ('david',12345),('emily',32);\n"
+                    # Skipped, wrong table.
+                    b"INSERT INTO `tbl_z` VALUES"
+                    b" ('alice',31),('bob',32),('charlie',12);\n"
+                    # This should be skipped! We do not expect another tbl_y
+                    # after tbl_z!
+                    b"INSERT INTO `tbl_y` VALUES ('badbob',32);\n"))
+                res = list(mdp.find((
+                    MatchRule.from_string('tbl_a=0:s:alice'),
+                    MatchRule.from_string('tbl_y=1:i:32'),
+                )))
                 self.assertEqual(res, [
-                    b"INSERT INTO `tbl` VALUES ('bob',32);"])
+                    b"INSERT INTO `tbl_a` VALUES ('alice',26);",
+                    b"INSERT INTO `tbl_y` VALUES ('bob',32);",
+                    b"INSERT INTO `tbl_y` VALUES ('emily',32);"])
 
             def test_example_binblob(self):
                 mdp = MysqlDumpParser(BytesIO(
                     b"INSERT INTO `tbl` VALUES "
                     b"('Hello \x01\x02\x03');"))
-                res = list(mdp.find(None))
+                res = list(mdp.find())
                 self.assertEqual(res, [
                     b"INSERT INTO `tbl` VALUES (X'48656C6C6F20010203');"])
+
+            def test_merge_coleq_diffdatattype(self):
+                "Datatypes must be the same"
+                with self.assertRaises(AssertionError):
+                    merge_coleq((
+                        MatchRule.from_string('tbl=1:i:32'),
+                        MatchRule.from_string('tbl=1:s:33'),
+                    ))
+
+            def test_merge_coleq_diffidx_one_rule(self):
+                "Different index, means one rules to match"
+                rules = merge_coleq((
+                    MatchRule.from_string('tbl=1:i:32'),
+                    MatchRule.from_string('tbl=2:s:john'),
+                ))
+                self.assertEqual(rules, (
+                    MatchRule(b'tbl', ((1, 32), (2, b'john'))),
+                ))
+
+            def test_merge_coleq_sameidx_two_rules(self):
+                "Same index, means two possible rules to match"
+                rules = merge_coleq((
+                    MatchRule.from_string('tbl=1:i:32'),
+                    MatchRule.from_string('tbl=1:i:33'),
+                ))
+                self.assertEqual(rules, (
+                    MatchRule(b'tbl', ((1, 32),)),
+                    MatchRule(b'tbl', ((1, 33),)),
+                ))
+
+            def test_merge_coleq_multirules(self):
+                "Same index, means two possible rules to match"
+                rules = merge_coleq((
+                    MatchRule.from_string('tbl2=2:s:jack'),
+                    MatchRule.from_string('tbl=1:i:33'),
+                    MatchRule.from_string('tbl=2:s:john'),
+                    MatchRule.from_string('tbl=2:s:jack'),
+                    MatchRule.from_string('tbl=1:i:32'),
+                ))
+                self.assertEqual(rules, (
+                    # Sorted and everything
+                    MatchRule(b'tbl', ((1, 32), (2, b'jack'))),
+                    MatchRule(b'tbl', ((1, 32), (2, b'john'))),
+                    MatchRule(b'tbl', ((1, 33), (2, b'jack'))),
+                    MatchRule(b'tbl', ((1, 33), (2, b'john'))),
+                    MatchRule(b'tbl2', ((2, b'jack'),)),
+                ))
 
         unittest_main()
     else:
