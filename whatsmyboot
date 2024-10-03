@@ -1,0 +1,152 @@
+#!/bin/sh
+# whatsmyboot (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+#
+# Figure out which boot and/or root drive(s) we're using.
+#
+# This looks to be non-trivial on various systems. This script uses the
+# following heuristics:
+# - Check efibootmgr -v and read HD(n,GTP,uuid) entries;
+# - If not found, ask df where /boot is;
+# - If found, check for ZFS and extract source disks.
+# Lastly, the partitions are converted to drives by querying udevadm.
+#
+# Use -r to find the root drives. If you want to exclude drives for e.g. full
+# disk encryption, use `whatsmyboot -a` to find both boot and root drives to
+# exclude.
+#
+# USAGE:
+#
+#   # whatsmyboot [-r|-a]
+#   /dev/sda
+#   /dev/sdb
+#
+
+set -eu
+
+_pathboots() {
+    local path
+    path="$1"
+    local dev type partitions
+    partitions=$(\
+        df -l --output=source,fstype "$path" | sed -e1d |
+        while read dev type; do
+            if test "$dev" != "${dev#/}"; then
+                echo "$dev"
+            elif test "$type" = "zfs"; then
+                zpool status -LP "${dev%%/*}" |
+                    awk 'substr($1,1,5)=="/dev/"{print $1}'
+            else
+                echo "$0: Not implemented: $dev $type" >&2
+                exit 1
+            fi
+        done
+    )
+    if test -n "$partitions"; then
+        echo "$partitions"
+    else
+        echo "$0: No BIOS partitions?" >&2
+        exit 1
+    fi
+}
+
+biosboots() {
+    _pathboots /boot
+}
+
+efiboots() {
+    local efiout
+    if efiout=$(efibootmgr -v 2>/dev/null) && test -n "$efiout"; then
+        local partitions
+        partitions=$(printf '%s\n' "$efiout" | awk '
+            /^BootOrder:/{split($2,boots,",")}
+            /^Boot[0-9].*HD[(][0-9]*,GPT,/{
+              idx=substr($1,5,4);gsub("^.*HD[(][0-9]*,GPT,","");gsub(",.*","");
+              bs[idx]=$0}
+            END{for(bidx in boots){if(bs[boots[bidx]])print bs[boots[bidx]]}}
+        ' | xargs -IX blkid -o device --match-token=PARTUUID=X | uniq)
+        if test -z "$partitions"; then
+            echo "$0: EFI, but no boot partitions found?" >&2
+            exit 1
+        fi
+        echo "$partitions"
+    elif test -d /sys/firmware/efi; then
+        echo "$0: EFI directory found, but efibootmgr failed?" >&2
+        exit 1
+    fi
+}
+
+boot_partitions() {
+    local out
+    out=$(efiboots)
+    if test -n "$out"; then
+        echo "$out"
+    else
+        biosboots
+    fi
+}
+
+root_partitions() {
+    _pathboots /
+}
+
+partitions_to_devices() {
+    # awk '
+    # /^\/dev\/nvme/{
+    #   gsub("p[0-9]+$", "");if(!($0 in uniq))print $0;uniq[$0]=1}
+    # /^\/dev\/sd[a-z]/{
+    #   gsub("[0-9]+$", "");if(!($0 in uniq))print $0;uniq[$0]=1}
+    # !/^\/dev\/(nvme|sd[a-z])/{if(!($0 in uniq))print $0;uniq[$0]=1}
+    # '
+    local partition tmp dev dirname
+    while read partition; do
+        tmp=$(udevadm info --query=property --name="$partition" |
+            grep ^DEVPATH=)
+        if test -z "$tmp"; then
+            echo "udevadm fail on $partition" >&2
+            exit 1
+        fi
+        tmp=${tmp%/*}
+        dev=${tmp##*/}
+
+        # Is this mdadm? Then we have to translate some more.
+        if test "$dev" != "${dev#md}"; then
+            grep "^$dev[[:blank:]]" /proc/mdstat | tr ' ' '\n' |
+               sed -e '/[[]/!d;s/[[].*//;s@^@/dev/@' |
+               partitions_to_devices
+        # Is this nvme? Then strip the namespace.
+        elif test "$dev" != "${dev#nvme}"; then
+            tmp=${tmp%/*}
+            dev=${tmp##*/}
+            echo "/dev/$dev"
+        else
+            echo "/dev/$dev"
+        fi
+    done | awk '{if(!($0 in uniq)){print;uniq[$0]=1}}'
+}
+
+boot_devices() {
+    boot_partitions | partitions_to_devices
+}
+
+root_devices() {
+    root_partitions | partitions_to_devices
+}
+
+
+if test $# -eq 0; then
+    data=$(boot_devices || true)
+elif test $# -eq 1 && test "$1" = "-r"; then
+    data=$(root_devices || true)
+elif test $# -eq 1 && test "$1" = "-a"; then
+    data=$( { boot_devices && root_devices; } | sort -u )
+else
+    echo "usage: $0 [-r|-a]" >&2
+    exit 1
+fi
+
+if test -z "$data"; then
+    echo "$0: Detection failure" >&2
+    exit 1
+fi
+
+echo "$data"

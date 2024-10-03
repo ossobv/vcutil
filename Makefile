@@ -81,6 +81,7 @@ SBINS = \
 	fwdiff \
 	fwsniff \
 	multilb-sanity-check \
+	whatsmyboot \
 
 SYSSBINS = \
 	mount.zfs-non-legacy \
