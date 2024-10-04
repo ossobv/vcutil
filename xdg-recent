@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# xdg-recent (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+# xdg-recent (part of ossobv/vcutil) // wdoekes/2023-2024 // Public Domain
 #
 # Mark files as "recently used" so they show up first in the File Browser in
 # GNOME/Gtk/X. This is useful when you're editing/preparing files using
@@ -36,12 +36,27 @@ if True:
 
 rec_mgr = Gtk.RecentManager.get_default()
 
+# rd = Gtk.RecentData()
+# rd.description = None
+# rd.app_name = 'xdg-recent'              # free form
+# rd.app_exec = '/usr/bin/xdg-open %u'    # %u = file://url, %f = filename
+# rd.is_private = False
+
 for arg in sys.argv[1:]:
+    gfile = Gio.File.new_for_path(arg)
+
+    # rd.display_name = os.path.basename(arg)
+    # rd.mime_type = mimetypes.guess_type(arg)[0] or 'application/octet-stream'
+    # rec_mgr.add_full(gfile.get_uri(), rd)
+
+    # add_item() is just as capable as add_full() and it's better at
+    # populating app_exec.
+    rec_mgr.add_item(gfile.get_uri())
+
     try:
         os.utime(arg, None)
     except PermissionError:
         pass  # don't care if we cannot set mtime (for other people's files)
-    rec_mgr.add_item(Gio.File.new_for_path(arg).get_uri())
 
 GLib.idle_add(Gtk.main_quit)
 Gtk.main()
