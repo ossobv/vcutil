@@ -54,9 +54,24 @@ for arg in sys.argv[1:]:
     rec_mgr.add_item(gfile.get_uri())
 
     try:
+        # Open the file to simulate access: this will update the
+        # "time::access" as seen with "gio file FILE".
+        stream = gfile.read()  # Open the file
+        stream.read_bytes(1)   # Read at least one byte
+        stream.close()         # Close it right away
+    except GLib.GError:
+        # Failed to set the "time::access" property. If we can't because
+        # we cannot read it, the file will still show up in the Recent list,
+        # but at the bottom.
+        pass
+
+    try:
+        # Update mtime so an 'ls -ltr' will quickly show it as well.
         os.utime(arg, None)
     except PermissionError:
-        pass  # don't care if we cannot set mtime (for other people's files)
+        # Failed to update mtime because of lacking permissions. Not a
+        # problem for us.
+        pass
 
 GLib.idle_add(Gtk.main_quit)
 Gtk.main()
