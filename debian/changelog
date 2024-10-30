@@ -1,3 +1,25 @@
+vcutil (1.50) stable; urgency=low
+
+  * Additions:
+    - whatsmyboot: Util to find out which drives to not full-disk-encrypt
+
+  * Improvements:
+    - ipmikvm: Fix sh-warning when BMC website could not be read
+    - keystone-swift-curl: Fix partially functioning QUIET mode for scripting
+    - llssh: Drop sudo and jq requirement (and assume we have lldpcli rights)
+    - mysqldumpdissect: Allow multiple --coleq statements
+    - nbdig: Add -p property=^ to filter for non-empty
+    - nbdig: Always show something in IP column ("-")
+    - nbdig: Show IP description for both forward and reverse lookup
+    - nbdig: Show shorter slug/name/id when -p returns a dict
+    - wvpn: Fix bug where "bad alias/name" would cause all VPNs to be
+      started/stopped
+    - wvpn: Fix so interface suffixes starting with a digit ([vpn-]9gag) are
+      allowed
+    - xdg-recent: Fix "Accessed" timestmap in Recent viewer
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 30 Oct 2024 08:33:26 +0100
+
 vcutil (1.49) stable; urgency=low
 
   * Additions:
