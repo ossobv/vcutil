@@ -17,6 +17,7 @@ BINS = \
 	ctre \
 	dbschemadiff \
 	difftac \
+	dpkg-repack0 \
 	easycert \
 	efibootmirrorsetup \
 	etccleaner \

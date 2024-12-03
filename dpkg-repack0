@@ -1,0 +1,105 @@
+#!/bin/sh
+# dpkg-repack0 (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+#
+# Create a .deb file out of a package that has already been installed.
+#
+# This utility can make it easy to copy packages from one computer to another,
+# or to recreate packages that are installed on your system, but no longer
+# available elsewhere, or to store the current state of a package before you
+# upgrade it.
+#
+# This utility does the same as dpkg-repack(1), which I did not know
+# existed until I wrote this heading. That is also why I renamed it to
+# dpkg-repack0.
+#
+# Differences between dpkg-repack0 and dpkg-repack:
+# +====================================+====================================+
+# | dpkg-repack0                       | dpkg-repack                        |
+# +====================================+====================================+
+# | Depends on just dpkg.              | Requires perl / libdpkg-perl.      |
+# | Always adds +repack in version.    | Has options for version tags.      |
+# | Has only one mode of operation.    | Has help / options.                |
+# | Always adds repack info in desc.   | Keeps description as-is.           |
+# | Does dumb conffile lookups.        | Does "skipping obsolete conffile". |
+# | Makes reproducible packages.       | Keeps changing timestamps.         |
+# +------------------------------------+------------------------------------+
+#
+# Example invocation:
+#
+#   $ dpkg -l vcutil | grep ^ii
+#   ii  vcutil         1.50         all          OSSO ... sysadmin utilities
+#
+#   $ dpkg-repack0 vcutil
+#   dpkg-deb: building package 'vcutil' in 'vcutil_1.50+repack_all.deb'.
+#
+set -eu
+
+# Check if package name is provided
+if [ -z "${1:-}" ]; then
+    echo "Usage: $0 <package_name>" >&2
+    exit 1
+fi
+
+PACKAGE_NAME="$1"
+PACKAGE_VERSION=$(dpkg-query -W -f='${Version}' "$PACKAGE_NAME" |
+        sed -e 's/:/%3a/g')
+if [ -z "$PACKAGE_VERSION" ]; then
+    echo "Package $PACKAGE_NAME is not installed."
+    exit 1
+fi
+PACKAGE_ARCH=$(dpkg-query -W -f='${Architecture}' "$PACKAGE_NAME")
+PACKAGE=${PACKAGE_NAME}_${PACKAGE_VERSION}+repack_${PACKAGE_ARCH}.deb
+
+# Create a temporary directory to store the package contents
+TEMP_DIR=$(mktemp -d)
+umask 022
+mkdir -p "$TEMP_DIR/DEBIAN"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+# Fetch control files from /var/lib/dpkg/info/
+sed -e '/^Package: '"$PACKAGE_NAME"'$/,/^$/!d;/^Status:/d;/^$/d' \
+        /var/lib/dpkg/status >"$TEMP_DIR/DEBIAN/control"
+for file in /var/lib/dpkg/info/${PACKAGE_NAME}.*; do
+    basefile=$(basename "$file")
+    shortfile=${basefile#${PACKAGE_NAME}.}
+    case $shortfile in
+        list);;
+        *) cp -a "$file" "$TEMP_DIR/DEBIAN/$shortfile";;
+    esac
+done
+
+# Copy installed files listed by dpkg -L
+cat /var/lib/dpkg/info/${PACKAGE_NAME}.list | while read -r file; do
+    # Skip directories
+    if [ -d "$file" ]; then
+        continue
+    fi
+
+    # Warn about, but ignore missing files
+    if [ ! -e "$file" ]; then
+        echo "$file: not found on filesystem, skipping.." >&2
+        continue
+    fi
+
+    DEST_DIR="$TEMP_DIR$(dirname "$file")"
+    mkdir -p "$DEST_DIR"
+
+    # Copy file
+    cp -a "$file" "$DEST_DIR"
+done
+
+# Clean up timestamps/modes
+chmod 0755 "$TEMP_DIR"
+SOURCE_DATE_EPOCH=$(\
+    dpkg-parsechangelog 2>/dev/null |
+    awk 'BEGIN{s=0} /^Timestamp:/{s=$2} END{print s}')
+
+# Build the package
+if command -v fakeroot >/dev/null; then
+    SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    exec fakeroot -- dpkg-deb --build "$TEMP_DIR" "${PACKAGE}"
+else
+    echo "$0: fakeroot not found, repacking as current user" >&2
+    SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    exec dpkg-deb --build "$TEMP_DIR" "${PACKAGE}"
+fi
