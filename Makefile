@@ -55,6 +55,7 @@ BINS = \
 	pgpg \
 	psdiff \
 	pve-macaddr-security \
+	rshall \
 	sadfscheck \
 	sermon \
 	sh-c \

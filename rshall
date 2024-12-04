@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+# rshall (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+#
+# Run script on many hosts at once and collect output.
+#
+# This can be used for one-off scripts that you don't want to build any
+# ansible/chef/puppet scripts for.
+#
+# Invocation:
+#
+#   rshall <project_name>
+#
+# It will read <project_name>.targets for target hosts and
+# <project_name> for the script to execute. The author suggests using
+# .rsh as the project_name suffix (for "remote-shell-script").
+#
+# The ssh username can be adjusted using the USERNAME environment variable.
+#
+# Example: you want to confirm that the DNS is set the same everywhere.
+# rshall can collect the info using multiple ssh connections.
+#
+# - Create 'dns-config.rsh':
+#
+#   #!/bin/sh
+#   sed -e '/^nameserver/!d;s/[[:blank:]]/;/' /etc/resolv.conf
+#   resolvectl status 2>/dev/null |
+#       awk '/DNS Servers:/{gsub(/[^:]*: */, "");print "resolvectl;" $0}'
+#
+# - Test your script:
+#
+#   $ sudo sh -c ./dns-config.rsh
+#   nameserver;127.0.0.53
+#   resolvectl;8.8.8.8 1.1.1.1
+#
+# - Create 'dns-config.rsh.targets':
+#
+#   #hostname;#ip4
+#   foo.com;1.2.3.4
+#   bar.com;55.55.55.55
+#
+# - Run the script on all target hosts, using rshall:
+#
+#   $ USERNAME=root rshall dns-config.rsh
+#   ...
+#   2 success, 0 fails, 0 earlier success, 0 earlier fails
+#   See dns-config.rsh.out for output
+#
+# - Check the output:
+#
+#   $ cat dns-config.rsh.out
+#   #hostname;#ip4;#result
+#   foo.com;1.2.3.4;nameserver;127.0.0.53
+#   foo.com;1.2.3.4;resolvectl;8.8.8.8 1.1.1.1
+#   bar.com;55.55.55.55;nameserver;127.0.0.53
+#   bar.com;55.55.55.55;resolvectl;8.8.8.8 1.1.1.1
+#
+# Caveats:
+#
+# - Right now, you're stuck with semi-colon delimited CSV for targets (input)
+#   and output. This is a fair compromise between readability and automation.
+# - Configuring the USERNAME is cumbersome if you're not using the same
+#   username everywhere.
+# - Any output on stderr is now considered a failure. This abides by the
+#   principle of least surprise. If you want to ignore stderr, redirect
+#   stderr to /dev/null where appropriate.
+#
+import sys
+
+from collections import namedtuple
+from ipaddress import IPv4Address
+from multiprocessing import Process, Pipe
+from os import environ, rename
+from shlex import quote as shell_escape
+from subprocess import CalledProcessError, PIPE, Popen, TimeoutExpired
+from time import sleep
+
+
+# TODO: maybe add properties to ip, like '1.2.3.4?username=xyz'
+Target = namedtuple('Target', 'hostname ip')
+ProcInfo = namedtuple('ProcInfo', 'target process pipe')
+ProcResult = namedtuple('ProcResult', 'target is_success value')
+
+VERBOSE = False
+SCRIPT_TIMEOUT = 30
+
+
+class Runner:
+    def __init__(self):
+        self._script = '''\
+set -eu
+echo "I am a sample script on $(hostname)"
+'''
+        self._targets = []
+        self.successes = {}
+        self.failures = {}
+        self.concurrency = 30
+
+        self._procinfos = []
+
+    def set_script(self, script):
+        self._script = script
+
+    def add_targets(self, targets):
+        self._targets.extend(targets)
+
+    def _cycle(self, state):
+        assert state in (True, False, None)
+
+        if VERBOSE:
+            return
+
+        if state is True:
+            print('+', end='', file=sys.stderr)
+        elif state is False:
+            print('-', end='', file=sys.stderr)
+        elif state is None:
+            print('.', end='', file=sys.stderr)
+        sys.stderr.flush()
+
+    def _reap(self):
+        for idx, procinfo in reversed(list(enumerate(self._procinfos))):
+            if not procinfo.process.is_alive():
+                result = procinfo.pipe.recv()
+                assert result.target == procinfo.target, (procinfo, result)
+                if result.is_success:
+                    self.successes[result.target] = result.value
+                else:
+                    self.failures[result.target] = result.value
+                status = procinfo.process.join()
+                procinfo.pipe.close()
+                assert status is None, (status, procinfo)
+                self._procinfos.pop(idx)
+
+                if VERBOSE:
+                    maybe_ok = ('OK' if result.is_success else 'FAIL')
+                    print(result.target.hostname, maybe_ok, file=sys.stderr)
+
+                self._cycle(False)
+
+    def run(self):
+        for target in self._targets:
+            while len(self._procinfos) >= self.concurrency:
+                self._reap()
+                sleep(0.1)  # some sleep before spawning too much at once
+
+            parent_conn, child_conn = Pipe()
+            proc = Process(
+                target=run_remote, args=(
+                    parent_conn, child_conn, target, self._script))
+            self._procinfos.append(
+                ProcInfo(target=target, process=proc, pipe=parent_conn))
+            proc.start()
+            child_conn.close()
+            self._cycle(True)
+
+        while self._procinfos:
+            self._reap()
+            sleep(0.5)
+            self._cycle(None)
+
+        if not VERBOSE:
+            print('', file=sys.stderr)  # last _cycle
+
+
+def run_remote(parent_conn, child_conn, target, script):
+    quoted_script = shell_escape(script)
+
+    parent = child_conn
+    parent_conn.close()
+
+    out, err = '', ''
+    try:
+        proc = Popen(
+            ['ssh', '-l', environ['USERNAME'],
+             '-oConnectTimeout=8',
+             '-oLogLevel=error',  # suppress banners on stderr
+             '-oPasswordAuthentication=no',
+             target.ip, '--',
+             'sudo', 'sh', '-c', quoted_script],
+            stdin=None, stdout=PIPE, stderr=PIPE, text=True)
+        try:
+            out, err = proc.communicate(timeout=SCRIPT_TIMEOUT)
+        except TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate(timeout=30)  # should be instant?
+            err += '\n\nTIMEOUT'
+        if proc.wait() != 0 or err:
+            # WARNING: Runs in nazi mode right now and fails if anything
+            # on stderr is seen.
+            raise CalledProcessError(
+                proc.returncode, ['ssh', target.ip, '<script>'], out, err)
+    except CalledProcessError as e:
+        err = f'{e}: err={e.stderr!r}'
+        result = ProcResult(target=target, is_success=False, value=err)
+    except Exception as e:
+        err = f'{target}: {e}'
+        result = ProcResult(target=target, is_success=False, value=err)
+    else:
+        result = ProcResult(target=target, is_success=True, value=out)
+
+    parent.send(result)
+    parent.close()
+
+
+class Project:
+    @classmethod
+    def _load_targets(cls, filename):
+        """
+        Load foobar.rsh.targets file, containing CSV "#hostname;#ip4"
+        """
+        targets = cls._lines_to_targets(cls._load_lines(filename))
+        if not targets:
+            raise ValueError(f'expected at least one target in {filename}')
+        return targets
+
+    def __init__(self, project_name):
+        self.name = project_name
+        self.script = self._load_script(self.get_script_name())
+        self.targets = self._load_targets(self.get_targets_name())
+        self.skipped = 0
+
+        # Load earlier successes and drop from targets
+        successes = self._load_lines(self.get_successes_name())
+        self.successes_skip = self.prune_targets(
+            self._lines_to_targets(successes))
+        # Load earlier failures and drop from targets
+        failures = self._load_lines(self.get_failures_name())
+        self.failures_skip = self.prune_targets(
+            self._lines_to_targets(failures))
+
+    def get_script_name(self):
+        return self.name  # "foobar.rsh"
+
+    def get_targets_name(self):
+        return f'{self.name}.targets'
+
+    def get_successes_name(self):
+        return f'{self.name}.out'
+
+    def get_failures_name(self):
+        return f'{self.name}.err'
+
+    def prune_targets(self, remove_from_targets):
+        new_targets = []
+        remove_from_targets = set(remove_from_targets)
+        skipped = 0
+        for target in self.targets:
+            if target in remove_from_targets:
+                skipped += 1
+            else:
+                new_targets.append(target)
+        self.targets = new_targets
+        return skipped
+
+    def update_successes(self, new_successes):
+        successes = self._load_lines(self.get_successes_name())
+        if not successes:
+            successes.append('#hostname;#ip4;#result')
+
+        for target, result in sorted(new_successes.items()):
+            for line in result.rstrip('\n').split('\n'):
+                successes.append('{};{}'.format(';'.join(target), line))
+
+        self._save_lines(self.get_successes_name(), successes)
+
+    def update_failures(self, new_failures):
+        if new_failures:
+            failures = self._load_lines(self.get_failures_name())
+            if not failures:
+                failures.append('#hostname;#ip4;#reason')
+
+            for target, result in sorted(new_failures.items()):
+                for line in result.rstrip('\n').split('\n'):
+                    failures.append('{};{}'.format(';'.join(target), line))
+
+            self._save_lines(self.get_failures_name(), failures)
+
+    @staticmethod
+    def _load_script(filename):
+        """
+        Load foobar.rsh file, containing "#!/bin/sh .. echo foo; echo bar"
+        """
+        try:
+            with open(filename) as fp:
+                script = fp.read()
+                first_line = script.split('\n', 1)[0].strip()
+                if first_line != '#!/bin/sh':
+                    raise NotImplementedError('we only support sh-syntax now')
+        except FileNotFoundError:
+            print(
+                f'(no {filename} script found, using example/default script)',
+                file=sys.stderr)
+            return None
+        else:
+            return script
+
+    @staticmethod
+    def _load_lines(filename):
+        """
+        Load foobar.rsh.out OR foobar.rsh.err file, with output lines
+        """
+        lines = []
+        try:
+            with open(filename) as fp:
+                data = fp.read().rstrip()
+                if data:
+                    lines = data.split('\n')
+        except FileNotFoundError:
+            pass
+        return lines
+
+    @staticmethod
+    def _save_lines(filename, lines):
+        """
+        Write foobar.rsh.out OR foobar.rsh.err file, with output lines
+        """
+        with open(f'{filename}.new', 'w') as fp:
+            fp.write('\n'.join(lines) + '\n')
+        rename(f'{filename}.new', filename)
+
+    @staticmethod
+    def _lines_to_targets(lines):
+        """
+        Take the first two ';'-delimited arguments and create Targets
+
+        The file might look like:
+
+            the.awesome.host;1.2.3.4;whatever
+
+        This will return [Target(hostname='the.awesome.host', ip='1.2.3.4')]
+        """
+        targets = []
+
+        for line in lines:
+            line = line.strip()
+            if line.startswith('#'):
+                pass
+            elif line and ';' in line:
+                hostname, ip = line.split(';', 2)[0:2]
+                ip = str(IPv4Address(ip))
+                target = Target(hostname=hostname, ip=ip)
+                targets.append(target)
+            else:
+                assert not line, (
+                    f'expected "<hostname>;<ip>[;..]", got {line!r}')
+
+        return targets
+
+
+def main(project_name):
+    project = Project(project_name)
+    runner = Runner()
+
+    runner.add_targets(project.targets)
+    if project.script is not None:
+        runner.set_script(project.script)
+
+    try:
+        runner.run()
+    finally:
+        project.update_successes(runner.successes)
+        project.update_failures(runner.failures)
+
+    print(
+        f'{len(runner.successes)} success, {len(runner.failures)} fails, '
+        f'{project.successes_skip} earlier success, '
+        f'{project.failures_skip} earlier fails')
+    if len(runner.successes) + project.successes_skip:
+        print(f'See {project.get_successes_name()} for output')
+    if len(runner.failures) + project.failures_skip:
+        print(f'See {project.get_failures_name()} for failures')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1])  # USERNAME=root rshall samplescript.rsh
