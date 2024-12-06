@@ -158,7 +158,7 @@ zfs_check_compression() {
         # We check the main pools only. Children filesystems can have different
         # settings.
         compression=$(zfs get -Hovalue compression "$name")
-        if test "$compression" != lz4; then
+        if test "$compression" != lz4 && test "$compression" != on; then
             echo "$name: compression is not lz4 (it is '$compression')" >&2
         fi
     done
