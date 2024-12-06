@@ -1,5 +1,5 @@
 #!/bin/sh -eu
-# sadfscheck (part of ossobv/vcutil) // wdoekes/2021 // Public Domain
+# sadfscheck (part of ossobv/vcutil) // wdoekes/2021,2024 // Public Domain
 #
 # Checks nvme and zfs configurations for suboptimal/non-osso configuration.
 #
@@ -143,6 +143,39 @@ zpool_check_ashift() {
     done | uniq
 }
 
+zpool_check_autotrim() {
+    local name autotrim
+    zpool list -Honame,autotrim | LC_ALL=C sort | while read name autotrim; do
+        if test "$autotrim" != on; then
+            echo "$name: autotrim is not on (it is '$autotrim')" >&2
+        fi
+    done
+}
+
+zfs_check_compression() {
+    local name compression
+    zpool list -Honame | LC_ALL=C sort | while read name; do
+        # We check the main pools only. Children filesystems can have different
+        # settings.
+        compression=$(zfs get -Hovalue compression "$name")
+        if test "$compression" != lz4; then
+            echo "$name: compression is not lz4 (it is '$compression')" >&2
+        fi
+    done
+}
+
+zfs_check_primarycache() {
+    local name primarycache
+    zpool list -Honame | LC_ALL=C sort | while read name; do
+        # We check the main pools only. Children filesystems can have different
+        # settings.
+        primarycache=$(zfs get -Hovalue primarycache "$name")
+        if test "$primarycache" != all; then
+            echo "$name: primarycache is not all (it is '$primarycache')" >&2
+        fi
+    done
+}
+
 zpool_check_stripe() {
     local pool=
     local type1=
@@ -207,5 +240,8 @@ zfs_check_arc() {
 
 nvme_check_best_sector
 zpool_check_ashift
+zpool_check_autotrim
 zpool_check_stripe
 zfs_check_arc
+zfs_check_compression
+zfs_check_primarycache
