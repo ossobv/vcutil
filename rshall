@@ -152,6 +152,7 @@ echo "I am a sample script on $(hostname)"
             proc.start()
             child_conn.close()
             self._cycle(True)
+            sleep(0.1)  # some sleep before spawning too much at once
 
         while self._procinfos:
             self._reap()
