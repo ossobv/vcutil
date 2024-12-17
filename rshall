@@ -67,7 +67,7 @@
 import sys
 
 from collections import namedtuple
-from ipaddress import IPv4Address
+from ipaddress import AddressValueError, IPv4Address
 from multiprocessing import Process, Pipe
 from os import environ, rename
 from shlex import quote as shell_escape
@@ -338,7 +338,10 @@ class Project:
                 pass
             elif line and ';' in line:
                 hostname, ip = line.split(';', 2)[0:2]
-                ip = str(IPv4Address(ip))
+                try:
+                    ip = str(IPv4Address(ip))
+                except AddressValueError:
+                    raise ValueError(f'unparsable IP in line: {line}')
                 target = Target(hostname=hostname, ip=ip)
                 targets.append(target)
             else:
