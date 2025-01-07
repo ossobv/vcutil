@@ -36,6 +36,7 @@ BINS = \
 	ip2net \
 	ipmikvm \
 	ipmiscrape \
+	jsfold \
 	keystone-swift-curl \
 	kubectl-sh-bash \
 	kubectl-sh-secret \

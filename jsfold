@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+# jsfold (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
+#
+# Folds log messages or other data into a linefeed separated set of JSON
+# chunks.
+#
+# Its primary purpose is to overcome journald LineMax=48K limits. By
+# running jsfold on program output that is intended to be one big log
+# message, we can split it over multiple log messages. A remote log
+# parser can reassemble the chunks and work with those.
+#
+# The chunk format looks like this (but without the excess spaces):
+#
+# {
+#   "chunkinfo": {"id": "ID", "seq": 1, "count": 3, "enc": "str"},
+#   "data": "Lorem ipsum dolor sit amet, consectetur adipiscing elit, "
+# }
+# {
+#   "chunkinfo": {"id": "ID", "seq": 2, "count": 3, "enc": "str"},
+#   "data": "sed do eiusmod tempor incididunt ut labore et dolore magna"
+# }
+# {
+#   "chunkinfo": {"id": "ID", "seq": 3, "count": 3, "enc": "str"},
+#   "data": "aliqua. Ut enim ad minim veniam, quis nostrud exercitation"
+# }
+#
+# Obviously the above example uses a very short width. The default of
+# 48K is to be preferred.
+#
+# For long texts, you'll probably want to use the 'deflate0' format,
+# which might compress JSON data by about a factor 10. The compression
+# will outweigh the drawback of loss of readability because you now get
+# 60 log lines to re-assemble, instead of 500.
+#
+# Example:
+#
+# $ python -c 'print("A" * 100)' | jsfold -w 132 -f deflate0
+# {"chunkinfo":{"id":"ID","seq":1,"count":5,"enc":"deflate0"},"data":"eNpz"}
+# {"chunkinfo":{"id":"ID","seq":2,"count":5,"enc":"deflate0"},"data":"dKQ9"}
+# {"chunkinfo":{"id":"ID","seq":3,"count":5,"enc":"deflate0"},"data":"4AIA"}
+# {"chunkinfo":{"id":"ID","seq":4,"count":5,"enc":"deflate0"},"data":"HFgZ"}
+# {"chunkinfo":{"id":"ID","seq":5,"count":5,"enc":"deflate0"},"data":"bw=="}
+#
+# $ python -c 'print("A" * 100)' | jsfold -w 132 -f str
+# {"chunkinfo":{"id":"ID","seq": 1,"count":26,"enc":"str"},"data":"AAAA"}
+# {"chunkinfo":{"id":"ID","seq": 2,"count":26,"enc":"str"},"data":"AAAA"}
+# ...
+# {"chunkinfo":{"id":"ID","seq":24,"count":26,"enc":"str"},"data":"AAAA"}
+# {"chunkinfo":{"id":"ID","seq":25,"count":26,"enc":"str"},"data":"AAAA"}
+# {"chunkinfo":{"id":"ID","seq":26,"count":26,"enc":"str"},"data":"\n"}
+#
+# $ echo -n | jsfold | jsfold -d | md5sum
+# d41d8cd98f00b204e9800998ecf8427e  -
+#
+import os
+import sys
+from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from base64 import b64decode, b64encode
+from io import BytesIO, StringIO
+from json import dumps as jsdumps, load as jsload, loads as jsloads
+from unittest import TestCase, main as unittest_main
+from uuid import uuid4
+from zlib import compress as deflate, decompress as inflate
+
+# We'll let a chunk look like this:
+# {"chunkinfo":{"id":"3da5fd6f-c019-4fb0-b5d5-d5102816d310","seq":4294967296,
+#  "count":4294967296,"enc":"str"},"data":""}
+# That is 117 bytes. We'll assume it is max 128 bytes.
+CHUNKINFO_OVERHEAD = 128
+JOURNALD_LINEMAX = 48 * 1024  # <- fits exactly
+
+
+def fromhuman(value):
+    if value.endswith('K'):
+        return int(value[0:-1]) * 1024
+    return int(value)
+
+
+def jsminify(fp):
+    data = jsload(fp)
+    return StringIO(jsdumps(data, ensure_ascii=False, separators=(',', ':')))
+
+
+def encode(infp, format, max_chunk_size, binoutfp):
+    """
+    Splits a JSON log into smaller chunks.
+    """
+    if max_chunk_size < (CHUNKINFO_OVERHEAD + 2):
+        raise TypeError('max_chunk_size must be more than CHUNKINFO_OVERHEAD')
+    max_data_size = max_chunk_size - CHUNKINFO_OVERHEAD
+    assert len(format) <= 14, (format, 'too large for OVERHEAD?')
+
+    # Generate a unique chunk_id for this log. We'll assume log
+    # timestamps exist. We won't be duplicating them here.
+    chunk_id = str(uuid4())
+
+    if format == 'str':
+        # The log/json data is compacted
+        return _encode_as_str(infp, chunk_id, max_data_size, binoutfp)
+    elif format == 'deflate0':
+        assert len(format) <= 14
+        # No error correction. Plain zlib from python + base64 encoding.
+        return _encode_as_deflate0(infp, chunk_id, max_data_size, binoutfp)
+    else:
+        raise NotImplementedError(f'format={format!r} not implemented')
+
+
+def _encode_as_deflate0(infp, chunk_id, max_data_size, binoutfp):
+    """
+    Splits a JSON log into smaller chunks of the following form:
+
+    {
+        "chunkinfo": {"id":"<id>, "seq": 1, "count": 3, "enc": "deflate0"},
+        "data": "BASE64(ZLIB_COMPRESS(data))"
+    }
+    """
+    bin_data = infp.read().encode('utf-8')  # as binstring
+    infp.close()
+
+    # On the test runs, level 8/9 compress about equal.
+    # Minify adds the most overhead when doing zlib.
+    # If we're going for fewest log lines, we'll want zlib8 without minify.
+    #
+    #                     +========+=======+========+
+    #                     | chunks | utime | maxmem |
+    # +===================+========+=======+========+
+    # | str               |    637 |  0.08 |  129MB |
+    # | str + minify      |    584 |  0.18 |  227MB |
+    # | zlib 5            |     65 |  0.18 |   97MB |
+    # | zlib 6            |     64 |  0.23 |   97MB |
+    # | zlib 5 + minify   |     64 |  0.28 |  227MB |
+    # | zlib 6 + minify   |     64 |  0.33 |  227MB |
+    # | zlib 8/9          |     61 |  0.46 |   97MB |
+    # | zlib 8/9 + minify |     61 |  0.60 |  227MB |
+    # +-------------------+--------+-------+--------+
+    bin_data = b64encode(deflate(bin_data, level=8))
+
+    # Calculate split data length.
+    nchunks = len(bin_data) // max_data_size
+    if len(bin_data) % max_data_size:
+        nchunks += 1
+
+    # Prepare output.
+    nchunks_len = len(str(nchunks))
+    parts = [
+        b'{"chunkinfo":{"id":"%s","seq":' % (chunk_id.encode(),),
+        b',"count":%d,"enc":"deflate0"},"data":"' % (nchunks,),
+        b'"}\n',
+    ]
+
+    # Write output.
+    start = 0
+    seq = 1
+    while start < len(bin_data):
+        end = start + max_data_size
+        chunk = bin_data[start:end]
+        binoutfp.write(parts[0])
+        binoutfp.write(str(seq).rjust(nchunks_len).encode())
+        binoutfp.write(parts[1])
+        binoutfp.write(chunk)
+        binoutfp.write(parts[2])
+        start = end
+        seq += 1
+    binoutfp.flush()
+
+
+def _encode_as_str(infp, chunk_id, max_data_size, binoutfp):
+    """
+    Splits a JSON log into smaller chunks of the following form:
+
+    {
+        "chunkinfo": {"id":"<id>, "seq": 1, "count": 3, "enc": "str"},
+        "data": "[\"abc\",\"def\"...]"
+    }
+    """
+    max_data_size -= (max_data_size % 2)  # make it even!
+    full_data = infp.read()  # as unicode string
+    infp.close()
+
+    # Escape for JSON immediately and turn into UTF-8 binstring.
+    bin_data = jsdumps(full_data, ensure_ascii=False)[1:-1].encode('utf-8')
+    del full_data
+
+    # Split the serialized data.
+    chunks = []
+    start = 0
+    while start < len(bin_data):
+        end = start + max_data_size
+        chunk = bin_data[start:end]
+
+        # Take care that we do not break in the middle of an escape.
+        if chunk.endswith(b'\\'):
+            while chunk.endswith(b'\\'):
+                chunk = chunk[0:-1]
+                end -= 1
+            if start == end:
+                # We went too far. Apparently this is one giant escape fest.
+                # We can safely take the entire chunk of backslashes because
+                # we know that max_data_size is even.
+                end = start + max_data_size
+                chunk = bin_data[start:end]
+        # Take care that we do not break in the middle of UTF-8.
+        elif chunk[-1] >= 0x80 and end < len(bin_data):
+            while chunk:
+                mark = (chunk[-1] & 0b11000000)
+                chunk = chunk[0:-1]
+                end -= 1
+                if mark == 0b10000000:
+                    # We dropped a continuation character. Continue.
+                    pass
+                elif mark == 0b11000000:
+                    # We just dropped the first byte of a sequence. We're done.
+                    break
+                else:
+                    # Did we get non-utf-8 in the input? Impossible.
+                    end_of_chunk = chunk[-20:]
+                    raise ValueError(
+                        f'UTF-8 broken at the END? {end_of_chunk!r}')
+            if start == end:
+                start_of_chunk = bin_data[start:20]
+                raise ValueError(
+                    f'UTF-8 broken at the START? {start_of_chunk!r}')
+
+        chunks.append(chunk)
+        start = end
+
+    # Prepare output.
+    nchunks = len(chunks)
+    nchunks_len = len(str(nchunks))
+    parts = [
+        b'{"chunkinfo":{"id":"%s","seq":' % (chunk_id.encode(),),
+        b',"count":%d,"enc":"str"},"data":"' % (nchunks,),
+        b'"}\n',
+    ]
+
+    # Write output.
+    for seq, chunk in enumerate(chunks, start=1):
+        binoutfp.write(parts[0])
+        binoutfp.write(str(seq).rjust(nchunks_len).encode())
+        binoutfp.write(parts[1])
+        binoutfp.write(chunk)
+        binoutfp.write(parts[2])
+    binoutfp.flush()
+
+
+def decode(infp, outfp):
+    it = iter(infp)
+    try:
+        line = next(it)
+    except StopIteration:
+        # No input? Then no output.
+        return
+
+    chunk = jsloads(line)
+
+    if chunk['chunkinfo']['enc'] == 'deflate0':
+        prev_seq = chunk['chunkinfo']['seq']
+        last_seq = chunk['chunkinfo']['count']
+        assert prev_seq == 1, chunk
+        data = chunk['data']
+        for line in it:
+            chunk = jsloads(line)
+            seq = chunk['chunkinfo']['seq']
+            assert seq == prev_seq + 1, (seq, prev_seq, chunk['chunkinfo'])
+            assert seq <= last_seq, (seq, last_seq, chunk['chunkinfo'])
+            data += chunk['data']
+            prev_seq = seq
+        assert seq == last_seq, (seq, last_seq)
+        data = inflate(b64decode(data.encode())).decode('utf-8')
+        outfp.write(data)
+        return
+
+    if chunk['chunkinfo']['enc'] == 'str':
+        seq = prev_seq = chunk['chunkinfo']['seq']
+        last_seq = chunk['chunkinfo']['count']
+        assert prev_seq == 1, chunk
+        data = chunk['data']
+        outfp.write(data)
+        for line in it:
+            chunk = jsloads(line)
+            seq = chunk['chunkinfo']['seq']
+            assert seq == prev_seq + 1, (seq, prev_seq, chunk['chunkinfo'])
+            assert seq <= last_seq, (seq, last_seq, chunk['chunkinfo'])
+            data = chunk['data']
+            outfp.write(data)
+            prev_seq = seq
+        assert seq == last_seq, (seq, last_seq)
+        return
+
+    assert False, chunk
+
+
+class SimpleTest(TestCase):
+    def setUp(self):
+        global uuid4
+
+        def bogus_uuid4():
+            return '01234567-abcd-0123-abcd-0123456789ab'
+
+        uuid4 = bogus_uuid4
+
+    def encode(self, format='str', data='', minify=False, max_chunk_size=256):
+        infp = StringIO(data)
+        if minify:
+            infp = jsminify(infp)
+        binoutfp = BytesIO()
+        encode(infp, format, max_chunk_size, binoutfp)
+        return binoutfp.getvalue().decode('utf-8')
+
+    def decode(self, data):
+        infp = StringIO(data)
+        outfp = StringIO()
+        decode(infp, outfp)
+        return outfp.getvalue()
+
+    def test_simple_chunk(self):
+        self.assertEqual(self.encode('str', '{"foo": "bar"}'), (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":1,"count":1,"enc":"str"},"data":"{\\"foo\\": \\"bar\\"}"}\n'))
+
+    def test_simple_chunk_minify(self):
+        self.assertEqual(self.encode('str', ' { "foo" : "bar" }', True), (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":1,"count":1,"enc":"str"},"data":"{\\"foo\\":\\"bar\\"}"}\n'))
+
+    def test_deflate0(self):
+        self.assertEqual(self.encode('deflate0', '{"foo": "bar"}'), (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":1,"count":1,"enc":"deflate0"},"data":'
+            '"eNqrVkrLz1eyUlBKSixSqgUAIJgEVA=="}\n'))
+
+    def test_chunk_seq_sorting(self):
+        encoded = self.encode(
+            'str', 'A' * 79, False, CHUNKINFO_OVERHEAD + 4)
+        lines = [line for line in encoded.split('\n') if line]
+        # Observe how '"seq": 1' has a space.
+        self.assertEqual(lines[0], (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq": 1,"count":20,"enc":"str"},"data":"AAAA"}'))
+        # And "seq":20' does not.
+        self.assertEqual(lines[-1], (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":20,"count":20,"enc":"str"},"data":"AAA"}'))
+        # Now simple sorting works.
+        shuffled = lines[::-1]
+        self.assertNotEqual(shuffled, lines)
+        self.assertEqual(sorted(shuffled), lines)
+
+    def test_bigger(self):
+        self.assertEqual(self.encode('str', '''{
+            "timestamp": "2025-01-07T12:00:00Z",
+            "level": "INFO",
+            "message": "User logged in successfully.",
+            "user": {
+                "id": 12345,
+                "name": "John Doe",
+                "email": "john.doe@example.com"
+            },
+            "metadata": {
+                "ip_address": "192.168.1.1",
+                "session_id": "abcdef1234567890",
+                "request_id": "qwerty0987654321"
+            }
+        }''', minify=True), (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":1,"count":3,"enc":"str"},"data":"{\\"timestamp\\":\\"'
+            '2025-01-07T12:00:00Z\\",\\"level\\":\\"INFO\\",\\"message\\"'
+            ':\\"User logged in successfully.\\",\\"user\\":{\\"id\\":'
+            '12345,"}\n'
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":2,"count":3,"enc":"str"},"data":"\\"name\\":\\"John Doe\\"'
+            ',\\"email\\":\\"john.doe@example.com\\"},\\"metadata\\":{\\"'
+            'ip_address\\":\\"192.168.1.1\\",\\"session_id\\":\\"abcdef12"}\n'
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":3,"count":3,"enc":"str"},"data":"34567890\\",'
+            '\\"request_id\\":\\"qwerty0987654321\\"}}"}\n'))
+
+    def test_backslash_split(self):
+        input = r'a\x\x\x\\\\'
+        encoded = self.encode('str', input, False, CHUNKINFO_OVERHEAD + 5)
+        chunks = [jsloads(chunk) for chunk in encoded.split('\n') if chunk]
+        datas = [chunk['data'] for chunk in chunks]
+        # Limit will be 4 and then we won't fit '\\x\\'.
+        self.assertEqual(datas, ['a\\x', '\\x', '\\x', '\\\\', '\\\\'])
+        self.assertEqual(self.decode(encoded), input)
+
+    def test_empty_decode(self):
+        encoded = self.encode('str', '', False, CHUNKINFO_OVERHEAD + 5)
+        self.assertEqual(self.decode(encoded), '')
+
+    def test_bogus_empty_decode(self):
+        encoded = (
+            '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
+            '"seq":1,"count":1,"enc":"str"},"data":""}')
+        self.assertEqual(self.decode(encoded), '')
+
+    def test_utf8_split(self):
+        # Also check utf8 at the end.
+        input = r'ÉUR €5>€4 ï'
+        encoded = self.encode('str', input, False, CHUNKINFO_OVERHEAD + 4)
+        chunks = [jsloads(chunk) for chunk in encoded.split('\n') if chunk]
+        datas = [chunk['data'] for chunk in chunks]
+        # The euro sign cannot be split up so the preceding space is alone.
+        self.assertEqual(datas, ['ÉUR', ' ', '€5', '>', '€4', ' ï'])
+        self.assertEqual(self.decode(encoded), input)
+
+
+
+def main():
+    parser = ArgumentParser(
+        prog='jsfold',
+        formatter_class=RawDescriptionHelpFormatter,
+        description=('''\
+Folds log messages or other data into a linefeed separated set of JSON
+chunks.
+
+Its primary purpose is to overcome journald LineMax=48K limits. By
+running jsfold on program output that is intended to be one big log
+message, we can split it over multiple log messages. A remote log
+parser can reassemble the chunks and work with those.
+
+'''))
+    parser.add_argument(
+        '-j', '--minify', action='store_true',
+        help='json minify before chunking')
+    parser.add_argument(
+        '-d', '-u', '--unfold', action='store_true',
+        help='unfold the chunks back to the original')
+    parser.add_argument(
+        '-w', '--width', type=fromhuman, default=JOURNALD_LINEMAX,
+        help='max line length (defaults to journald LineMax=48K)')
+    # BUG: does not do anything when -u/-d
+    parser.add_argument(
+        '-f', '--format', choices=('str', 'deflate0'), default='str',
+        help='choose the chunk encoding style')
+    parser.add_argument(
+        'filename', metavar='FILE', nargs='?',
+        help='optional filename to operate on instead of stdin')
+
+    args = parser.parse_args()
+
+    if args.filename is None:
+        infp = sys.stdin
+    else:
+        infp = open(args.filename)
+
+    if args.unfold:
+        # Unfold the data.
+        decode(infp, sys.stdout)
+        sys.exit(0)
+
+    if args.minify:
+        infp = jsminify(infp)
+
+    # Fold the data (outfp needs to be binary).
+    encode(infp, args.format, args.width, sys.stdout.buffer)
+
+
+if __name__ == '__main__':
+    if os.environ.get('RUNTESTS', '') not in ('', '0'):
+        unittest_main()
+        assert False, 'does not get here'
+    main()
