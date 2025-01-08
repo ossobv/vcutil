@@ -78,6 +78,8 @@ def fromhuman(value):
 
 def jsminify(fp):
     data = jsload(fp)
+    # Prefer UTF-8 over \uXXXX escapes because we're 8-bit clean; so
+    # it's smaller.
     return StringIO(jsdumps(data, ensure_ascii=False, separators=(',', ':')))
 
 
@@ -173,11 +175,12 @@ def _encode_as_str(infp, chunk_id, max_data_size, binoutfp):
         "data": "[\"abc\",\"def\"...]"
     }
     """
-    max_data_size -= (max_data_size % 2)  # make it even!
     full_data = infp.read()  # as unicode string
     infp.close()
 
     # Escape for JSON immediately and turn into UTF-8 binstring.
+    # We must use ensure_ascii=False here, because the escape splitting
+    # would die on mismanaged "\uXXXX" escapes. We do handle UTF-8 fine here.
     bin_data = jsdumps(full_data, ensure_ascii=False)[1:-1].encode('utf-8')
     del full_data
 
@@ -190,17 +193,20 @@ def _encode_as_str(infp, chunk_id, max_data_size, binoutfp):
 
         # Take care that we do not break in the middle of an escape.
         if chunk.endswith(b'\\'):
-            while chunk.endswith(b'\\'):
-                chunk = chunk[0:-1]
+            # We do not know whether a backslash is the first, or the
+            # second of a pair. If it's the first, we cannot end there.
+            # If it's the second of a pair, we can.
+            tmp_idx = tmp_len = len(chunk)
+            while tmp_idx > 0 and chunk[tmp_idx - 1] == 0x5c:  # '\\'
+                tmp_idx -= 1
+            if ((tmp_len - tmp_idx) % 2) == 1:
                 end -= 1
-            if start == end:
-                # We went too far. Apparently this is one giant escape fest.
-                # We can safely take the entire chunk of backslashes because
-                # we know that max_data_size is even.
-                end = start + max_data_size
-                chunk = bin_data[start:end]
+                chunk = chunk[0:-1]
+                assert end > start, (end, start)
+                assert len(chunk)
         # Take care that we do not break in the middle of UTF-8.
-        elif chunk[-1] >= 0x80 and end < len(bin_data):
+        elif (chunk[-1] >= 0x80 and end < len(bin_data)
+                and bin_data[end] >= 0x80):
             while chunk:
                 mark = (chunk[-1] & 0b11000000)
                 chunk = chunk[0:-1]
@@ -316,12 +322,14 @@ class SimpleTest(TestCase):
     def test_simple_chunk(self):
         self.assertEqual(self.encode('str', '{"foo": "bar"}'), (
             '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
-            '"seq":1,"count":1,"enc":"str"},"data":"{\\"foo\\": \\"bar\\"}"}\n'))
+            '"seq":1,"count":1,"enc":"str"},'
+            '"data":"{\\"foo\\": \\"bar\\"}"}\n'))
 
     def test_simple_chunk_minify(self):
         self.assertEqual(self.encode('str', ' { "foo" : "bar" }', True), (
             '{"chunkinfo":{"id":"01234567-abcd-0123-abcd-0123456789ab",'
-            '"seq":1,"count":1,"enc":"str"},"data":"{\\"foo\\":\\"bar\\"}"}\n'))
+            '"seq":1,"count":1,"enc":"str"},'
+            '"data":"{\\"foo\\":\\"bar\\"}"}\n'))
 
     def test_deflate0(self):
         self.assertEqual(self.encode('deflate0', '{"foo": "bar"}'), (
@@ -375,13 +383,31 @@ class SimpleTest(TestCase):
             '"seq":3,"count":3,"enc":"str"},"data":"34567890\\",'
             '\\"request_id\\":\\"qwerty0987654321\\"}}"}\n'))
 
-    def test_backslash_split(self):
-        input = r'a\x\x\x\\\\'
+    def test_backslash_split_5(self):
+        input = r'a\b\c\d\\\\' + '\\'
         encoded = self.encode('str', input, False, CHUNKINFO_OVERHEAD + 5)
         chunks = [jsloads(chunk) for chunk in encoded.split('\n') if chunk]
         datas = [chunk['data'] for chunk in chunks]
-        # Limit will be 4 and then we won't fit '\\x\\'.
-        self.assertEqual(datas, ['a\\x', '\\x', '\\x', '\\\\', '\\\\'])
+        self.assertEqual(datas, [
+            'a\\b',   # 4 bytes
+            '\\c\\',  # 5 bytes
+            'd\\\\',  # 5 bytes
+            '\\\\',   # 4 bytes
+            '\\',     # 2 bytes
+        ])
+        self.assertEqual(self.decode(encoded), input)
+
+    def test_backslash_split_8(self):
+        input = r'a\b\c\\YZ\\\d\\' + '\\'
+        encoded = self.encode('str', input, False, CHUNKINFO_OVERHEAD + 8)
+        chunks = [jsloads(chunk) for chunk in encoded.split('\n') if chunk]
+        datas = [chunk['data'] for chunk in chunks]
+        self.assertEqual(datas, [
+            'a\\b\\c',    # 7 bytes
+            '\\\\YZ\\',   # 8 bytes
+            '\\\\d\\',    # 7 bytes
+            '\\\\',       # 4 bytes
+        ])
         self.assertEqual(self.decode(encoded), input)
 
     def test_empty_decode(self):
@@ -396,14 +422,23 @@ class SimpleTest(TestCase):
 
     def test_utf8_split(self):
         # Also check utf8 at the end.
-        input = r'ÉUR €5>€4 ï'
+        input = r'ÉUR ï€5>ï €4ï€: ï'
         encoded = self.encode('str', input, False, CHUNKINFO_OVERHEAD + 4)
         chunks = [jsloads(chunk) for chunk in encoded.split('\n') if chunk]
         datas = [chunk['data'] for chunk in chunks]
-        # The euro sign cannot be split up so the preceding space is alone.
-        self.assertEqual(datas, ['ÉUR', ' ', '€5', '>', '€4', ' ï'])
+        # Euro sign is 3 bytes UTF-8.
+        # E-acute and i-umlaut are 2 bytes.
+        self.assertEqual(datas, [
+            'ÉUR',  # 2+1+1 bytes (leading UTF-8)
+            ' ï',   # 1+2   bytes
+            '€5',   # 3+1   bytes
+            '>ï ',  # 1+2+1 bytes
+            '€4',   # 3+1   bytes
+            'ï',    # 2     bytes
+            '€:',   # 3+1   bytes
+            ' ï',   # 1+2   bytes (and trailing UTF-8)
+        ])
         self.assertEqual(self.decode(encoded), input)
-
 
 
 def main():
