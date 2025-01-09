@@ -119,6 +119,10 @@ def _encode_as_deflate0(infp, chunk_id, max_data_size, binoutfp):
     bin_data = infp.read().encode('utf-8')  # as binstring
     infp.close()
 
+    # No data? Quit early and write nothing.
+    if not bin_data:
+        return
+
     # On the test runs, level 8/9 compress about equal.
     # Minify adds the most overhead when doing zlib.
     # If we're going for fewest log lines, we'll want zlib8 without minify.
@@ -260,7 +264,7 @@ def decode(infp, outfp):
     chunk = jsloads(line)
 
     if chunk['chunkinfo']['enc'] == 'deflate0':
-        prev_seq = chunk['chunkinfo']['seq']
+        seq = prev_seq = chunk['chunkinfo']['seq']
         last_seq = chunk['chunkinfo']['count']
         assert prev_seq == 1, chunk
         data = chunk['data']
@@ -297,6 +301,8 @@ def decode(infp, outfp):
 
 
 class SimpleTest(TestCase):
+    ENCODINGS = ('deflate0', 'str')
+
     def setUp(self):
         global uuid4
 
@@ -311,13 +317,30 @@ class SimpleTest(TestCase):
             infp = jsminify(infp)
         binoutfp = BytesIO()
         encode(infp, format, max_chunk_size, binoutfp)
-        return binoutfp.getvalue().decode('utf-8')
+        value = binoutfp.getvalue().decode('utf-8')
+        if value:
+            self.assertTrue(value.startswith('{"'), value)
+            self.assertTrue(value.endswith('}\n'), value)
+        return value
 
     def decode(self, data):
         infp = StringIO(data)
         outfp = StringIO()
         decode(infp, outfp)
         return outfp.getvalue()
+
+    def test_encode_decode_0chunk_nodata(self):
+        for format in self.ENCODINGS:
+            encoded = self.encode(format, '')
+            self.assertEqual(encoded, '')  # 0 chunks
+            self.assertEqual(self.decode(encoded), '')
+
+    def test_encode_decode_1chunk_nojs(self):
+        input = '\x00 fóó bàr bäz \xff'
+        for format in self.ENCODINGS:
+            encoded = self.encode(format, input)
+            self.assertEqual(encoded.count('\n'), 1)  # 1 chunk
+            self.assertEqual(self.decode(encoded), input)
 
     def test_simple_chunk(self):
         self.assertEqual(self.encode('str', '{"foo": "bar"}'), (
