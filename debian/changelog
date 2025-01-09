@@ -1,3 +1,11 @@
+vcutil (1.53) stable; urgency=low
+
+  * Improvements:
+    - jsfold: Encoding 0 bytes now produces 0. Decoding single chunks now
+      works for all formats
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 09 Jan 2025 10:14:30 +0100
+
 vcutil (1.52) stable; urgency=low
 
   * Additions:
