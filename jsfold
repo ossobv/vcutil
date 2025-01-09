@@ -277,7 +277,10 @@ def decode(infp, outfp):
             prev_seq = seq
         assert seq == last_seq, (seq, last_seq)
         data = inflate(b64decode(data.encode())).decode('utf-8')
-        outfp.write(data)
+        try:
+            outfp.write(data)
+        except BrokenPipeError:
+            pass  # did you pipe output through e.g. head?
         return
 
     if chunk['chunkinfo']['enc'] == 'str':
@@ -292,7 +295,10 @@ def decode(infp, outfp):
             assert seq == prev_seq + 1, (seq, prev_seq, chunk['chunkinfo'])
             assert seq <= last_seq, (seq, last_seq, chunk['chunkinfo'])
             data = chunk['data']
-            outfp.write(data)
+            try:
+                outfp.write(data)
+            except BrokenPipeError:
+                return  # did you pipe output through e.g. head?
             prev_seq = seq
         assert seq == last_seq, (seq, last_seq)
         return
