@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# llssh (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+# llssh (part of ossobv/vcutil) // wdoekes/2024-2025 // Public Domain
 #
 # Helper script to ssh to (otherwise unconfigured) link-local IPv6 peers
 # from Cumulus switches.
@@ -24,11 +24,17 @@
 #   to be in the adm group for that. We might also amend this with options
 #   to pass the IPv6 address or MAC on the command line directly.
 #
+from __future__ import print_function
 import sys
 from json import loads
 from os import environ, execve
 from subprocess import CalledProcessError, check_output
 from unittest import TestCase, main as unittest_main
+
+try:
+    FileNotFoundError
+except NameError:
+    FileNotFoundError = IOError  # python2
 
 
 def lldpcli_show_neighbors():
