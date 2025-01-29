@@ -26,7 +26,7 @@
 #
 from __future__ import print_function
 import sys
-from json import loads
+from json import dumps, loads
 from os import environ, execve
 from subprocess import CalledProcessError, check_output
 from unittest import TestCase, main as unittest_main
@@ -65,11 +65,18 @@ def mac_from_lldpcli(lldpcli_show_neighbors_js, iface):
     for lldp in data['lldp']:
         for interface in lldp['interface']:
             if interface['name'] == iface:
+                # NOTE: There's also a mac in the interface['chassis'], but it
+                # shows the management IP-mac, not the mac connected to this
+                # port.
                 for port in interface['port']:
                     for id_ in port['id']:
                         if id_['type'] == 'mac':
                             return id_['value']
-    raise ValueError('not found')
+                else:
+                    raise ValueError(
+                        'lldp iface {iface} found but no "mac" type: {ports}'
+                        .format(iface=iface, ports=dumps(interface['port'])))
+    raise ValueError('lldp iface not found')
 
 
 def link_local_v6_from_mac(mac):
@@ -83,6 +90,43 @@ def link_local_v6_from_mac(mac):
     ip6addr = 'fe80::%02x%02x:%02xff:fe%02x:%02x%02x' % tuple(
         [mac_as_ints[0] ^ 2] + mac_as_ints[1:])
     return ip6addr
+
+
+def link_local_v6_addresses_from_arp(iface):
+    """
+    Fetch ip neighbor list and try to find a v6 address there
+    """
+    try:
+        # ip -brief [-family inet6] neighbor show dev swp49.2102 [vrf MY_VF]
+        output = check_output([
+            'ip', '-brief', '-family', 'inet6', 'neighbor',
+            'show', 'dev', iface])
+    except (CalledProcessError, FileNotFoundError):
+        raise ValueError('failed to run "ip neighbor show"')
+    else:
+        lines = output.strip().split('\n')
+        lines = [line for line in lines if line]
+
+    # Maybe there wasn't a neighbor for the main interface, but there is one
+    # for a subinterface.
+    if not lines:
+        try:
+            # ip -br [-family inet6] neighbor show
+            output = check_output([
+                'ip', '-brief', '-family', 'inet6', 'neighbor', 'show'])
+        except (CalledProcessError, FileNotFoundError):
+            raise ValueError('failed to run "ip neighbor show"')
+        matches = [' dev {} '.format(iface), ' dev {}.'.format(iface)]
+        lines = [line for line in output.strip().split('\n')]
+        lines = [
+            line for line in lines if any(match in line for match in matches)]
+
+    if not lines:
+        raise ValueError('ip neighbor not found')
+
+    # fe80::bae9:24ff:fe0b:xxxx lladdr b8:e9:24:0b:xx:xx REACHABLE
+    # fe80::bae9:24ff:fe0b:xxxx dev swp1 lladdr b8:e9:24:0b:xx:xx REACHABLE
+    return [line.split(' ', 1)[0] for line in lines]
 
 
 class MiscTests(TestCase):
@@ -112,13 +156,33 @@ def main():
     assert all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789' for ch in iface), (
         iface)
 
-    # Get the mac address from LLDP, using lldpcli and fetching the AC from
-    # the selected port/interface.
-    hwaddr = mac_from_lldpcli(lldpcli_show_neighbors(), iface)
-    # Turn hardware address into LL v6 address.
-    ip6addr = link_local_v6_from_mac(hwaddr)
-    # Add interface (older-python compatible for older systems).
-    dstaddr = '%s%%%s' % (ip6addr, iface)  # "fe80::1%swp12"
+    try:
+        # Fetch v6 IPs from the arp/neighbor table.
+        addresses = link_local_v6_addresses_from_arp(iface)
+    except ValueError:
+        addresses = []
+
+    try:
+        # Get the mac address from LLDP, using lldpcli and fetching the MAC
+        # from the selected port/interface.
+        hwaddr = mac_from_lldpcli(lldpcli_show_neighbors(), iface)
+        # Turn hardware address into LL v6 address.
+        ip6addr = link_local_v6_from_mac(hwaddr)
+        # Add it to the list.
+        addresses.append(ip6addr)
+    except ValueError:
+        if not addresses:
+            raise
+
+    # Candidates?
+    addresses = list(sorted(set(addresses)))
+    if len(addresses) > 1:
+        print(
+            'Multiple candidates: {}'.format(dumps(addresses)),
+            file=sys.stderr)
+
+    # Add interface (this only works for v6 addresses).
+    dstaddr = '{}%{}'.format(addresses[0], iface)  # "fe80::1%swp12"
 
     # On Cumulus switches, we must select the correct VRF or we get the
     # 'mgmt' VRF. Using 'default' works. This also works on other modern
