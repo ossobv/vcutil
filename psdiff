@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-# psdiff (part of ossobv/vcutil) // wdoekes/2016-2020 // Public Domain
+# psdiff (part of ossobv/vcutil) // wdoekes/2016-2020,2021,2023,2025
+#   // Public Domain
 #
 # Generic (coarse) monitoring of daemon processes. Use in conjunction
 # with a monitoring suite like Zabbix.
@@ -288,9 +289,7 @@ class FilteredProcessFormatter(ProcessFormatter):
                 # Is a daemon, but spawns children of init for extra work.
                 '/usr/bin/python /usr/bin/salt-minion',
                 # Comes and goes.
-                '/usr/libexec/fwupd/fwupd',
-                # User systemd comes and goes as it pleases with (sd-pam).
-                '/lib/systemd/systemd --user')):
+                '/usr/libexec/fwupd/fwupd')):
             return False
 
         # We want to monitor these daemons, but not their
@@ -331,6 +330,19 @@ class FilteredProcessFormatter(ProcessFormatter):
                 process.cmdline == '/usr/sbin/uuidd --socket-activation') or
                 (process.user == 'root' and
                  process.cmdline.startswith(('zfs get ', 'zfs list')))):
+            return False
+
+        # Special case since Ubuntu noble (systemd 255), we expect this one in
+        # combination with sd-pam, but no other children.
+        elif process.cmdline in (
+                '/lib/systemd/systemd --user', '/usr/lib/systemd/systemd --user'
+                ) and all(
+                    child.exe == '(sd-pam)' and not child.children
+                    for child in process.children):
+            return False
+
+        # (sd-pam) comes and goes. Generally as child of systemd --user.
+        elif process.cmdline == process.exe == '(sd-pam)':
             return False
 
         return super(FilteredProcessFormatter, self).include(process)
