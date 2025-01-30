@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-# vim: set ts=8 sw=4 sts=4 et ai:
+# udiff (part of ossobv/vcutil) // wdoekes/2011,2025 // Public Domain
 #
-# udiff.py: find minor differences in large files
-# (microdiff, or unified-diff *grin*)
+# Find minor differences in large files (microdiff, or unified-diff *grin*).
 #
 # Use this instead of regular diff(1) which is prone to choke with a
 # "memory exhausted" error on large files. This can be useful when
@@ -10,9 +9,9 @@
 # invariant INSERT statements and only a handful more or less caused
 # by the operation.
 #
-# Walter Doekes, 2011, OSSO B.V.
-# http://wjd.nu/notes/2011#diff-memory-exhausted-udiff
-# License: Public Domain
+# See also: http://wjd.nu/notes/2011#diff-memory-exhausted-udiff
+import datetime
+import os
 
 BUFFER_LINES = 10000
 
@@ -251,8 +250,6 @@ def diff(args, stdout, stderr):
 
     # Print header before first output
     for output in generator:
-        import datetime
-        import os
         mtime, mdate, nsec = [None, None], [None, None], [None, None]
         for i in range(2):
             mtime[i] = os.stat(args[i]).st_mtime
@@ -275,8 +272,18 @@ def diff(args, stdout, stderr):
 if __name__ == '__main__':
     import sys
     if hasattr(sys.stdout, 'buffer'):
-        ret = diff(sys.argv[1:], sys.stdout.buffer, sys.stderr.buffer)
+        stdout, stderr = sys.stdout.buffer, sys.stderr.buffer
     else:
-        ret = diff(sys.argv[1:], sys.stdout, sys.stderr)  # py2
+        stdout, stderr = sys.stdout, sys.stderr  # py2
+        BrokenPipeError = IOError
+    try:
+        ret = diff(sys.argv[1:], stdout, stderr)
+    except BrokenPipeError:
+        # Hard exit avoiding the flush to stdout which would trigger a:
+        # > Exception ignored in: <_io.TextIOWrapper name='<stdout>' mode='w'
+        # >   encoding='utf-8'>
+        # > BrokenPipeError: [Errno 32] Broken pipe
+        os._exit(1)
     if ret != 0:
         sys.exit(ret)
+# vim: set ts=8 sw=4 sts=4 et ai:
