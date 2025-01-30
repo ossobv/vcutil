@@ -1,10 +1,11 @@
 #!/bin/sh
-# fwdiff (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+# fwdiff (part of ossobv/vcutil) // wdoekes/2022,2025 // Public Domain
 #
 # Generic (coarse) monitoring of iptables rules.
 #
+# Optionally add /etc/default/fwdiff to override fwdiff_dump_override().
+#
 set -eu
-DB=/var/lib/fwdiff.db
 LSMOD=$(lsmod 2>/dev/null)
 if test $? -ne 0 -o $(id -u) -ne 0; then
     echo "Failed to get modules or root status; root perms required" >&2
@@ -39,17 +40,27 @@ dump_ip6tables() {
     done
 }
 
-dump() {
+fwdiff_dump() {
     dump_iptables
     dump_ip6tables
 }
+
+fwdiff_dump_override() {
+    # Override this, maybe with: | grep -v '^iptables -t filter -A ...'
+    fwdiff_dump
+}
+
+DB=/var/lib/fwdiff.db
+if test -r /etc/default/fwdiff; then
+    . /etc/default/fwdiff
+fi
 
 TEMP=$(mktemp)
 trap 'rm $TEMP' EXIT
 
 case ${1:-show} in
 show)
-    dump >"$TEMP"
+    fwdiff_dump_override >"$TEMP"
     CHANGES=$(diff -NU0 "$DB" "$TEMP" | sed -e '1,3d')
     if test -n "$CHANGES"; then
         printf '%s\n' "$CHANGES"
@@ -58,7 +69,7 @@ show)
     exit 0
     ;;
 write)
-    dump >"$DB.new"
+    fwdiff_dump_override >"$DB.new"
     cp -a "$DB" "$DB.old" 2>/dev/null || true
     mv "$DB.new" "$DB"
     echo "Wrote to $DB"
@@ -68,7 +79,7 @@ write)
     exit 0
     ;;
 dump)
-    dump
+    fwdiff_dump_override
     exit 0
     ;;
 *)
