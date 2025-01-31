@@ -1,3 +1,15 @@
+vcutil (1.54) stable; urgency=low
+
+  * Improvements:
+    - fwdiff: Allow overrides (to exclude certain CHAINS for instance).
+    - jsfold: Cope with SIGPIPE on truncated output.
+    - llssh: Attempt to use "ip neigh" as alternative to lldpcli.
+    - llssh: Python2 compatibility.
+    - psdiff: Handle /usr/lib/systemd/systemd --user in Noble.
+    - udiff: Catch and handle BrokenPipeError gracefully..
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 31 Jan 2025 09:06:30 +0100
+
 vcutil (1.53) stable; urgency=low
 
   * Improvements:
