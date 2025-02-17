@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# rshall (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+# rshall (part of ossobv/vcutil) // wdoekes/2024-2025 // Public Domain
 #
 # Run script on many hosts at once and collect output.
 #
@@ -170,15 +170,19 @@ def run_remote(parent_conn, child_conn, target, script):
     parent_conn.close()
 
     out, err = '', ''
+
+    env = environ.copy()  # keep SSH_AGENT stuff
+    env['LC_ALL'] = 'C'
+    username = env['USERNAME']
     try:
         proc = Popen(
-            ['ssh', '-l', environ['USERNAME'],
+            ['ssh', '-l', username,
              '-oConnectTimeout=8',
              '-oLogLevel=error',  # suppress banners on stderr
              '-oPasswordAuthentication=no',
              target.ip, '--',
              'sudo', 'sh', '-c', quoted_script],
-            stdin=None, stdout=PIPE, stderr=PIPE, text=True)
+            stdin=None, stdout=PIPE, stderr=PIPE, text=True, env=env)
         try:
             out, err = proc.communicate(timeout=SCRIPT_TIMEOUT)
         except TimeoutExpired:
