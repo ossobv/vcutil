@@ -1,16 +1,34 @@
 #!/bin/sh -eu
-# sadfscheck (part of ossobv/vcutil) // wdoekes/2021,2024 // Public Domain
+# sadfscheck (part of ossobv/vcutil) // wdoekes/2021,2024-2025 // Public Domain
 #
 # Checks nvme and zfs configurations for suboptimal/non-osso configuration.
 #
 
+sector_list() {
+    local dev phys log
+    lsblk --tree -o NAME,PHY-SEC,LOG-SEC |
+        sed -e '1d;/^[^A-Za-z0-9]/d' |
+    while read dev phys log; do
+        if test "$log" = 4096 && test "$log" -gt "$phys"; then
+            # If logical is 4096 and the physical size is smaller, then ignore.
+            # This has no performance drawback.
+            :
+        elif test "$phys" != "$log"; then
+            echo "/dev/$dev: sector size mismatch:\
+ $log logical, $phys physical" >&2
+        fi
+    done
+}
+
 nvme_list() {
+    local devs
     devs=$(nvme list 2>/dev/null | awk '/^\/dev\//{print $1}')
     test -z "$devs" && echo "info: no nvme devices found" >&2
     echo $devs
 }
 
 nvme_check_best_sector() {
+    local dev
     for dev in $(nvme_list); do
         local sector_sizes="$(nvme id-ns -H "$dev" | grep '^LBA Format')"
         local sector_inuse="$(echo "$sector_sizes" | sed -e '
@@ -196,6 +214,7 @@ zpool_check_stripe() {
         fi
     done
 
+    local zdb_names zpool_names
     zdb_names=$(zdb_output | sed -ne "s/^[[:blank:]]\+name: '\([^']*\)'/\1/p" |
         LC_ALL=C sort)  # '") vimsynfix
     zpool_names=$(zpool list -Honame | LC_ALL=C sort)
@@ -238,6 +257,7 @@ zfs_check_arc() {
 }
 
 
+sector_list
 nvme_check_best_sector
 zpool_check_ashift
 zpool_check_autotrim
