@@ -38,6 +38,11 @@ write)
     fi
     exit 0
     ;;
+dump)
+    echo "nvme:    pci-address:"
+    dump_nvme_addresses
+    exit 0
+    ;;
 reset)
     # note: /sys/bus/pci/slots do not exist on Noble
     # reset option does seem to work
@@ -53,7 +58,7 @@ reset)
     exit 0
     ;;
 *)
-    echo 'Usage: nvmediff show|write|reset' >&2
+    echo 'Usage: nvmediff show|write|dump|reset' >&2
     exit 1
     ;;
 esac
