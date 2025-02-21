@@ -1,0 +1,59 @@
+#!/bin/bash
+# Sometimes nvme devices disappear from OS level
+# We can fix this by powering the pci slot off and on
+# This script keeps the pci address for every nvme drive
+# Reset command prints reset command with pci-address for missing nvme's
+
+set -eu
+dump_nvme_addresses() {
+  for i in /sys/block/nvme*; do
+      nvme=$(echo "$i" | awk -F "/" '{ print $4}')
+      echo "$nvme `cat $i/device/address`"
+  done
+}
+
+DB=/var/lib/nvmediff.db
+TEMP=$(mktemp)
+trap 'rm $TEMP' EXIT
+
+case ${1:-show} in
+show)
+    dump_nvme_addresses >"$TEMP"
+    CHANGES=$(diff -NU0 "$DB" "$TEMP" | sed -e '1,3d')
+    if test -n "$CHANGES"; then
+        echo " nvme:    pci-address:"
+        printf '%s\n' "$CHANGES"
+        exit 1
+    fi
+    exit 0
+    ;;
+write)
+    # todo: check if file is writable
+    dump_nvme_addresses >"$DB.new"
+    cp -a "$DB" "$DB.old" 2>/dev/null || true
+    mv "$DB.new" "$DB"
+    echo "Wrote to $DB"
+    if test "${2:-}" = "-v"; then
+        diff -NU0 "$DB.old" "$DB" | sed -e '1,3d'
+    fi
+    exit 0
+    ;;
+reset)
+    # note: /sys/bus/pci/slots do not exist on Noble
+    # reset option does seem to work
+    dump_nvme_addresses >"$TEMP"
+    CHANGES=$(diff -NU0 "$DB" "$TEMP" | sed -e '1,3d')
+    # check diff for missing nvme, print reset command with nvme's pcie-address
+    if test -n "$CHANGES"; then
+      if [[ $CHANGES = "-nvme"* ]]; then
+	# todo: make this readable multi-line 
+	echo "$CHANGES" | awk '{print "found missing nvme: " $1 " for reset run:  echo 1 > /sys/bus/pci/devices/"$2"/reset"}'
+      fi
+    fi
+    exit 0
+    ;;
+*)
+    echo 'Usage: nvmediff show|write|reset' >&2
+    exit 1
+    ;;
+esac
