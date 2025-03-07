@@ -270,6 +270,15 @@ get_launch_jnlp() {
         if ! echo "$data" | grep -q '^<jnlp spec='; then
             echo "unexpected jnlp page: $data" >&2
             data=
+            cat >&2 <<EOF
+
+If "curl" invocations above resulted in 404 errors, then the issue
+*could* be that the Supermicro BMC web interface is in "HTML 5" mode.
+You may log on to $url using a browser and ensure that
+"Remote Control" -> "Current Interface" is set to "JAVA plug-in"
+(and not "HTML 5").
+
+EOF
         fi
     fi
     rm "$temp"
