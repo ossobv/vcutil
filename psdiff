@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import warnings
 
 
 DBNAME = '/var/lib/psdiff.db'
@@ -342,8 +343,8 @@ class FilteredProcessFormatter(ProcessFormatter):
         # Special case since Ubuntu noble (systemd 255), we expect this one in
         # combination with sd-pam, but no other children.
         elif process.cmdline in (
-                '/lib/systemd/systemd --user', '/usr/lib/systemd/systemd --user'
-                ) and all(
+                '/lib/systemd/systemd --user',
+                '/usr/lib/systemd/systemd --user') and all(
                     child.exe == '(sd-pam)' and not child.children
                     for child in process.children):
             return False
@@ -549,15 +550,19 @@ def get_argv():
     "Fix up argv"
     argv = sys.argv[:]
 
-    # No argument: default to show
-    if len(argv) == 1:
-        argv.append('show')
-
     # show-missing or show-extra: convert to show --missing|--extra
-    if argv[1] == 'show-missing':
-        argv[1:2] = ['show', '--missing']
-    elif argv[1] == 'show-extra':
-        argv[1:2] = ['show', '--extra']
+    if 'show-missing' in argv[1:]:
+        warnings.warn(
+            'Replacing show-missing with show --missing', DeprecationWarning)
+        idx = argv.index('show-missing', 1)
+        if argv[idx] == 'show-missing':
+            argv[idx:idx + 1] = ['show', '--missing']
+    elif 'show-extra' in argv[1:]:
+        warnings.warn(
+            'Replacing show-extra with show --extra', DeprecationWarning)
+        idx = argv.index('show-extra', 1)
+        if argv[idx] == 'show-extra':
+            argv[idx:idx + 1] = ['show', '--extra']
 
     return argv
 
@@ -577,7 +582,7 @@ def main():
             - set up server with various processes;
             - run `psdiff write' to store a dump in /var/lib/psdiff.db;
             - have zabbix (or your favorite monitoring tool) call
-              `psdiff show-missing' and `psdiff show-extra';
+              `psdiff show --missing' and `psdiff show --extra';
             - have the monitoring tool show errors if there is output for any
               of the commands.
 
@@ -663,8 +668,8 @@ def main():
             Zabbix example
             --------------
 
-                UserParameter=psdiff.missing,psdiff show-missing --retry 2>&1
-                UserParameter=psdiff.extra,psdiff show-extra --retry 2>&1
+                UserParameter=psdiff.missing,psdiff show --missing --retry 2>&1
+                UserParameter=psdiff.extra,psdiff show --extra --retry 2>&1
 
             With triggers like this:
 
@@ -694,6 +699,12 @@ def main():
     manual_action.add_argument('cmdline', help='process cmdline')
 
     args = parser.parse_args(args=get_argv()[1:])
+
+    # If no action was chosen, default to 'show' and (unfortunately) add
+    # the subparser specific arguments.
+    if not args.action:
+        args.action = 'show'
+        args.missing = args.extra = args.retry = False
 
     # First load up config.
     formatter_class = get_formatter_class()
@@ -807,6 +818,29 @@ def process(args, old_output, formatter_class):
         sys.exit(status)  # possibly non-zero exit
 
 
+def formatwarning(message, category, filename, lineno, line=None):
+    """
+    Override default Warning layout, from:
+
+        /PATH/TO/argv0:326: UserWarning:
+            [Errno 2] No such file or directory: '/0.d/05.d'
+          warnings.warn(str(e))
+
+    To:
+
+        argv0:330: UserWarning:
+            [Errno 2] No such file or directory: '/0.d/05.d'
+    """
+    return '{basename}:{lineno}: {category}: {message}\n'.format(
+        basename=os.path.basename(filename), lineno=lineno,
+        category=category.__name__, message=message)
+warnings.formatwarning = formatwarning  # noqa
+
+
 if __name__ == '__main__':
+    if not sys.stderr.isatty():
+        warnings.simplefilter('ignore', DeprecationWarning)
+
     main()
+
 # vim: set ts=8 sw=4 sts=4 et ai:
