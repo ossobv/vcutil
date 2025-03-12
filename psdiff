@@ -115,6 +115,18 @@ class Process(object):
     def skip(self):
         self.include = False
 
+        # Move the _listens to the parent.
+        if self._listens:
+            parent = self
+            while parent:
+                parent = self.parent
+                if parent.include:
+                    break
+                assert not parent._listens, (self, parent)
+            parent._listens = list(sorted(set(
+                parent._listens + self._listens)))
+            self._listens = []
+
     def has_parent(self, include_self=False,
                    cmdline__startswith=None, pid=None):
         obj = self
