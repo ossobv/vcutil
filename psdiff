@@ -6,6 +6,7 @@
 # with a monitoring suite like Zabbix.
 #
 import argparse
+import collections
 import os
 import re
 import subprocess
@@ -16,7 +17,7 @@ import warnings
 
 
 DBNAME = '/var/lib/psdiff.db'
-DBLINE = u'{indent}{cmdline}  {{user={user}}}'
+DBLINE = u'{indent}{cmdline}  {{user={user}{extra}}}'
 
 
 def udiff(alines, blines):
@@ -108,6 +109,9 @@ class Process(object):
         self.root.process_map[pid] = self
         self.children = set()
 
+        # Enriched info
+        self._listens = []
+
     def skip(self):
         self.include = False
 
@@ -140,15 +144,25 @@ class Process(object):
         return self.root.process_map[pid]
 
     def to_string(self, indent=0):
+        if self._listens:
+            if len(self._listens) > 1:
+                extra = ', listen=({})'.format(','.join(self._listens))
+            else:
+                extra = ', listen={}'.format(self._listens[0])
+        else:
+            extra = ''
         return DBLINE.format(
             indent=(indent * u'  '), cmdline=self.cmdline.rstrip(),
-            user=self.user)
+            user=self.user, extra=extra)
 
     def sort(self):
         # Sort the children and convert the set into a list.
         for child in self.children:
             child.sort()
         self.children = list(sorted(self.children))
+
+    def add_listens(self, listens):
+        self._listens.extend(listens)
 
     def __hash__(self):
         # Needs to be reimplemented because Python3 drops the
@@ -275,6 +289,11 @@ class FilteredProcessFormatter(ProcessFormatter):
 
             process.cmdline = ' '.join(args)
 
+        elif (process.exe == 'haproxy' and len(process._listens) == 1
+                and process._listens[0].startswith('udp:0.0.0.0:')):
+            # haproxy listens do a random UDP port. Filter it.
+            process._listens[0] = 'udp:0.0.0.0:*'
+
     def include(self, process):
         # Ignore kernel threads.
         if process.has_parent(include_self=True, pid=2):
@@ -373,7 +392,7 @@ def diff(a, b):
     return changes
 
 
-def ps_faxu():
+def ps_faxu(with_network=False):
     cmd = ['ps', 'ax', '-o', 'user,pid,ppid,fname,args']
     try:
         output = subprocess.check_output
@@ -384,6 +403,23 @@ def ps_faxu():
         proc.wait()
     else:
         output = subprocess.check_output(cmd, bufsize=-1)
+
+    # Get socket data as quickly as possible.
+    sockets_by_pid = None
+    if with_network:
+        try:
+            # Get listen addresses per pid in a dictionary:
+            # {1234: ['tcp:0.0.0.0:80', 'tcp:0.0.0.0:443']}
+            sockets_by_pid = netstat()
+        except (subprocess.CalledProcessError, OSError):
+            # If there is no 'ss' (super-netstat) or we have too few perms
+            # to use it fruitfully, accept it.
+            # - CalledProcessError = ss returned non-zero
+            # - FileNotFoundError(OSError) = there is no ss
+            # - PermissionDeniedError(OSError) = we're not allowed to call ss
+            warnings.warn(
+                '--net info requested but failed (no perms? no ss(1)?)')
+
     output = output.decode('ascii', 'replace')
 
     root = Process(None, 0, 'root', 'root', 'root')
@@ -399,7 +435,91 @@ def ps_faxu():
     for process in root.process_map.values():
         process.fix_links()
 
+    # We have pids and netstat has pids. Amend the processes with socket info.
+    if sockets_by_pid is not None:
+        process_pids = set(root.process_map.keys())
+        socket_pids = set(sockets_by_pid.keys())
+        both_pids = process_pids & socket_pids
+        for pid in both_pids:
+            root.process_map[pid].add_listens(sockets_by_pid[pid])
+        for pid in (socket_pids - both_pids):
+            root.process_map[0].add_listens(sockets_by_pid[pid])
+
     return root
+
+
+def netstat():
+    # -H no-header
+    # -n numeric
+    # -l listen
+    # -p with-process
+    # -t include-tcp
+    # -u include-udp
+    # -w include-raw
+    # -S include-sctp
+    # -0 include-packet
+    cmd = ['ss', '-HnlptuwS0']
+    try:
+        output = subprocess.check_output
+    except AttributeError:
+        # Blegh. Python 2.6. (You did already `pip install argparse`, yes?)
+        proc = subprocess.Popen(cmd, bufsize=-1, stdout=subprocess.PIPE)
+        output = proc.communicate()[0]
+        proc.wait()
+    else:
+        output = subprocess.check_output(cmd, bufsize=-1)
+    output = output.decode('ascii', 'replace')
+
+    output = output.strip().split('\n')
+    lines = [line.split(None, 7) for line in output]
+    # Netid  State  Recv-Q  Send-Q  LocalAddr:Port  PeerAddr:Port  Proc
+    proc_listens = collections.defaultdict(list)
+    for line in lines:
+        addr = '{}:{}'.format(line[0], line[4])
+        if len(line) < 7:
+            # We need root to get the process info. Bail immediately.
+            raise OSError(1, 'Operation not permitted')  # EPERM
+        users = line[6]
+        assert users.startswith('users:('), line
+        assert users.endswith(')'), line
+        idx = 7
+        state = 0
+        while True:
+            # ("zabbix_agentd",pid=1744582,fd=6)
+            if state == 0:
+                assert users[idx] == '('
+                state = 1
+            elif state == 1:
+                assert users[idx] == '"'
+                state = 2
+            elif state == 2:
+                if users[idx] == '"':
+                    state = 3
+            elif state == 3:
+                assert users[idx] == ','
+                nidx = users.index(')', idx + 1)
+                pidinfo = users[idx + 1:nidx].split(',', 1)[0]
+                assert pidinfo.startswith('pid='), users
+                pid = int(pidinfo[4:])
+                proc_listens[pid].append(addr)
+                state = 4
+                idx = nidx
+            elif state == 4:
+                if users[idx] == ')':
+                    state = 5
+                    break
+                elif users[idx] == ',':
+                    state = 0
+            idx += 1
+
+    new_listens = {}
+    for key, value in proc_listens.items():
+        # FIXME: TODO: Version/human sorting of addresses
+        new_listens[key] = sorted(value)
+
+    # {fd:   [addr1, addr2]}
+    # {1047: ['icmp6:*:58', 'tcp:127.0.0.1:2601']}
+    return new_listens
 
 
 def eval_psdiff_d(dirname):
@@ -474,8 +594,8 @@ def get_formatter_class():
     return FilteredProcessFormatter
 
 
-def get_new_output(formatter_class):
-    root = ps_faxu()
+def get_new_output(formatter_class, with_network=False):
+    root = ps_faxu(with_network=with_network)
     formatter = formatter_class(root)
     return formatter.__str__()  # returns unicode(!) on py2
 
@@ -533,6 +653,19 @@ def show_diff_line(prefix, line):
         print('{}{}    {}'.format(prefix, indent, line))
 
 
+def db_has_network(db):
+    """
+    Whether the DB file has with_network output in it.
+
+    Useful for backwards compatibility: only show with_network output if
+    the DB had it.
+    """
+    # This is a very cheap/shady check for the newer DB format. It
+    # should generally work though. I don't expect that string in normal
+    # arguments.
+    return bool(', listen=' in db)
+
+
 def write(output, has_old=False):
     if isinstance('', bytes):  # py2
         output = output.encode('utf-8', 'replace')
@@ -563,6 +696,11 @@ def get_argv():
         idx = argv.index('show-extra', 1)
         if argv[idx] == 'show-extra':
             argv[idx:idx + 1] = ['show', '--extra']
+
+    # No args? Needed on python2 where ArgumentParser does not proceed after
+    # not finding an action.
+    if all(arg.startswith('-') for arg in argv[1:]):
+        argv.append('show')
 
     return argv
 
@@ -677,6 +815,18 @@ def main():
                 {Template Role Daemons:psdiff.missing.nodata(30m)}=1
             '''))
 
+    if hasattr(argparse, 'BooleanOptionalAction'):
+        parser.add_argument(
+            '--net', action=argparse.BooleanOptionalAction,
+            dest='with_network', help='with network info')
+    else:
+        parser.add_argument(
+            '--net', action='store_true', dest='with_network',
+            help='with network info')
+        parser.add_argument(
+            '--no-net', action='store_false', dest='with_network',
+            help='without network info')
+
     actions = parser.add_subparsers(dest='action', help='subcommand help')
     show_action = actions.add_parser('show', help='show current diff')
     show_action.add_argument(
@@ -687,7 +837,10 @@ def main():
         '--retry', action='store_true',
         help=("retry up to 2 seconds; avoids false positives caused "
               "by restarts and short lived children"))
-    actions.add_parser('dump', help='show current state')
+    dump_action = actions.add_parser('dump', help='show current state')
+    dump_action.add_argument(
+        '--verbose', '-v', action='store_true',
+        help='show diff format instead of db format')
     write_action = actions.add_parser('write', help='save current state')
     write_action.add_argument(
         '--verbose', '-v', action='store_true',
@@ -720,6 +873,13 @@ def main():
             raise
         old_output = u''
 
+    # Python2 compatibility.
+    if not hasattr(argparse, 'BooleanOptionalAction'):
+        if '--net' not in sys.argv[1:] and '--no-net' not in sys.argv[1:]:
+            # Otherwise it will be set to the negation of the first defined
+            # argument.
+            args.with_network = None
+
     process(args, old_output, formatter_class)
 
 
@@ -728,13 +888,26 @@ def process(args, old_output, formatter_class):
     # the encoding of the recipient (tty) instead of choosing utf-8.
 
     if args.action == 'dump':
-        new_output = get_new_output(formatter_class)
+        if args.with_network is None and db_has_network(old_output):
+            args.with_network = True
+
+        new_output = get_new_output(
+            formatter_class, with_network=args.with_network)
         if isinstance('', bytes):  # py2
             new_output = new_output.encode('utf-8', 'replace')
-        print(new_output[0:-1])  # without trailing LF
+        if args.verbose:
+            for line in new_output.rstrip().split('\n'):
+                show_diff_line('', line)
+        else:
+            print(new_output[0:-1])  # without trailing LF
 
     elif args.action == 'write':
-        new_output = get_new_output(formatter_class)
+        if args.with_network is None and db_has_network(old_output):
+            args.with_network = True
+
+        new_output = get_new_output(
+            formatter_class, with_network=args.with_network)
+
         if old_output != new_output:
             write(new_output, has_old=bool(old_output))
             print('Wrote to {}'.format(DBNAME))
@@ -779,6 +952,21 @@ def process(args, old_output, formatter_class):
     else:
         assert args.action.startswith('show'), args
 
+        # Check old output format.
+        if db_has_network(old_output):
+            if args.with_network is None:
+                if os.getuid() == 0:
+                    # DB format has network, use it.
+                    args.with_network = True
+                else:
+                    # DB format has network, but we cannot use it.
+                    warnings.warn(
+                        'Not listing --net info without root powers')
+
+            if not args.with_network:
+                # Look at the output without the network info.
+                old_output = re.sub(r', listen=[^}]*}', '}', old_output)
+
         # If neither missing nor extra is set, then we want to see both.
         if not args.missing and not args.extra:
             args.missing = args.extra = True
@@ -786,7 +974,8 @@ def process(args, old_output, formatter_class):
         # If args.retry, then try fetching a changeset for 5 times
         # before concluding that something really has changed.
         for sleeptime in (0.1, 0.3, 0.6, 1.0, 0):
-            new_output = get_new_output(formatter_class)
+            new_output = get_new_output(
+                formatter_class, with_network=args.with_network)
 
             # Quick optimization.
             if old_output == new_output:
@@ -839,6 +1028,8 @@ warnings.formatwarning = formatwarning  # noqa
 
 if __name__ == '__main__':
     if not sys.stderr.isatty():
+        warnings.filterwarnings(
+            'ignore', 'Not listing --net info without root powers')
         warnings.simplefilter('ignore', DeprecationWarning)
 
     main()
