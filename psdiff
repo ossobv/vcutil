@@ -485,12 +485,51 @@ def show_diff(changes, missing=True, extra=True):
         if which and isinstance('', bytes):  # py2
             line = line.encode('utf-8', 'replace')
         if which < 0 and missing:
-            print('-{0}'.format(line))
+            show_diff_line('-', line)
             has_diff = True
         elif which > 0 and extra:
-            print('+{0}'.format(line))
+            show_diff_line('+', line)
             has_diff = True
     return has_diff
+
+
+def show_diff_line(prefix, line):
+    """
+    This is a temporary fix. Instead of parsing the line and
+    reformatting, we should parse it earlier and do a diff on the parsed
+    line instead.
+
+    Line looks like:
+
+        /usr/sbin/zabbix_agentd --foreground  {user=zabbix}
+
+    Or maybe:
+
+        /usr/sbin/zabbix_agentd --foreground  {user=zabbix, listen=(
+            tcp:0.0.0.0:10051)}
+
+    Or maybe with additional properties just before the trailing '}'.
+
+    If it looks like listen=() we list those entries on separate lines.
+    """
+    line_no_indent = line.lstrip()
+    indent = line[0:len(line) - len(line_no_indent)]
+
+    info_idx = line_no_indent.rindex('{')
+    paren_idx = line_no_indent.find('(', info_idx)
+    if paren_idx != -1:
+        lines = [line_no_indent[0:(paren_idx + 1)]]
+        lines.extend(
+            '{},'.format(line)
+            for line in line_no_indent[paren_idx + 1:].split(','))
+        lines[-1] = lines[-1][:-1]  # remove excess ','
+    else:
+        lines = [line_no_indent]
+
+    # Print first line as is, print the rest with extra indentation.
+    print('{}{}{}'.format(prefix, indent, lines[0]))
+    for line in lines[1:]:
+        print('{}{}    {}'.format(prefix, indent, line))
 
 
 def write(output, has_old=False):
