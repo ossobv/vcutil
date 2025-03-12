@@ -110,7 +110,7 @@ class Process(object):
         self.children = set()
 
         # Enriched info
-        self._listens = []
+        self._listens = set()
 
     def skip(self):
         self.include = False
@@ -123,9 +123,8 @@ class Process(object):
                 if parent.include:
                     break
                 assert not parent._listens, (self, parent)
-            parent._listens = list(sorted(set(
-                parent._listens + self._listens)))
-            self._listens = []
+            parent.add_listens(self._listens)
+            self._listens = None  # make it empty/unusable
 
     def has_parent(self, include_self=False,
                    cmdline__startswith=None, pid=None):
@@ -157,10 +156,12 @@ class Process(object):
 
     def to_string(self, indent=0):
         if self._listens:
-            if len(self._listens) > 1:
-                extra = ', listen=({})'.format(','.join(self._listens))
+            # FIXME: TODO: Version/human sorting of these listening addresses.
+            listens = list(sorted(self._listens))
+            if len(listens) > 1:
+                extra = ', listen=({})'.format(','.join(listens))
             else:
-                extra = ', listen={}'.format(self._listens[0])
+                extra = ', listen={}'.format(listens[0])
         else:
             extra = ''
         return DBLINE.format(
@@ -174,7 +175,7 @@ class Process(object):
         self.children = list(sorted(self.children))
 
     def add_listens(self, listens):
-        self._listens.extend(listens)
+        self._listens |= set(listens)
 
     def __hash__(self):
         # Needs to be reimplemented because Python3 drops the
@@ -301,10 +302,13 @@ class FilteredProcessFormatter(ProcessFormatter):
 
             process.cmdline = ' '.join(args)
 
-        elif (process.exe == 'haproxy' and len(process._listens) == 1
-                and process._listens[0].startswith('udp:0.0.0.0:')):
-            # haproxy listens do a random UDP port. Filter it.
-            process._listens[0] = 'udp:0.0.0.0:*'
+        elif process.exe == 'haproxy':
+            # haproxy might listen to a random UDP port because of syslog:
+            # > log 10.20.30.40:514 format rfc5424 local0 notice
+            # Turn it into a single UDP socket.
+            process._listens = set(
+                ('udp:0.0.0.0:*' if lst.startswith('udp:0.0.0.0:') else lst)
+                for lst in process._listens)
 
     def include(self, process):
         # Ignore kernel threads.
@@ -526,8 +530,7 @@ def netstat():
 
     new_listens = {}
     for key, value in proc_listens.items():
-        # FIXME: TODO: Version/human sorting of addresses
-        new_listens[key] = sorted(value)
+        new_listens[key] = value
 
     # {fd:   [addr1, addr2]}
     # {1047: ['icmp6:*:58', 'tcp:127.0.0.1:2601']}
