@@ -99,12 +99,16 @@ class Process(object):
         self.exe = exe
         self.cmdline = cmdline
         self.root = root or self
+        self.include = True
 
         if not root:
             self.process_map = {}
 
         self.root.process_map[pid] = self
         self.children = set()
+
+    def skip(self):
+        self.include = False
 
     def has_parent(self, include_self=False,
                    cmdline__startswith=None, pid=None):
@@ -180,6 +184,9 @@ class ProcessFormatter(object):
 
         # Add self.adjust hook to alter process traits before sort.
         self.visit(self.adjust)
+        # Skip processes.
+        self.visit((lambda process: (
+            None if self.include(process) else process.skip())))
         # Sort processes.
         self.visit((lambda process: process.sort()))
 
@@ -191,7 +198,7 @@ class ProcessFormatter(object):
     def to_strings(self, process, indent=0):
         "Return a list of stringified children with indentation."
         ret = []
-        if self.include(process):
+        if process.include:
             ret.append(self.to_string(process, indent))
         for child in process.children:  # has been sorted already
             ret.extend(self.to_strings(child, indent + 1))
