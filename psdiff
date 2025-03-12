@@ -117,13 +117,13 @@ class Process(object):
 
         # Move the _listens to the parent.
         if self._listens:
-            parent = self
-            while parent:
-                parent = self.parent
-                if parent.include:
+            obj = self
+            while obj:
+                obj = obj.parent
+                if obj.include:
                     break
-                assert not parent._listens, (self, parent)
-            parent.add_listens(self._listens)
+                assert not obj._listens, (self, obj)
+            obj.add_listens(self._listens)
             self._listens = None  # make it empty/unusable
 
     def has_parent(self, include_self=False,
