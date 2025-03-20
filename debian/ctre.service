@@ -1,6 +1,8 @@
 [Unit]
 Description=ctre daemon listening for container start events
 Documentation=https://github.com/ossobv/vcutil
+BindsTo=containerd.service
+After=containerd.service
 
 [Service]
 Type=simple
