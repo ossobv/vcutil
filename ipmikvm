@@ -252,6 +252,11 @@ get_launch_jnlp() {
             if test $fail_heur -gt 0; then
                 ret=1
             fi
+            if test -z "$data"; then
+                # We get an empty 200 response for login failure on
+                # Supermicro BMC 01.03.21 with 1.14.0 redfish.
+                ret=1
+            fi
         fi
         test $ret -eq 0 && break
         echo "login failure ($fail_heur markers on page)" >&2
