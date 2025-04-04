@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+# sshglob (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
+#
+# Takes IPv4 CIDR range and turns it into one or more glob patterns.
+#
+# Simple examples:
+#
+#   "10.1.2.0/24" turns into "10.1.2.*"
+#   "10.1.2.0/23" turns into "10.1.2.*" + "10.1.3.*"
+#
+# This is useful when you're populating an .ssh/config file:
+# - If you have a network of 10.16.48.0/20 behind a jump host,
+# - which is 10.16.48.0 through 10.16.63.255,
+# - you can set this in the .ssh/config:
+#
+#   # 10.16.48.0/20
+#   Host 10.16.48.* 10.16.49.* 10.16.5?.* 10.16.60.* 10.16.61.* 10.16.62.* \
+#        10.16.63.*
+#     ProxyJump someuser@someproxy
+#
+# - sshglob will save you the trouble of typing all out the options.
+#
+# Invocation example:
+#
+#   $ sshglob 10.16.48.0/20
+#   # 10.16.48.0/20
+#   Host 10.16.48.* 10.16.49.* 10.16.5?.* 10.16.60.* 10.16.61.* 10.16.62.* \
+#        10.16.63.*
+#
+import sys
+from ipaddress import IPv4Network
+from os import environ
+from unittest import TestCase
+
+
+class BadCidrError(ValueError):
+    pass
+
+
+def sshglob(arg):
+    """
+    Generate SSH glob patterns for a given IPv4 network.
+    """
+    try:
+        network = IPv4Network(arg)
+    except ValueError as e:
+        raise BadCidrError(e.args[0]) from e
+
+    first_octets = [
+        int(octet) for octet in str(network.network_address).split('.')]
+    last_octets = [
+        int(octet) for octet in str(network.broadcast_address).split('.')]
+
+    if first_octets == last_octets:
+        assert len(first_octets) == 4, first_octets
+        patterns = ['.'.join(str(i) for i in first_octets)]
+    elif first_octets < last_octets:
+        patterns = [
+            '.'.join(octets)
+            for octets in _glob_octets(first_octets, last_octets)]
+    else:
+        raise RuntimeError((first_octets, last_octets))
+
+    return patterns
+
+
+def _glob_octets(start, end):
+    """
+    Recursively generate glob patterns for a range of octets.
+
+    Takes:
+        [1, 2, 3, 0] and [1, 2, 4, 255] arguments
+    Returns:
+        '1.2.3.*' and '1.2.4.*'
+    """
+    if start[0] == end[0]:
+        # For this octet start is equal to end: dive into the next octet.
+        return [
+            [str(start[0])] + rest
+            for rest in _glob_octets(start[1:], end[1:])]
+
+    if len(start) == len(end) == 1:
+        pass  # this is the last octet; start and end may be anything
+    elif all(
+            start[i] == 0 and end[i] == 255
+            for i in range(1, len(start))):
+        pass  # the rest of the octets are 0 and 255
+    else:
+        raise RuntimeError(f'unexpected {start} to {end}')
+
+    trailing = ['*'] * (len(start) - 1)
+    return [[part] + trailing for part in _glob_octet(start[0], end[0])]
+
+
+def _glob_octet(start, end):
+    """
+    Generate glob patterns for a range of integers within an octet.
+    """
+    if start > end or start < 0 or end > 255:
+        raise TypeError(f'bad octets: [{start}..{end}]')
+
+    if start == 0 and end == 255:
+        return ['*']
+
+    patterns = []
+
+    if end == 255:
+        end = 259  # HACK to simplify logic for inclusive ranges
+
+    # Handle ranges starting from 0 to 9
+    if start == 0 and end >= 9:
+        patterns.append('?')
+        start = 10
+    elif start < 10:
+        temp_end = min(10, end + 1)
+        patterns.extend(map(str, range(start, temp_end)))
+        if temp_end > end:
+            return patterns
+        start = temp_end
+
+    # Handle ranges within tens (e.g., 10-19, 20-29)
+    if start % 10:
+        temp_end = min(256, start + (10 - (start % 10)))
+        patterns.extend(map(str, range(start, min(temp_end, end + 1))))
+        if temp_end > end:
+            return patterns
+        start = temp_end
+
+    # Handle ranges in the hundreds
+    if start == 10 and end >= 99:
+        patterns.append('??')
+        start = 100
+    elif start < 100:
+        temp_end = min(100, end + 1)
+        patterns.extend(f'{i}?' for i in range(start // 10, temp_end // 10))
+        if temp_end != 100:
+            patterns.extend(map(str, range(temp_end // 10 * 10, temp_end)))
+            return patterns
+        start = temp_end
+
+    # Handle ranges in the 100s
+    if start == 100 and end >= 199:
+        patterns.append('1??')
+        start = 200
+    elif start < 200:
+        temp_end = min(200, end + 1)
+        patterns.extend(f'{i}?' for i in range(start // 10, temp_end // 10))
+        if temp_end != 200:
+            patterns.extend(map(str, range(temp_end // 10 * 10, temp_end)))
+            return patterns
+        start = temp_end
+
+    # Handle ranges in the 200s
+    if start == 200 and end >= 255:
+        patterns.append('2??')
+    else:
+        temp_end = min(300, end + 1)
+        patterns.extend(f'{i}?' for i in range(start // 10, temp_end // 10))
+        if temp_end != 300:
+            patterns.extend(map(str, range(temp_end // 10 * 10, temp_end)))
+        start = temp_end
+
+    # Add remaining values
+    patterns.extend(map(str, range(start, end + 1)))
+    return patterns
+
+
+class SshGlobTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.stdin = open('/dev/null', 'r')
+        sys.stdout = open('/dev/null', 'w')
+        sys.stderr = open('/dev/null', 'w')
+
+    def test_main_one_arg(self):
+        sys.argv[1:] = ['1.2.3.4/30']
+        main()
+
+    def test_main_two_args(self):
+        sys.argv[1:] = ['1.2.3.4/30', '0.0.0.0/0']
+        main()
+
+    def test_main_bad_host_bits(self):
+        sys.argv[1:] = ['1.2.3.4/5']
+        with self.assertRaises(SystemExit):
+            main()
+
+    def test_0_0_0_0_0(self):
+        self.assertEqual(sshglob('0.0.0.0/0'), ['*.*.*.*'])
+
+    def test_5_5_5_5_32(self):
+        self.assertEqual(sshglob('5.5.5.5/32'), ['5.5.5.5'])
+
+    def test_10_20_30_40_31(self):
+        self.assertEqual(sshglob('10.20.30.40/31'), [
+            '10.20.30.40', '10.20.30.41'])
+
+    def test_10_10_0_0_15(self):
+        self.assertEqual(sshglob('10.10.0.0/15'), [
+            '10.10.*.*', '10.11.*.*'])
+
+    def test_10_96_96_0_20(self):
+        self.assertEqual(sshglob('10.96.96.0/20'), [
+            '10.96.96.*',
+            '10.96.97.*',
+            '10.96.98.*',
+            '10.96.99.*',
+            '10.96.10?.*',
+            '10.96.110.*',
+            '10.96.111.*'])
+
+    def test_10_123_16_0_23(self):
+        self.assertEqual(sshglob('10.123.16.0/23'), [
+            '10.123.16.*', '10.123.17.*'])
+
+    def test_10_123_224_0_23(self):
+        self.assertEqual(sshglob('10.123.224.0/23'), [
+            '10.123.224.*', '10.123.225.*'])
+
+    def test_192_168_255_64_26(self):
+        self.assertEqual(sshglob('192.168.255.64/26'), [
+            '192.168.255.64',
+            '192.168.255.65',
+            '192.168.255.66',
+            '192.168.255.67',
+            '192.168.255.68',
+            '192.168.255.69',
+            '192.168.255.7?',
+            '192.168.255.8?',
+            '192.168.255.9?',
+            '192.168.255.10?',
+            '192.168.255.11?',
+            '192.168.255.120',
+            '192.168.255.121',
+            '192.168.255.122',
+            '192.168.255.123',
+            '192.168.255.124',
+            '192.168.255.125',
+            '192.168.255.126',
+            '192.168.255.127'])
+
+
+def main():
+    if len(sys.argv) <= 1:
+        print(
+            'usage: sshglob [IPV4CIDR...]\n'
+            '\n'
+            'sshglob takes an IP address range in CIDR format and turns it\n'
+            'into a pattern with * and ? that is usable in .ssh/config.\n',
+            end='', file=sys.stderr)
+        exit(1)
+
+    for arg in sys.argv[1:]:
+        try:
+            globs = sshglob(arg)
+        except BadCidrError as e:
+            print(f'error: {e}'.format(e), file=sys.stderr)
+            exit(1)
+        print(f'# {arg}\nHost {" ".join(globs)}')
+
+
+if __name__ == '__main__':
+    if environ.get('RUNTESTS', '') not in ('', '0'):
+        from unittest import main as unittest_main
+        unittest_main()
+        assert False, 'never gets here'
+
+    main()

@@ -61,6 +61,7 @@ BINS = \
 	sermon \
 	sh-c \
 	snap-autoremove \
+	sshglob \
 	sys-is-vm \
 	tls-sniff-ciphers \
 	udiff \
@@ -118,6 +119,7 @@ test:
 	RUNTESTS=1 ./ip2net && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./llssh && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./mysqldumpdissect && printf '\342\234\205\n\n'
+	RUNTESTS=1 ./sshglob && printf '\342\234\205\n\n'
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
 	  printf '\342\234\205\n\n'
 
