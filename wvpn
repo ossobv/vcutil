@@ -232,7 +232,7 @@ list() {
 
 # Use local config to define groups, like:
 # bestvpn='vpn-system1 vpn-system2'
-local_config=$HOME/.config/wvpn
+local_config="${XDG_CONFIG_HOME:-${HOME?}/.config}/wvpn"
 test -f "$local_config" && . "$local_config"
 
 if test $# -eq 0; then

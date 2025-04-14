@@ -64,7 +64,7 @@ for binary in java unzip curl awk base64 grep sed flock; do
 done
 
 IP=
-DICT="$HOME/.config/ipmikvm/dict"
+DICT="${XDG_CONFIG_HOME:-${HOME?}/.config}/ipmikvm/dict"
 USER=
 PASS=
 USERS='ADMIN '
@@ -90,7 +90,7 @@ usage() {
     echo "  $0 -L 127.0.0.2 IP.ADD.RE.SS"
     echo
     echo "Usernames, passwords and machine aliases may be specified in"
-    echo "~/.config/ipmikvm/dict (or the file set with -c)"
+    echo "$DICT (or the file set with -c)"
     echo "- as ALIAS ADDRESS USER PASS - one per line. When ALIAS and"
     echo "ADDRESS are *, the USER and PASS will be tried consecutively"
     echo "for (otherwise) unmatched aliases/addresses."

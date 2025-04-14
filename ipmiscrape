@@ -18,6 +18,7 @@ POOL_SIZE = 30
 PROCESS_TIMEOUT = 1.5
 IPMI_USER_PASS_BY_ALIAS = {'*': ('ADMIN', 'ADMIN')}  # ~/.config/ipmikvm/dict
 IPMI_USER_PASS_BY_IP = {'*': ('ADMIN', 'ADMIN')}     # ~/.config/ipmikvm/dict
+CONF_DIR = f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/ipmikvm'
 
 
 Machine = namedtuple('Machine', 'hostname ipmi_ip')
@@ -244,7 +245,7 @@ def read_config_ipmikvm_dict():
     # * * ADMIN SIMPLEPASS
     # * * ADMIN OTHERPASS
     # machinex 1.2.3.4 ROOT ROOTPASS
-    with open(os.path.expanduser('~/.config/ipmikvm/dict')) as fp:
+    with open(os.path.expanduser(f'{CONF_DIR}/dict')) as fp:
         for line in fp:
             line = line.strip()
             if line and not line.startswith('#'):
