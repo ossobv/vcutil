@@ -41,6 +41,8 @@ from tempfile import NamedTemporaryFile
 
 from PIL import Image
 
+DATA_DIR = f'{os.environ.get("XDG_DATA_HOME", "~/.local/share")}/ikvmocr'
+
 
 class Extent:
     def __init__(self, top, right, bottom, left):
@@ -526,7 +528,7 @@ def read_screenshot_and_dump(screenshot_filename, glyphs):
 def main(screenshot_filenames, glyph_db_filename):
     glyph_db_filenames = [
         glyph_db_filename,
-        os.path.expanduser('~/.local/share/ikvmocr/ikvmocr.js'),
+        os.path.expanduser(f'{DATA_DIR}/ikvmocr.js'),
     ]
     glyphs = ConsoleGlyphs()
     for glyph_db_filename in glyph_db_filenames:
@@ -563,7 +565,7 @@ def main(screenshot_filenames, glyph_db_filename):
 
 if __name__ == '__main__':
     if len(sys.argv) == 1:
-        print('''\
+        print(f'''\
 usage: ikvmocr SCREENSHOT_FILE...
 
 ikvmocr looks for a SuperMicro iKVM console window in the screenshot and does
@@ -573,7 +575,7 @@ If you use GNOME, take a window-only screenshot of your iKVM window using
 Alt-PrintScreen and feed the saved PNG image to ikvmocr.
 
 The glyph configuration file is taken from the same directory as the binary,
-if it exists. Otherwise it uses ~/.local/share/ikvmocr/ikvmocr.js.
+if it exists. Otherwise it uses {DATA_DIR}/ikvmocr.js.
 
 See also:
 - ipmikvm(1) to simply connecting to SuperMicro IPMI KVM from the console

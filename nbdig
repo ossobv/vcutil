@@ -34,7 +34,7 @@ from configparser import ConfigParser, MissingSectionHeaderError
 from fnmatch import translate as glob_to_re
 from ipaddress import IPv4Address, IPv4Network
 from json import dumps
-from os import path
+from os import environ, path
 from re import IGNORECASE, compile as re_compile, split as re_split
 from sys import stderr
 from warnings import warn
@@ -43,7 +43,7 @@ import requests
 import warnings
 
 
-INI_DEFAULT = '~/.config/nbdig.ini'
+CONF_FILE = f'{environ.get("XDG_CONFIG_HOME", "~/.config")}/nbdig.ini'
 
 
 def net2ip(s):
@@ -58,7 +58,7 @@ class StartupError(ValueError):
 class Config(namedtuple('Config', 'api_url api_token')):
     @classmethod
     def from_defaults(cls):
-        return cls.from_ini(path.expanduser(INI_DEFAULT))
+        return cls.from_ini(path.expanduser(CONF_FILE))
 
     @classmethod
     def from_ini(cls, filename):
@@ -643,7 +643,7 @@ def main():
     parser = ArgumentParser(prog='nbdig', description='(zab)dig for netbox')
     parser.add_argument(
         '-c', '--config', metavar='INIFILE',
-        help=f'configuration INI location (default: {INI_DEFAULT})')
+        help=f'configuration INI location (default: {CONF_FILE})')
     parser.add_argument(
         '-i', '--iface', metavar='IFACE', help='interface lookup')
     parser.add_argument(

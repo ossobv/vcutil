@@ -68,6 +68,10 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from warnings import warn
 
+CONF_FILE = f'{os.environ.get('XDG_CONFIG_HOME', '~/.config')}/.zabbixrc'
+if not os.path.exists(os.path.expanduser(CONF_FILE)):
+    CONF_FILE = '~/.zabbixrc'
+
 
 class ZConfigError(ValueError):
     pass
@@ -689,7 +693,7 @@ class ZInterface(object):
 class LocalConfig(object):
     def __init__(self):
         self.config = configparser.ConfigParser()
-        self.config.read(os.path.expanduser('~/.zabbixrc'))  # silent failure
+        self.config.read(os.path.expanduser(CONF_FILE))  # silent failure
         if self.config.sections():
             self.section = self.config.sections()[0]
         else:
@@ -773,7 +777,7 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser()
         parser.add_argument(
             '-g', '--section', dest='section', help=(
-                'Use SECTION from ~/.zabbixrc for defaults'))
+                f'Use SECTION from {CONF_FILE} for defaults'))
         parser.add_argument(
             '-A', '--api', dest='api', help=(
                 'Zabbix json_rpc API URL, for example: '
