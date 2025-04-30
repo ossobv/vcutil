@@ -19,7 +19,6 @@ BINS = \
 	difftac \
 	dpkg-repack0 \
 	easycert \
-	efibootmirrorsetup \
 	etccleaner \
 	filespeed \
 	gelf-payload-decode \
@@ -41,8 +40,6 @@ BINS = \
 	kubectl-sh-bash \
 	kubectl-sh-secret \
 	kubectl-sh-wrapper \
-	linux-kernel-autoremove \
-	lldpscan \
 	llssh \
 	logcolor \
 	make-master-secret-log \
@@ -55,19 +52,14 @@ BINS = \
 	pdns-sql-slave-prune \
 	pgpg \
 	psdiff \
-	pve-macaddr-security \
 	rshall \
-	sadfscheck \
 	sermon \
 	sh-c \
-	snap-autoremove \
 	sshglob \
 	sys-is-vm \
-	tls-sniff-ciphers \
 	udiff \
 	uwsgi-list \
 	uwsgi-log \
-	uwsgi-kill \
 	venvpatch \
 	wcheckrestart \
 	wdiffcount \
@@ -82,9 +74,17 @@ BINS = \
 
 SBINS = \
 	arpfix \
+	efibootmirrorsetup \
 	fwdiff \
 	fwsniff \
+	linux-kernel-autoremove \
+	lldpscan \
 	multilb-sanity-check \
+	pve-macaddr-security \
+	sadfscheck \
+	snap-autoremove \
+	tls-sniff-ciphers \
+	uwsgi-kill \
 	whatsmyboot \
 
 SYSSBINS = \

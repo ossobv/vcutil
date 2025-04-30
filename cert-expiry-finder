@@ -472,6 +472,9 @@ if test $# -gt 0; then
 fi
 
 # No files
+if test $(id -u) != 0 && test -t 2; then
+    echo "WARNING: Running as non-root might not find all certificates" >&2
+fi
 if $SUMMARY; then
     list_cert_expiry_days $INCLUDE | take_negative_value_nearest_zero
 else
