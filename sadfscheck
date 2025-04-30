@@ -30,24 +30,47 @@ nvme_list() {
 nvme_check_best_sector() {
     local dev
     for dev in $(nvme_list); do
-        local sector_sizes="$(nvme id-ns -H "$dev" | grep '^LBA Format')"
-        local sector_inuse="$(echo "$sector_sizes" | sed -e '
-            /(in use)/!d
-            s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
-        local sector_best="$(echo "$sector_sizes" | sed -e '
-            / Best\([[:blank:]]\|$\)/!d
-            s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
-        test -z "$sector_best" &&
-            sector_best="$(echo "$sector_sizes" | sed -e '
-              / Better\([[:blank:]]\|$\)/!d
-              s/.*Data Size:[[:blank:]]*\([0-9]\+\)[[:blank:]]\+bytes.*/\1/')"
-        # Some devices list multiple formats as "Best", so we use grep instead
-        # of an int comparison.
-        if ! echo "$sector_best" | grep -q "^$sector_inuse$"; then
-            echo "$dev: sector size not optimal\
- (inuse=$sector_inuse, best="$sector_best")"  # multiline->single
-        fi
+        nvme id-ns "$dev" | parse_nvme_id_ns_best_lba "$dev"
     done
+}
+
+parse_nvme_id_ns_best_lba() {
+    local dev
+    dev=$1
+    # flbas   : 0x1
+    # lbaf  0 : ms:0   lbads:9  rp:0x2
+    # lbaf  1 : ms:0   lbads:12 rp:0 (in use)
+    awk -v dev=$dev -F '[[:blank:]]*:[[:blank:]]*' '
+    BEGIN { inuse_lbaf = -1; idx = -1; inuse = -1; best = -1 }
+    $1 == "flbas" { inuse_lbaf = int($2) % 16 }
+    /^lbaf[[:blank:]]/ {
+        lbaf = int(substr($1, 5)); lbads = int($4); prio = int($5)
+        idx += 1; a_lbaf[idx] = lbaf; a_lbads[idx] = lbads
+        if (lbaf == inuse_lbaf) inuse = idx
+        # We want lbads to be 12+ (4096+) and then we take the first
+        # one with the lowest prio.
+        if (lbads >= 12 && (best == -1 || prio < lowest_prio || (\
+                prio == lowest_prio && inuse == idx))) {
+            best = idx; lowest_prio = prio
+        }
+    }
+    END {
+        ret = 1;
+        # printf("%s: inuse=%d (%d) best=%d (%s) lowest_prio=%d\n",
+        #     dev, inuse, 2 ^ a_lbads[inuse], best, 2 ^ a_lbads[inuse],
+        #     lowest_prio);
+        if (inuse == -1) {
+            printf "%s: could not determine current LBA format\n", dev;
+        } else if (inuse != best) {
+            printf "%s: does not have the best format/sector size\n", dev
+        } else if (a_lbads[inuse] < 12) {
+            printf "%s: has poor sector size\n", dev
+        } else {
+            ret = 0
+        }
+        exit ret
+    }
+    '
 }
 
 dev_sector_size() {
