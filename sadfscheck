@@ -28,10 +28,11 @@ nvme_list() {
 }
 
 nvme_check_best_sector() {
-    local dev
+    local dev status=true
     for dev in $(nvme_list); do
-        nvme id-ns "$dev" | parse_nvme_id_ns_best_lba "$dev"
+        nvme id-ns "$dev" | parse_nvme_id_ns_best_lba "$dev" || status=false
     done
+    $status
 }
 
 parse_nvme_id_ns_best_lba() {
@@ -159,7 +160,8 @@ zdb_output() {
 }
 
 zpool_check_ashift() {
-    zdb_output | while read line; do
+    local output
+    output=$(zdb_output | while read line; do
         local pool
         local ashift
         local path
@@ -181,47 +183,66 @@ zpool_check_ashift() {
                 echo "$pool: unexpected ashift $ashift below 12"
             fi
         esac
-    done | uniq
+    done | uniq)
+
+    if test -n "$output"; then
+        printf '%s\n' "$output"
+        false
+    fi
 }
 
 zpool_check_autotrim() {
-    local name autotrim
-    zpool list -Honame,autotrim | LC_ALL=C sort | while read name autotrim; do
-        if test "$autotrim" != on; then
-            echo "$name: autotrim is not on (it is '$autotrim')" >&2
-        fi
-    done
+    local output name autotrim
+    output=$(zpool list -Honame,autotrim | LC_ALL=C sort |
+        while read name autotrim; do
+            if test "$autotrim" != on; then
+                echo "$name: autotrim is not on (it is '$autotrim')" >&2
+            fi
+        done)
+
+    if test -n "$output"; then
+        printf '%s\n' "$output"
+        false
+    fi
 }
 
 zfs_check_compression() {
-    local name compression
-    zpool list -Honame | LC_ALL=C sort | while read name; do
+    local output name compression
+    output=$(zpool list -Honame | LC_ALL=C sort | while read name; do
         # We check the main pools only. Children filesystems can have different
         # settings.
         compression=$(zfs get -Hovalue compression "$name")
         if test "$compression" != lz4 && test "$compression" != on; then
             echo "$name: compression is not lz4 (it is '$compression')" >&2
         fi
-    done
+    done)
+
+    if test -n "$output"; then
+        printf '%s\n' "$output"
+        false
+    fi
 }
 
 zfs_check_primarycache() {
-    local name primarycache
-    zpool list -Honame | LC_ALL=C sort | while read name; do
+    local output name primarycache
+    output=$(zpool list -Honame | LC_ALL=C sort | while read name; do
         # We check the main pools only. Children filesystems can have different
         # settings.
         primarycache=$(zfs get -Hovalue primarycache "$name")
         if test "$primarycache" != all; then
             echo "$name: primarycache is not all (it is '$primarycache')" >&2
         fi
-    done
+    done)
+
+    if test -n "$output"; then
+        printf '%s\n' "$output"
+        false
+    fi
 }
 
 zpool_check_stripe() {
-    local pool=
-    local type1=
-    local type2=
-    zdb_output | while read line; do
+    local output status=true pool type1= type2=
+    output=$(zdb_output | while read line; do
         if test "${line#name:}" != "$line"; then
             pool=${line##* }; pool=${pool%\'}; pool=${pool#\'}
             type1=
@@ -235,7 +256,12 @@ zpool_check_stripe() {
  striping/single intentional? (hardware raid?)"
             fi
         fi
-    done
+    done)
+
+    if test -n "$output"; then
+        printf '%s\n' "$output"
+        status=false
+    fi
 
     local zdb_names zpool_names
     zdb_names=$(zdb_output | sed -ne "s/^[[:blank:]]\+name: '\([^']*\)'/\1/p" |
@@ -244,11 +270,14 @@ zpool_check_stripe() {
     if test "$zdb_names" != "$zpool_names"; then
         echo "error: did not get info about all zpools ("$zdb_names"\
  <> "$zpool_names")" >&2
-        false
+        status=false
     fi
+
+    $status
 }
 
 zfs_check_arc() {
+    local status=true
     local module_arc_min=$(sed -e \
         '/^options zfs .*zfs_arc_min=/!d;s/.*zfs_arc_min=//;s/[^0-9].*//' \
         /etc/modprobe.d/*.conf); module_arc_min=${module_arc_min:-0}
@@ -272,19 +301,25 @@ zfs_check_arc() {
     if test $((current_arc - 128*1024*1024)) -gt $module_arc_max; then
         echo "zfs-kernel-module: current arc size ($current_arc)\
  not below modprobe config ($module_arc_max)"
+        status=false
     fi
     if test $maxpct -lt 3 || test $maxpct -gt 85; then
         echo "zfs-kernel-module: arc max modprobe config out of normal bounds\
  ($maxpct% is not between 3% and 85%)"
+        status=false
     fi
+    $status
 }
 
 
-sector_list
-nvme_check_best_sector
-zpool_check_ashift
-zpool_check_autotrim
-zpool_check_stripe
-zfs_check_arc
-zfs_check_compression
-zfs_check_primarycache
+FAILS=0
+sector_list || FAILS=$((FAILS+1))
+nvme_check_best_sector || FAILS=$((FAILS+1))
+zpool_check_ashift || FAILS=$((FAILS+1))
+zpool_check_autotrim || FAILS=$((FAILS+1))
+zpool_check_stripe || FAILS=$((FAILS+1))
+zfs_check_arc || FAILS=$((FAILS+1))
+zfs_check_compression || FAILS=$((FAILS+1))
+zfs_check_primarycache || FAILS=$((FAILS+1))
+
+test $FAILS -eq 0  # exit code
