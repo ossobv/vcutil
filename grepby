@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+# grepby (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
+#
+# Group lines of text by matching regular expressions.
+#
+# Reads from stdin, takes labeled regex filters as arguments, and
+# outputs matching lines grouped under their respective labels.
+# Lines that do not match any filter are listed under the last
+# "... the rest ..." group.
+#
+# Usage example:
+#
+#     grepby 'disk:has less than' 'Frobnication:^Frobnication'
+#
+# Example input:
+#
+#     Frobnication alert on bazbaz
+#     Frobnication low on foobarbaz
+#     Othererrorhere
+#     bar.example.com has less than 20% disk space
+#     foo.example.com has less than 20% disk space
+#
+# Output:
+#
+#     # (2x) disk
+#     bar.example.com has less than 20% disk space
+#     foo.example.com has less than 20% disk space
+#
+#     # (2x) Frobnication
+#     Frobnication alert on bazbaz
+#     Frobnication low on foobarbaz
+#
+#     # (1x) ... the rest ...
+#     Othererrorhere
+#
+import re
+import sys
+from collections import namedtuple
+
+
+Group = namedtuple('Group', 'label regex lines')
+
+
+def main():
+    # Accepts filters as 'label:pattern' arguments
+    group_defs = sys.argv[1:]
+    groups = []
+    for arg in group_defs:
+        if ':' not in arg or arg.startswith(':'):
+            print(f"Invalid group definition: {arg}", file=sys.stderr)
+            sys.exit(1)
+        label, pattern = arg.split(':', 1)
+        try:
+            groups.append(Group(label, re.compile(pattern), []))
+        except re.error as e:
+            print(f"Invalid regex in '{arg}': {e}", file=sys.stderr)
+            sys.exit(1)
+    groups.append(Group('... the rest ...', None, []))
+
+    # Read from stdin and group lines
+    for line in sys.stdin:
+        line = line.rstrip('\n')
+        for group in groups:
+            if group.regex is None or group.regex.search(line):
+                group.lines.append(line)
+                break
+        else:
+            assert False
+
+    # Write groups in argument order
+    for group in groups:
+        if group.lines:
+            print(f"# ({len(group.lines)}x) {group.label}")
+            print('\n'.join(group.lines))
+            print()
+
+
+if __name__ == '__main__':
+    main()
