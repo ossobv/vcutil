@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # xdg-recent (part of ossobv/vcutil) // wdoekes/2023-2024 // Public Domain
 #
 # Mark files as "recently used" so they show up first in the File Browser in
