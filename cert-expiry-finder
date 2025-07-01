@@ -31,6 +31,10 @@
 # Amend the PATH so we're more likely to.
 PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Config file to override behaviour. This is loaded after the last enum_*() so
+# they can all be overridden if needed.
+CONFIG_FILE=/etc/default/cert-expiry-finder
+
 # Use GNU getopt(1) to reorder arguments
 # Check GNU getopt availability and then use it to reorder arguments and
 # set long options.
@@ -58,6 +62,10 @@ global_temp=$(mktemp)
 trap "rm '$global_temp'" EXIT
 
 
+enum_custom_certs() {
+    :  # override me in $CONFIG_FILE
+}
+
 enum_all_certs() {
     (
         enum_apache2_certs
@@ -77,6 +85,8 @@ enum_all_certs() {
         enum_systemd_certs
         enum_vault_certs
         enum_zabbix_certs
+
+        enum_custom_certs
     ) | LC_ALL=C sort -u
 }
 
@@ -233,6 +243,10 @@ enum_zabbix_certs() {
         xargs --no-run-if-empty -0 sed -ne "
             s/^TLSCertFile$s*=$s*\($S*\).*/\1/p"
 }
+
+if test -r "$CONFIG_FILE"; then
+    . "$CONFIG_FILE"
+fi
 
 list_k8s_cert_expiry_days() {
     local includes="$1"
