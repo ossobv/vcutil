@@ -68,7 +68,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from warnings import warn
 
-CONF_FILE = f'{os.environ.get('XDG_CONFIG_HOME', '~/.config')}/.zabbixrc'
+CONF_FILE = f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/.zabbixrc'
 if not os.path.exists(os.path.expanduser(CONF_FILE)):
     CONF_FILE = '~/.zabbixrc'
 
@@ -277,6 +277,39 @@ class ZHistoricAlert(ZAlert):
         return (
             'alert:{0.severity:4s} {1}..{2} {3}: {0.description} '
             '({0.hostname})'.format(self, begin, end, offset))
+
+
+class ZItem(object):
+    @staticmethod
+    def fix_value(value):
+        try:
+            value = int(value)
+        except ValueError:
+            try:
+                value = float(value)
+            except ValueError:
+                pass
+
+        if isinstance(value, float):
+            return '{:.1f}'.format(value)
+        return str(value)
+
+    def __init__(self, iteminfo):
+        self._iteminfo = iteminfo
+
+    @property
+    def lastvalue(self):
+        return self.fix_value(self._iteminfo['lastvalue'])
+
+    @property
+    def lastvalue_with_unit(self):
+        if not hasattr(self, '_lastvalue_with_unit'):
+            if self._iteminfo['units']:
+                self._lastvalue_with_unit = ' '.join([
+                    self.lastvalue, self._iteminfo['units']])
+            else:
+                self._lastvalue_with_unit = self.lastvalue
+        return self._lastvalue_with_unit
 
 
 class ZBaseHost(object):
@@ -667,6 +700,48 @@ class ZInterface(object):
                 raise ZDataError('got err {!r} for hostinfo {}'.format(
                     e, host))
 
+    def get_latest_data(self, hosts, items):
+        self._login()
+
+        hostids = [host._hostinfo['hostid'] for host in hosts]
+        results = []
+
+        # item = 'vfs.fs.size[*,pfree]'
+        for item in items:
+            params = {
+                'output': [
+                    'itemid', 'hostid', 'name', 'key_', 'units',
+                    # 'status', 'value_type',
+                    'lastclock',  # 'lastns',
+                    'lastvalue', 'prevvalue'],
+                'hostids': hostids,
+                'search': {
+                    # > If no additional options are given, this will
+                    # > perform a LIKE "%...%" search.
+                    'key_': item,
+                },
+                # > The search parameter will compare the beginning of
+                # > fields, that is, perform a LIKE "...%" search instead.
+                # 'startSearch': True,
+                # > If set to true, enables the use of "*" as a wildcard
+                # > character in the search parameter.
+                'searchWildcardsEnabled': True,
+                # NOTE: 'searchWildcardsEnabled' overrules
+                # 'startSearch'. When using this, we need a trailing '*'
+                # to get startswith functionality.
+                # > If set to true, return results that match any of the
+                # > criteria given in the filter or search parameter
+                # > instead of all of them.
+                # 'searchByAny': True,
+            }
+            res = self._zabbix_call('item.get', params)
+            results.extend(res)
+
+            if len(results) > 1000:
+                raise ValueError('search too wide, because >1000 results')
+
+        return [ZItem(res) for res in results]
+
     def get_proxies(self):
         if not hasattr(self, '_get_proxies'):
             self._login()
@@ -772,6 +847,26 @@ def show_host(host):
     print()
 
 
+def show_latest_data(hosts, items):
+    hosts_by_id = dict(
+        (host._hostinfo['hostid'], host) for host in hosts)
+
+    name_len = max(len(host._hostinfo['hostid']) for host in hosts)
+    item_len = max(len(item._iteminfo['key_']) for item in items)
+    value_len = max(len(item.lastvalue_with_unit) for item in items)
+
+    for item in items:
+        print(
+            '{name!s:{name_len}}  {item!s:{item_len}}  '
+            '{value!s:>{value_len}}'.format(
+                name=hosts_by_id[item._iteminfo['hostid']].name,
+                name_len=name_len,
+                item=item._iteminfo['key_'],
+                item_len=item_len,
+                value=item.lastvalue_with_unit,
+                value_len=value_len))
+
+
 if __name__ == '__main__':
     def main():
         parser = argparse.ArgumentParser()
@@ -797,8 +892,11 @@ if __name__ == '__main__':
                 'Show info about current alerts, use bitmask: 0=all, '
                 '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
         parser.add_argument(
-            '--show', choices=('host', 'alerts', 'ahist'), help=(
+            '--show', choices=('host', 'alerts', 'ahist', 'data'), help=(
                 'Show info about host, alerts, alert history'))
+        parser.add_argument(
+            '--items', dest='items', action='append', default=[], help=(
+                'Which items to show in --show=data mode'))
         parser.add_argument(
             '-x', '--with-ip', help=(
                 'Filter by IP-address'))  # compare 'dig -x'
@@ -807,6 +905,14 @@ if __name__ == '__main__':
                 'Hostname to search for (* and ? are allowed)'))
 
         args = parser.parse_args()
+
+        # For --items we require --show=data.
+        if args.items:
+            if not args.show:
+                args.show = 'data'
+            elif args.show != 'data':
+                print('--items requires --show=data', file=sys.stderr)
+                sys.exit(1)
 
         lconf = LocalConfig()
         if args.section:
@@ -875,10 +981,26 @@ if __name__ == '__main__':
             print(hosts[0].get_zabbix_addr_first())
             sys.exit(0)
 
+        # Data listing?
+        if args.show == 'data':
+            if not hosts:
+                print('hosts needed for search', file=sys.stderr)
+                exit(1)
+            if len(hosts) > 100:
+                print('too many hosts selected', file=sys.stderr)
+                exit(1)
+            if not args.items:
+                print('items required for search', file=sys.stderr)
+
+            items = zint.get_latest_data(hosts, args.items)
+            show_latest_data(hosts, items)
+            exit(0)
+
+        # Regular args.show.
         for host in sorted(hosts):
             if args.show == 'host':
                 show_host(host)
-            elif args.show == 'alerts':
+            elif args.show in ('alerts', 'ahist', 'data'):
                 raise NotImplementedError()  # handled earlier
             elif args.show:
                 raise NotImplementedError()  # unexpected?
