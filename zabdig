@@ -276,10 +276,10 @@ class ZHistoricAlert(ZAlert):
         if self.end:
             end = self.end.strftime('%Y-%m-%dT%H:%M:%S')
             offset = (self.end - self.begin)
-            offset = '({0:6.2f}h)'.format(offset.total_seconds() / 3600.0)
         else:
             end = '--..-..-..T..:..:..'
-            offset = '(  -.--h)'
+            offset = (datetime.now() - self.begin)
+        offset = '({0:6.2f}h)'.format(offset.total_seconds() / 3600.0)
         return (
             'alert:{0.severity:4s} {1}..{2} {3}: {0.description} '
             '({0.hostname})'.format(self, begin, end, offset))
