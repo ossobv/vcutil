@@ -854,6 +854,9 @@ def show_host(host):
 
 
 def show_latest_data(hosts, items):
+    if not items:
+        return
+
     hosts_by_id = dict(
         (host._hostinfo['hostid'], host) for host in hosts)
 
