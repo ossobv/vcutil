@@ -185,8 +185,14 @@ class ZAlert(object):
                     self._problem['name'], self._trigger['error'])
             else:
                 self._description = self._problem['name']
+
+            if self._problem.get('opdata'):
+                self._description = '{} ({})'.format(
+                    self._description, self._problem['opdata'])
+
             self._description = (
                 self._description.replace('\n', ' ').replace('\r', ''))
+
         return self._description
 
     @property
@@ -537,7 +543,7 @@ class ZInterface(object):
             'problem.get',
             {'output': [
                 'eventid', 'r_eventid', 'objectid', 'clock', 'ns', 'severity',
-                'suppressed', 'name'],
+                'suppressed', 'name', 'opdata'],
              'source': 0,  # 0=trigger
              'object': 0,  # 0=trigger
              # 'groupids': [...],
