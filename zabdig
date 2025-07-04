@@ -861,6 +861,10 @@ def show_latest_data(hosts, items):
     item_len = max(len(item._iteminfo['key_']) for item in items)
     value_len = max(len(item.lastvalue_with_unit) for item in items)
 
+    items.sort(key=(lambda x: (
+        x._iteminfo['key_'],
+        hosts_by_id[x._iteminfo['hostid']].name)))
+
     for item in items:
         print(
             '{name!s:{name_len}}  {item!s:{item_len}}  '
