@@ -1,5 +1,5 @@
 #!/bin/sh
-# pdns-sql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021,2023
+# pdns-sql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021,2023,2025
 #   // Public Domain
 #
 # Reads PowerDNS SQL backend SLAVE data for stale domains and prunes
@@ -53,6 +53,10 @@ pgsql)
     }
     SQL_EPOCH='EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)'
     SQL_TRUE=t
+    ;;
+'')
+    DBTYPE=bind
+    SQL_EPOCH=irrelevant
     ;;
 *)
     echo "NotImplementedError: DBTYPE=$DBTYPE" >&2
@@ -137,6 +141,68 @@ prune_domain() {
         DELETE FROM records WHERE domain_id = $id;
         DELETE FROM domains WHERE id = $id;"
 }
+
+
+if test "$DBTYPE" = bind; then
+    test_slave_running() {
+        local ip host rest
+        # DNS seems up:
+        cat /etc/powerdns/autoprimaries.list | while read ip host rest; do
+            if test "$(dig -t A "$host" "@$ip" +short)" != "$ip"; then
+                echo "DNS $host at $ip down?" >&2
+                exit 1
+            fi
+        done
+        # Files have been updated recently?
+        if ! find /var/lib/powerdns -type f -mtime -1 | grep -qF ''; then
+            echo "No recent changes" >&2
+            exit 1
+        fi
+    }
+    old_slave_domains() {
+        local auto autos id domain
+        autos=$(sed -e 's/[[:blank:]].*//' /etc/powerdns/autoprimaries.list)
+        # Or: pdns_control list-zones
+        find /var/lib/powerdns/zones.slave.d/ -type f |
+            LC_ALL=C sort |
+            sed -Ee 's@^(.*)/([^/]*)$@\1/\2\t\2@' | while read id domain
+        do
+            local res try
+            # Try DNS three times
+            for try in 1 2 3; do
+                for auto in $autos; do
+                    res=$(dig -t SOA "$domain" "@$auto" +short)
+                    test -z "$res" || break
+                done
+                test -z "$res" || break
+                # echo "retry $domain" >&2
+            done
+            # No results after three runs? It's gone.
+            if test -z "$res"; then
+                printf '%s\t%s\n' "$id" "$domain"
+            fi
+        done
+    }
+    prune_domain() {
+        local id domain safe_domain safe_domain_dot
+        id=$1
+        domain=$2
+        safe_domain=$(echo "$domain" | sed -e 's/[^A-Za-z0-9]/[&]/g')
+        safe_domain_dot="${safe_domain}[.]"
+        # Copy with permissions. Sed -i inline so we have good perms on the target.
+        cp -a /var/lib/powerdns/supermaster.conf /var/lib/powerdns/supermaster.conf.new
+        sed -i -e "
+            /^# Superslave zone '$safe_domain_dot'\\|^zone \"$safe_domain\"/,/^};\$/d
+        " /var/lib/powerdns/supermaster.conf.new
+        # Move the new config over the old one.
+        diff -pu /var/lib/powerdns/supermaster.conf \
+                 /var/lib/powerdns/supermaster.conf.new || true
+        mv /var/lib/powerdns/supermaster.conf.new /var/lib/powerdns/supermaster.conf
+        rm -v "$id"
+        pdns_control rediscover
+        pdns_control reload  # needed?
+    }
+fi
 
 # Only prune data if most of the slaving works.
 test_slave_running || exit 1
