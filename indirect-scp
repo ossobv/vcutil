@@ -45,8 +45,8 @@ fi
 
 # Step 2: try again, but use a local copy. The $@-stuff below is bash
 # specific.
-echo "(falling back to indirect copy...)" >&2
-dir="$(mktemp -d)" || exit 1 # and mktemp -d isn't supported everywhere
+dir="$(mktemp -d -p $PWD)" || exit 1 # and mktemp -d isn't supported everywhere
+echo "(falling back to indirect copy at $dir ...)" >&2
 n_args=$#
 n_args_minus_one=$((n_args - 1))
 # Copy sources local...
@@ -54,7 +54,7 @@ n_args_minus_one=$((n_args - 1))
 ret=$?
 # Copy local to destination...
 if [ $ret -eq 0 ]; then
-    echo "(copy from here to destination...)" >&2
+    echo "(copy from $dir to destination ...)" >&2
     /usr/bin/scp -p -r "$dir"/* "${@:$n_args:1}"
     ret=$?
 fi
@@ -62,7 +62,7 @@ fi
 # Remove temp dir. (Skip the shred(1) because we have solid state drives
 # everywhere now, and writing of new bits lands on different locations
 # anyway.)
-echo "(cleaning up temporary files...)" >&2
+echo "(cleaning up temporary files in $dir ...)" >&2
 # [ -x "$(command -v shred)" ] && find "$dir" -type f -print0 | xargs -0 shred
 rm -rf "$dir"
 
