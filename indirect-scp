@@ -1,5 +1,5 @@
 #!/bin/bash
-# indirect-scp (part of ossobv/vcutil) // wdoekes/2012 // Public Domain
+# indirect-scp (part of ossobv/vcutil) // wdoekes/2012,2025 // Public Domain
 #
 # scp(1) wrapper that tries to do an indirect copy if a direct copy
 # between two hosts fails.
@@ -59,10 +59,11 @@ if [ $ret -eq 0 ]; then
     ret=$?
 fi
 
-# Remove temp dir. First run shred over the files to make recovery
-# harder.
+# Remove temp dir. (Skip the shred(1) because we have solid state drives
+# everywhere now, and writing of new bits lands on different locations
+# anyway.)
 echo "(cleaning up temporary files...)" >&2
-[ -x "$(command -v shred)" ] && find "$dir" -type f -print0 | xargs -0 shred
+# [ -x "$(command -v shred)" ] && find "$dir" -type f -print0 | xargs -0 shred
 rm -rf "$dir"
 
 # Return status
