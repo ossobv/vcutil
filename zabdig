@@ -325,11 +325,7 @@ class ZBaseHost(object):
 
     def __init__(self, hostinfo):
         self._hostinfo = hostinfo
-        try:
-            self.name = hostinfo['name']
-        except KeyError:
-            assert 'proxy_address' in hostinfo, hostinfo
-            self.name = hostinfo['host']  # proxies do not have a name
+        self.name = hostinfo['name']
 
     def get_name(self):
         return (
@@ -345,8 +341,8 @@ class ZHost(ZBaseHost):
     def __init__(self, hostinfo, proxies):
         super(ZHost, self).__init__(hostinfo)
 
-        if proxies and hostinfo['proxy_hostid'] != '0':
-            self.proxy = proxies[hostinfo['proxy_hostid']]
+        if proxies and hostinfo['proxyid'] != '0':
+            self.proxy = proxies[hostinfo['proxyid']]
         else:
             self.proxy = None
 
@@ -473,8 +469,9 @@ class ZInterface(object):
 
         self.token = None
         self.postid = 0
+        self.version = self._zabbix_version()
 
-    def _zabbix_call(self, method, params):
+    def _zabbix_call(self, method, params, auth=True):
         self.postid += 1
         data = {
             'jsonrpc': '2.0',
@@ -482,7 +479,8 @@ class ZInterface(object):
             'params': params,
             'id': self.postid,
         }
-        data['auth'] = self.token  # can be 'null'
+        if auth:
+            data['auth'] = self.token  # can be 'null'
         return self._zabbix_post(self.url, data)
 
     def _zabbix_post(self, url, data):
@@ -501,6 +499,11 @@ class ZInterface(object):
             raise ZInterfaceError(js['error'], data)
 
         return js['result']
+
+    def _zabbix_version(self) -> tuple:
+        version_str = self._zabbix_call('apiinfo.version', [], False)
+        return tuple(
+            (int(i) if i.isdigit() else i) for i in version_str.split('.'))
 
     def _login(self):
         if not self.token:
@@ -681,9 +684,15 @@ class ZInterface(object):
     def get_hosts(self, hostname_needle):
         self._login()
 
+        proxyid_label = 'proxyid'
+        compat_replacement = {}
+        if self.version < (7,):
+            proxyid_label = 'proxy_hostid'
+            compat_replacement = {'proxy_hostid': 'proxyid'}
+
         params = {
             'output': [
-                'name', 'host', 'interfaces', 'proxy_hostid',
+                'name', 'host', 'interfaces', proxyid_label,
                 'status', 'available'],
             # 'output': ['name', 'interfaces', 'groups', 'proxy_hostid',
             #            'status'],
@@ -691,10 +700,16 @@ class ZInterface(object):
             'selectInterfaces': 'extend',
             'selectGroups': 'extend',
         }
+
         if hostname_needle:
             params['search'] = {'name': hostname_needle.as_string()}
 
         hosts = self._zabbix_call('host.get', params)
+
+        for k, v in compat_replacement.items():
+            for host in hosts:
+                host[v] = host.pop(k)
+
         for host in hosts:
             try:
                 if (not hostname_needle or
@@ -752,11 +767,19 @@ class ZInterface(object):
         if not hasattr(self, '_get_proxies'):
             self._login()
 
-            # zabbix-server >= 6.0 does not have a proxy.name anymore. Use the
-            # host instead.
+            host_label = 'name'
+            compat_replacement = {}
+            if self.version < (7,):
+                host_label = 'host'
+                compat_replacement = {'host': 'name'}
+
             proxies = self._zabbix_call(
                 'proxy.get',
-                {'output': ['host', 'proxy_address', 'proxyid']})
+                {'output': [host_label, 'proxyid']})
+
+            for k, v in compat_replacement.items():
+                for proxy in proxies:
+                    proxy[v] = proxy.pop(k)
 
             try:
                 self._get_proxies = dict(
