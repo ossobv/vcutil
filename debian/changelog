@@ -1,3 +1,37 @@
+vcutil (1.55) stable; urgency=low
+
+  * Additions:
+    - grepby: New tool to split lines into categories by user provided regex
+    - sshglob: Tool to create .ssh/config Host glob patterns
+
+  * Improvements:
+    - (all) Implement XDG base dir spec
+    - indirect-scp: Because of disk space issues, let mktemp -d use $PWD
+    - indirect-scp: Remove the shred(1) call because it eats SSDs
+    - ipmikvm: Detect login failure on Supermicro BMC 01.03.21 (2024)
+    - ipmikvm: output helpful message when we think BMC might be in HTML5 mode
+    - pdns-sql-slave-prune: Quick and dirty bind DB prune support
+    - psdiff: Various fixes, including --net monitoring (netstat -tulpen)
+    - sadfscheck: Add lsblk check and complain about HDDs with phys!=logical
+      sectors
+    - sadfscheck: Better parsing of id-ns lbaf lists
+    - sadfscheck: Tally the failures and return non-zero for any warning
+    - zabdig: Add operational (current) data to --show=alerts
+    - zabdig: Add --show=data for latest values
+    - zabdig: When doing --show=ahist, count open time for still-open-items
+    - zabdig: Update API for zabbix 7.x
+
+  * Fixes:
+    - ctre: Start after containerd and stop when it stops
+    - rshall: Set LC_ALL=C in target host for consistent output
+    - xdg-recent: Fix shebang to use env(1)
+
+  * Build/install:
+    - build: Move root-scripts into /usr/sbin by default
+    - cert-expiry-finder: Add /etc/default/cert-expiry-finder customization
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 10 Jul 2025 15:00:59 +0200
+
 vcutil (1.54) stable; urgency=low
 
   * Improvements:
