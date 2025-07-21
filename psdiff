@@ -255,8 +255,8 @@ class ProcessFormatter(object):
 
 class FilteredProcessFormatter(ProcessFormatter):
     def __init__(self, *args, **kwargs):
-        super(FilteredProcessFormatter, self).__init__(*args, **kwargs)
         self._include_once = set()
+        super(FilteredProcessFormatter, self).__init__(*args, **kwargs)
 
     def adjust(self, process):
         super(FilteredProcessFormatter, self).adjust(process)
