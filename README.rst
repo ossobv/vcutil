@@ -243,12 +243,12 @@ Merging + building + releasing a new version into the OSSO ppa:
   repositories. Normally add it to *all* release versions (codenames) for
   the ``osso`` component::
 
-    # aptly-repo-add-alldist osso /path/to/vcutil-vXXX
+    # aptly-repo-add-alldist osso /path/to/vcutil_XXX
 
   Additionally, add it to the ``osso-ops`` component with the
   ``anydist`` codename/suite::
 
-    # aptly repo add osso-ops/anydist /path/to/vcutil-vXXX
+    # aptly repo add osso-ops/anydist /path/to/vcutil_XXX
 
   Keep the repo signing key at hand, and then::
 
