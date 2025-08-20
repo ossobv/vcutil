@@ -4,6 +4,7 @@ vcutil
 Misc. simple utilities to aid version control and host maintenance.
 
 * `Highlights`_ describes a subset of the tools here.
+* `Build/release`_ details how to build/release the internal package at OSSO.
 
 *Many tools are intended to be used in other shell scripts. Because startup
 speed is of the essence, you'll find little Python here. However,
@@ -209,3 +210,46 @@ Admin API helpers
 
   This is only useful if you're using *Zabbix* for monitoring and have
   many hosts configured in it.
+
+
+-------------
+Build/release
+-------------
+
+Merging + building + releasing a new version into the OSSO ppa:
+
+* **All** new commits are pushed on the ``develop`` branch.
+
+* Update ``debian/changelog``. See previous versions and previous
+  commits titled *"version: Bump to vXXXX"*.
+
+* Run ``make`` in case you hadn't already. It does a few tests. If you
+  added/removed binaries, they're checked against the ``Makefile``.
+
+* Create a pull request, requesting ``develop`` to be merged into ``release``.
+
+* Someone approves the PR. **Do not push the merge button.**
+
+* Manually checkout ``release`` and merge (``--ff``) ``develop``.
+  Because the PR is approved, you're allowed to push the new ``release``
+  branch.
+
+* Tag the version using ``git tag -sm vXXX vXXX`` and push it.
+
+* Build the package using ``dpkg-buildpackage -sa`` (add ``-us -uc`` if
+  you cannot sign). This creates a bunch of ``vcutil*`` files in ``..``.
+
+* Copy the files to the PPA server. Add them to the appropriate
+  repositories. Normally add it to *all* release versions (codenames) for
+  the ``osso`` component::
+
+    # aptly-repo-add-alldist osso /path/to/vcutil-vXXX
+
+  Additionally, add it to the ``osso-ops`` component with the
+  ``anydist`` codename/suite::
+
+    # aptly repo add osso-ops/anydist /path/to/vcutil-vXXX
+
+  Keep the repo signing key at hand, and then::
+
+    # aptly-snapshot-publish-and-prune
