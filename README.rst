@@ -103,7 +103,7 @@ Server management
 * ``efibootmirrorsetup`` - Setup helper script to set EFI up on software-raid
   mirrored disks, and keep them in sync::
 
-    $ efibootmirrorsetup /dev/nvme0n1 /dev/nvme1n1
+    $ sudo efibootmirrorsetup /dev/nvme0n1 /dev/nvme1n1
 
 * ``ipmikvm`` - Wrapper script to simplify connecting to SuperMicro iKVM
   consoles. The script negates the need to go through a browser first::
