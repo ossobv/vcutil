@@ -169,14 +169,14 @@ Logging (time) helpers
 GNOME / X helpers
 ~~~~~~~~~~~~~~~~~
 
-* ``xdg-recent`` - Mark a file as being used recently. Useful when you're
+* ``xdg-recent`` - Marks a file as being used recently. Useful when you're
   (mostly) working in the terminal and now want to upload a file from
   your browser. Marking it as "used recently" will place it in the *Recent*
   pseudo-folder available for quick access::
 
-    $ mv tmp.pcap ~/Documents/anomaly-present-2025-08-20-bug-present.pcap
+    $ tcpdump -s 0 -w anomaly-on-port1234-2025-08-20.pcap port 1234
 
-    $ xdg-recent ~/Documents/anomaly-present-2025-08-20-bug-present.pcap
+    $ xdg-recent anomaly-on-port1234-2025-08-20.pcap
 
   Now the mentioned pcap is available in the GUI file dialog at *Recent*.
 
@@ -197,7 +197,7 @@ Admin API helpers
 
   This is only useful if you're using *NetBox* as your source of truth.
 
-* ``zabdig`` - Like (DNS) dig, bus uses the `Zabbix <https://www.zabbix.com/>`_
+* ``zabdig`` - Like (DNS) dig, but uses the `Zabbix <https://www.zabbix.com/>`_
   API as data source::
 
     $ zabdig intserver.example.com
@@ -226,7 +226,9 @@ Merging + building + releasing a new version into the OSSO ppa:
 * Run ``make`` in case you hadn't already. It does a few tests. If you
   added/removed binaries, they're checked against the ``Makefile``.
 
-* Create a pull request, requesting ``develop`` to be merged into ``release``.
+* Create a pull request, requesting ``develop`` to be merged into ``release``:
+
+    https://github.com/ossobv/vcutil/compare/release...develop
 
 * Someone approves the PR. **Do not push the merge button.**
 
