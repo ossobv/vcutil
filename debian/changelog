@@ -1,3 +1,10 @@
+vcutil (1.56) stable; urgency=low
+
+  * Fixes:
+    - psdiff: Fix self._include_once AttributeError
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 28 Aug 2025 09:12:12 +0200
+
 vcutil (1.55) stable; urgency=low
 
   * Additions:
