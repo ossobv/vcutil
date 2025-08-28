@@ -1,5 +1,5 @@
 #!/bin/sh
-# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2024
+# cert-expiry-finder (part of ossobv/vcutil) // wdoekes/2016-2025
 #   // Public Domain
 #
 # Searches for X.509 (SSL/TLS) certificates in common locations and
@@ -22,6 +22,21 @@
 # the 'kube-system' namespace to an (string) value comprised of the
 # bitmasks above. For example "3" for --with-k8s-cert (1) and
 # --with-k8s-ingsecret (2). These then override the command line options.
+#
+# You can override enum_custom_certs in $CONFIG_FILE and have it do:
+#
+#     enum_custom_certs() {
+#         echo "/path/to/my/application1.crt"
+#         echo "/path/to/my/application2.crt"
+#     }
+#
+# or even:
+#
+#     enum_custom_certs() {
+#         jq .base64Cert < /path/to/my/application.json | base64 \
+#           >"$global_tempdir/application.crt"
+#         echo "$global_tempdir/application.crt"
+#     }
 #
 # See also:
 #
@@ -58,8 +73,12 @@ S='[^[:blank:]]'
 global_t0=$(date +%s)  # cache the "now" value
 
 umask 0077
-global_temp=$(mktemp)
-trap "rm '$global_temp'" EXIT
+# Use a global_tempdir: this feature allows your enum_custom_certs to
+# load up certificates there, and print their filenames. This script will
+# take care of the cleanup.
+global_tempdir=$(mktemp -d /dev/shm/cert-expiry-finder.XXXX || exit 1)
+global_temp="$global_tempdir/scratchpad"
+trap "rm -rf '$global_tempdir'" EXIT
 
 
 enum_custom_certs() {
