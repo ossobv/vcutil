@@ -53,6 +53,7 @@ BINS = \
 	pdns-sql-slave-prune \
 	pgpg \
 	psdiff \
+	renum \
 	rshall \
 	sermon \
 	sh-c \
@@ -120,6 +121,7 @@ test:
 	RUNTESTS=1 ./ip2net && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./llssh && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./mysqldumpdissect && printf '\342\234\205\n\n'
+	RUNTESTS=1 ./renum && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./sshglob && printf '\342\234\205\n\n'
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
 	  printf '\342\234\205\n\n'

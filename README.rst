@@ -133,6 +133,22 @@ Server management
 Logging (time) helpers
 ~~~~~~~~~~~~~~~~~~~~~~
 
+* ``renum`` - Reverse maps ERRNO and SYSCALL integers to symbolic names::
+
+    $ for x in 2 10 1; do echo $x; done | renum errno
+    ENOENT (2)
+    ECHILD (10)
+    EPERM (1)
+
+    $ echo 1. 263 | renum 2=syscall
+    1. unlinkat (263)
+
+    $ sudo bpftrace count-syscall-errno.bt | renum s,e,^@
+    --- 5s snapshot ---
+    @by_syscall_errno[write (1), EPIPE (32)]: 2
+    @by_syscall_errno[epoll_pwait (281), EINTR (4)]: 2
+    @by_syscall_errno[unlinkat (263), ENOTEMPTY (39)]: 14
+
 * ``wtimedecode`` - Decodes unixtime on stdin::
 
     $ echo '[1755677035]: This is a log message' | wtimedecode
