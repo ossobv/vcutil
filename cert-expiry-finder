@@ -384,9 +384,11 @@ foreach_crl() {
     local line
     awk '
         /^-----BEGIN X509 CRL-----/{buf="";start=1}
-        /^-----END X509 CRL-----/{
-            if(start){gsub("\r","",buf);print buf};start=0}
-        {if(start==2)buf=(buf $0);if(start)start=2}
+        /^-----END X509 CRL-----/{if(start)print buf;start=0}
+        {
+            if(start==2){gsub("[[:blank:]]+$","",$0);buf=(buf $0)}
+            if(start)start=2
+        }
     ' | while read -r line; do
         cat >$global_temp <<EOF
 -----BEGIN X509 CRL-----
@@ -401,9 +403,11 @@ foreach_x509() {
     local line
     awk '
         /^-----BEGIN CERTIFICATE-----/{buf="";start=1}
-        /^-----END CERTIFICATE-----/{
-            if(start){gsub("\r","",buf);print buf};start=0}
-        {if(start==2)buf=(buf $0);if(start)start=2}
+        /^-----END CERTIFICATE-----/{if(start)print buf;start=0}
+        {
+            if(start==2){gsub("[[:blank:]]+$","",$0);buf=(buf $0)}
+            if(start)start=2
+        }
     ' | while read -r line; do
         cat >$global_temp <<EOF
 -----BEGIN CERTIFICATE-----
