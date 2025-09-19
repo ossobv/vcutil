@@ -1,0 +1,142 @@
+#!/bin/bash
+# gounsafe (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
+#
+# Proof-of-concept bash/shell footgun avoidance. The goal is to leave a
+# trace of your activity in bash_history, but without the possibility of
+# easy (accidental!) replay.
+#
+# Starting a session:
+#
+#   $ gounsafe
+#
+# This spawns a new shell with an environment variable and an alias set.
+# The alias is shown in the descriptive help and in the prompt.
+# << IT IS YOUR JOB TO USE IT BEFORE ANY DANGEROUS COMMANDS! >>
+#
+# Using the session:
+#
+#   $ mkfs.ext4
+#   (command not found)
+#
+#   $ unsafe_0_1758284438 mkfs.ext4 /dev/disk/by-id/wwn-0x54321
+#
+# The shell helps by removing /usr/sbin from the path, but that won't
+# save you from running destructive minio/kubectl cli commands.
+# << IT IS YOUR JOB TO USE IT BEFORE ANY DANGEROUS COMMANDS! >>
+#
+#   $ kubectl get ns
+#
+#   $ unsafe_0_1758284438 kubectl delete ns the-production-namespace
+#
+#
+# BEWARE: This PoC needs some field testing.
+# TODO: Maybe look at tab completion? Maybe add optional prompt flag? Or
+# no-prompt flag?
+#
+# Names considered for this project: nfg (NoFootGun), noreplay, spicy,
+# unsafe (gounsafe).
+#
+set -euo pipefail
+
+ARGV0=gounsafe  # $0
+MAX_TIME=7200   # 2 hours
+
+TOKEN_VAR=GOUNSAFE_TOKEN  # keep in sync below
+
+make_token() {
+    # Returns: 0_<epoch>
+    echo 0_$(date +%s)
+}
+
+get_epoch_from_token() {
+    # Accepts: $1 = "0_<epoch>"
+    # Returns: <epoch>
+    local token ts ts2
+    token=$1
+    ts=${token#0_}
+    if test "$ts" != "$token"; then  # i.e. it started with a "0_"
+        ts2=$((ts + 0))
+        if test "$ts" = "$ts2"; then
+            echo "$ts"  # only return integral time <epoch>
+        fi
+    fi
+}
+
+
+# -- SETUP ZONE --
+if test $# -eq 0; then
+    if test -n "${GOUNSAFE_TOKEN:-}"; then
+        echo "$ARGV0: $TOKEN_VAR set; maybe log out of the current shell" >&2
+        exit 1
+    fi
+    token=$(make_token)         # must be alias-name (command) safe
+    alias_name=unsafe_$token    # not "gounsafe"
+    alias_target=$(readlink --canonicalize --no-newline "$0")
+    limited_path=/usr/local/bin:/usr/bin:/bin
+    valid_until=$(date +'%H:%M' -d "+$MAX_TIME seconds")
+    echo "Perform unsafe commands for the next $MAX_TIME seconds?"
+    echo
+    echo "Run dangerous commands with a prefix, making it ^R history safe:"
+    echo
+    echo "  $alias_name /usr/sbin/mkfs.ext4 /dev/disk/by-id/wwn-0x54321"
+    echo
+    echo "Setting up a custom shell for you..."
+    echo
+    echo "  export $TOKEN_VAR=$token"
+    echo "  alias -- $alias_name='$alias_target $token'"
+    echo "  PATH=$limited_path  # use absolute paths"
+    echo
+    echo "The $alias_name is valid until $valid_until."
+    echo
+
+    GOUNSAFE_TOKEN=$token \
+    GOUNSAFE_PATH=$PATH \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    exec bash --rcfile <(printf '%s\n' \
+        '# Set command alias' \
+        "alias -- $alias_name='$alias_target $token'" \
+        '# Load up original bashrc' \
+        ". ~/.bashrc" \
+        '# Prefix PS1 with our command and the until-time' \
+        "PS1='"'\[\033[01;31m\]'"$alias_name"'\[\033[00m\]<'"\
+$valid_until>'\$PS1") -i
+
+    # Doesn't get here.
+    exit 3
+fi
+
+
+# -- VALIDATION ZONE --
+var_token=$1; shift
+var_ts=$(get_epoch_from_token "$var_token")
+env_ts=$(get_epoch_from_token "${GOUNSAFE_TOKEN:?$TOKEN_VAR should be set}")
+now=$(date +%s)
+if test -z "$var_token" || test -z "$var_ts"; then
+    echo "Usage: gounsafe $TOKEN_VAR DANGEROUS_COMMANDS.." >&2
+    exit 1
+fi
+if test "$var_ts" != "$env_ts"; then
+    echo "$ARGV0: $TOKEN_VAR var/env mismatch" >&2
+    exit 1
+fi
+
+var_ts_delta=$((now - var_ts))
+if test $var_ts_delta -lt 0; then
+    echo "$ARGV0: $TOKEN_VAR $var_token is invalid" >&2
+    exit 1
+fi
+if test $var_ts_delta -gt $MAX_TIME; then
+    echo "$ARGV0: $TOKEN_VAR $var_token is too old" >&2
+    exit 1
+fi
+
+if test $# -lt 1; then
+    echo "$ARGV0: no (dangerous) command provided" >&2
+    exit 1
+fi
+
+# -- DANGER ZONE --
+PATH=$PATH:$GOUNSAFE_PATH  # re-add original path
+#echo "Running dangerous command: $@"
+#echo -n "^C to abort, LF to continue"; read x
+exec "$@"

@@ -27,6 +27,7 @@ BINS = \
 	git-hook-postcommit-coloremail \
 	git-reapply-patch \
 	gitlab-hook-postcommit-coloremail \
+	gounsafe \
 	grepby \
 	hostsort \
 	ifupdown2netplan \
