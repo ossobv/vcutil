@@ -97,6 +97,12 @@ if test $# -eq 0; then
     GOUNSAFE_PATH=$PATH \
     PATH=/usr/local/bin:/usr/bin:/bin \
     exec bash --rcfile <(cat << EOF
+# Bash completion prerequisites
+if [ -f /usr/share/bash-completion/bash_completion ]; then
+  . /usr/share/bash-completion/bash_completion
+elif [ -f /etc/bash_completion ]; then
+  . /etc/bash_completion
+fi
 # Set command alias
 alias -- $alias_name='$alias_target $token'
 # Load up original bashrc
