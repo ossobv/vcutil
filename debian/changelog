@@ -1,3 +1,22 @@
+vcutil (1.57) stable; urgency=low
+
+  * Additions:
+    - gounsafe: Bash history footgun avoidance tool. Start gounsafe before
+      doing dangerous commands and prefix the dangerous commands with the
+      suggested alias. The alias will only work during your session, so
+      no danger of logging in later, arrow-up and then running wipefs again by
+      accident
+    - renum: Utility to convert errno and syscall numbers to names. Shortest
+      invocation is: renum e <<< 1, which prints EPERM(1)
+
+  * Improvements:
+    - cert-expiry-finder: Add $global_tempdir to store temporary custom certs
+
+  * Fixes:
+    - cert-expiry-finder: Cope with trailing spaces in CRTs and CAs
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 10 Oct 2025 10:30:25 +0200
+
 vcutil (1.56) stable; urgency=low
 
   * Fixes:
