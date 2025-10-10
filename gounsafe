@@ -30,8 +30,7 @@
 #
 #
 # BEWARE: This PoC needs some field testing.
-# TODO: Maybe look at tab completion? Maybe add optional prompt flag? Or
-# no-prompt flag?
+# TODO: Maybe add optional prompt flag? Or no-prompt flag?
 #
 # Names considered for this project: nfg (NoFootGun), noreplay, spicy,
 # unsafe (gounsafe).
@@ -104,12 +103,12 @@ _${alias_name}_complete() {
   local cur; cur="\${COMP_WORDS[COMP_CWORD]:-}"
   # complete the command name?
   if [[ \$COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=( \$(compgen -c -- "\$cur") )
+    COMPREPLY=( \$(PATH=\$GOUNSAFE_PATH compgen -c -- "\$cur") )
     return 0
   fi
   # use the command-specific completion?
   if declare -f _command_offset >/dev/null 2>&1; then
-    _command_offset 1
+    PATH=\$GOUNSAFE_PATH _command_offset 1
     return 0
   fi
   # fallback to filename completion?
