@@ -73,6 +73,7 @@ if test $# -eq 0; then
     alias_target=$(readlink --canonicalize --no-newline "$0")
     limited_path=/usr/local/bin:/usr/bin:/bin
     valid_until=$(date +'%H:%M' -d "+$MAX_TIME seconds")
+    H=$(printf '\033[1m'); h=$(printf '\033[0m')
     echo "Perform unsafe commands for the next $MAX_TIME seconds?"
     echo
     echo "Run dangerous commands with a prefix, making it ^R history safe:"
@@ -83,9 +84,13 @@ if test $# -eq 0; then
     echo
     echo "  export $TOKEN_VAR=$token"
     echo "  alias -- $alias_name='$alias_target $token'"
-    echo "  PATH=$limited_path  # use absolute paths"
+    echo "  PATH=$limited_path  # sbin is included _after_ alias only"
     echo
-    echo "The $alias_name is valid until $valid_until."
+    echo "The $H$alias_name$h alias is valid until $H$valid_until$h."
+    echo
+    echo "TL;DR:"
+    echo "- [❌]$ kubectl delete important-namespace"
+    echo "- [✅]$ $H$alias_name$h kubectl delete important-namespace"
     echo
 
     GOUNSAFE_TOKEN=$token \
