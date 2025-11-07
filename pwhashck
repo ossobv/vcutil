@@ -44,7 +44,7 @@ from getpass import getpass
 from hashlib import md5, pbkdf2_hmac
 from random import choice as random_char, getrandbits, randint
 from scrypt import hash as scrypt_hash
-from unittest import TestCase, main as unittest_main
+from unittest import TestCase, expectedFailure, main as unittest_main
 
 
 # Standard base64 chars. Used for translation tables for alternate alphabets.
@@ -189,7 +189,7 @@ class Cisco:
             salt = bytes([random_char(cls.B64) for i in range(saltlen)])
         assert len(salt) == saltlen, salt
 
-        # Type 8 is scrypt hash.
+        # Type 8 is pbkdf2_hmac.
         binhash = pbkdf2_hmac('sha256', password, salt, 20000, 32)
         safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
         ciscohash = '$8${}${}'.format(salt.decode(), safehash.decode())
@@ -226,6 +226,31 @@ class Cisco:
         return ciscohash
 
     @classmethod
+    def type10(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Cisco Type 10 (SHA-512)
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        cls.pwd_check(password)
+
+        saltlen = 16
+        password = password.encode()
+
+        if hash_str:
+            assert hash_str.startswith('$6$'), hash_str
+            salt = hash_str[3:3 + saltlen].encode()
+        else:
+            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+        assert len(salt) == saltlen, salt
+
+        # Type 10 is sha512_crypt (I think??).
+        raise NotImplementedError('x')
+
+    @classmethod
     def autodetect(cls, password: str, hash_str: str | None = None) -> str:
         """
         Detects algorithm based on hash or chooses a default.
@@ -239,6 +264,8 @@ class Cisco:
             return cls.type8(password, hash_str)
         if hash_str.startswith('$9$') and len(hash_str) == 61:
             return cls.type9(password, hash_str)
+        if hash_str.startswith('$6$') and len(hash_str) == 106:
+            return cls.type10(password, hash_str)
 
         raise InvalidHash(hash_str)
 
@@ -339,6 +366,18 @@ class BasicTests(TestCase):
         hash_ = '$9$iRIslBHoCHW.An$3jTXMOGi6Lw3V6nBQbzBcEaifnCOYP9q6vRBWXV2kso'
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
 
+    @expectedFailure
+    def test_cisco_autodetect_type10(self):
+        hash_ = (
+            '$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
+            'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1')
+        self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
+
+    def test_cisco_type5_pass_PAssw0rd(self):
+        self.assertEqual(
+            Cisco.type5('P@ssw0rd', '$1$w1Jm$...'),
+            '$1$w1Jm$bCt7eJNv.CjWPwyfWcobP0')
+
     def test_cisco_type5_pass_somepass(self):
         self.assertEqual(
             Cisco.type5('somepass', '$1$uOFH$...'),
@@ -358,15 +397,35 @@ class BasicTests(TestCase):
             Cisco.type7('firewall.cx', '07...'),
             '0709285E4B1E18091B5C0814')
 
+    def test_cisco_type7_pass_PAssw0rd(self):
+        self.assertEqual(
+            Cisco.type7('P@ssw0rd', '08...'),
+            '08116C5D1A0E550516')
+
     def test_cisco_type8_pass_cisco(self):
         self.assertEqual(
             Cisco.type8('cisco', '$8$dsYGNam3K1SIJO$...'),
             '$8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs')
 
+    def test_cisco_type8_pass_cisco_2(self):
+        self.assertEqual(
+            Cisco.type8('cisco', '$8$mTj4RZG8N9ZDOk$...'),
+            '$8$mTj4RZG8N9ZDOk$elY/asfm8kD3iDmkBe3hD2r4xcA/0oWS5V3os.O91u.')
+
     def test_cisco_type9_empty(self):
         self.assertEqual(
             Cisco.type9('', '$9$BRvU0Gj/aK/DLE$...'),
             '$9$BRvU0Gj/aK/DLE$Tx2uI69utzmMXgUq1Y8n7j6/N2lfN8meEpzIBI/Rl4w')
+
+    def test_cisco_type9_pass_cisco(self):
+        self.assertEqual(
+            Cisco.type9('cisco', '$9$WnArItcQHW/uuE$...'),
+            '$9$WnArItcQHW/uuE$x5WTLbu7PbzGDuv0fSwGKS/KURsy5a3WCQckmJp0MbE')
+
+    def test_cisco_type9_pass_cisco_2(self):
+        self.assertEqual(
+            Cisco.type9('cisco', '$9$nhEmQVczB7dqsO$...'),
+            '$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM')
 
     def test_cisco_type9_random(self):
         password = self.getrandpass()
@@ -376,6 +435,16 @@ class BasicTests(TestCase):
         generated_without_password = f'{void}${nine}${salt}$...'
         self.assertEqual(
             generated, Cisco.type9(password, generated_without_password))
+
+    @expectedFailure
+    def test_cisco_type10_pass_testpassword(self):
+        # https://www.cisco.com/c/en/us/td/docs/routers/asr9000/software/
+        #   asr9k-r7-8/system-security/configuration/guide/
+        #   b-system-security-cg-asr9000-78x/configuring-aaa-services.html
+        self.assertEqual(
+            Cisco.type10('testpassword', '$6$nhEmQVczB7dqsO$...'),
+            ('$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
+             'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1'))
 
 
 def main(argv=None):
