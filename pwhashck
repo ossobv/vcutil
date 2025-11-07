@@ -12,6 +12,7 @@
 #
 # Currently supported algorithms:
 # - Cisco Type 5 (MD5-crypt)
+# - Cisco Type 7 (XOR Cipher, DO NOT USE!)
 # - Cisco Type 8 (PBKDF2-HMAC-SHA256)
 # - Cisco Type 9 (Scrypt)
 #
@@ -41,7 +42,7 @@ from base64 import b64encode
 from collections import namedtuple
 from getpass import getpass
 from hashlib import md5, pbkdf2_hmac
-from random import choice as random_char, getrandbits
+from random import choice as random_char, getrandbits, randint
 from scrypt import hash as scrypt_hash
 from unittest import TestCase, main as unittest_main
 
@@ -133,16 +134,38 @@ class Cisco:
 
         return ciscohash
 
-    # @classmethod
-    # def type7(cls, password: str, hash_str: str | None = None) -> str:
-    #     """
-    #     Hashes cleartext password to Cisco type 7
-    #     :param password: Clear text password to be hashed
-    #     :raises InvalidPassword: If the password contains invalid characters
-    #     :return: Hashed password
-    #     """
-    #     cls.pwd_check(password)
-    #     return cisco_type7.hash(password)
+    @classmethod
+    def type7(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        XORs cleartext password to Cisco Type 7 (DO NOT USE)
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        cls.pwd_check(password)
+
+        if hash_str:
+            seed = int(hash_str[0:2])
+            assert 0 <= seed <= 15, seed
+        else:
+            seed = randint(0, 15)  # Cisco uses 0-15 range
+
+        xlat = [
+            0x64, 0x73, 0x66, 0x64, 0x3B, 0x6B, 0x66, 0x6F,
+            0x41, 0x2C, 0x2E, 0x69, 0x79, 0x65, 0x77, 0x72,
+            0x6B, 0x6C, 0x64, 0x4A, 0x4B, 0x44, 0x48, 0x53,
+            0x55, 0x42, 0x73, 0x67, 0x76, 0x63, 0x61, 0x36,
+            0x39, 0x38, 0x33, 0x34, 0x6E, 0x63, 0x78, 0x76,
+            0x39, 0x38, 0x37, 0x33, 0x32, 0x35, 0x34, 0x6B,
+            0x6C, 0x64, 0x66, 0x73, 0x61, 0x39, 0x38, 0x33,
+            0x37, 0x32, 0x34, 0x6B, 0x6C, 0x64, 0x66, 0x73,
+        ]
+        res = [seed]
+        for i, ch in enumerate(password.encode()):
+            res.append(ch ^ xlat[(seed + i) & 0x3f])
+        return ''.join(f'{b:02X}' for b in res)
 
     @classmethod
     def type8(cls, password: str, hash_str: str | None = None) -> str:
@@ -290,7 +313,7 @@ def md5crypt(password: bytes, salt: bytes, magic: bytes = '$1$') -> bytes:
 ALGOS = (
     Algo('cisco', Cisco.autodetect, 'Cisco autodetect/default'),
     Algo('cisco-type5', Cisco.type5, 'Cisco Type 5 (MD5-crypt)'),
-    # Algo('cisco-type7', Cisco.type7, 'Cisco Type 7 (XOR Cipher)'),
+    Algo('cisco-type7', Cisco.type7, 'Cisco Type 7 (XOR Cipher, DO NOT USE!)'),
     Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
     Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
     # Algo('django-1234', Django.fixme, 'Django password blah'),
@@ -329,6 +352,11 @@ class BasicTests(TestCase):
         generated_without_password = f'{void}${one}${salt}$...'
         self.assertEqual(
             generated, Cisco.type5(password, generated_without_password))
+
+    def test_cisco_type7_pass_firewall_cx(self):
+        self.assertEqual(
+            Cisco.type7('firewall.cx', '07...'),
+            '0709285E4B1E18091B5C0814')
 
     def test_cisco_type8_pass_cisco(self):
         self.assertEqual(
