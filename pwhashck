@@ -41,9 +41,8 @@ from argparse import ArgumentParser
 from base64 import b64encode
 from collections import namedtuple
 from getpass import getpass
-from hashlib import md5, pbkdf2_hmac
+from hashlib import md5, pbkdf2_hmac, scrypt
 from random import choice as random_char, getrandbits, randint
-from scrypt import hash as scrypt_hash
 from unittest import TestCase, expectedFailure, main as unittest_main
 
 
@@ -219,7 +218,7 @@ class Cisco:
         assert len(salt) == saltlen, salt
 
         # Type 9 is scrypt hash.
-        binhash = scrypt_hash(password, salt, 16384, 1, 1, 32)
+        binhash = scrypt(password, salt=salt, n=16384, r=1, p=1)[0:32]
         safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
         ciscohash = '$9${}${}'.format(salt.decode(), safehash.decode())
 
