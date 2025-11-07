@@ -11,8 +11,9 @@
 # cleartext passwords don't need to be typed remotely.
 #
 # Currently supported algorithms:
-# - Cisco Type 5 (mdcrypt)
-# - Cisco Type 9 (scrypt)
+# - Cisco Type 5 (MD5-crypt)
+# - Cisco Type 8 (PBKDF2-HMAC-SHA256)
+# - Cisco Type 9 (Scrypt)
 #
 # Usage examples:
 #
@@ -39,7 +40,7 @@ from argparse import ArgumentParser
 from base64 import b64encode
 from collections import namedtuple
 from getpass import getpass
-from hashlib import md5
+from hashlib import md5, pbkdf2_hmac
 from random import choice as random_char, getrandbits
 from scrypt import hash as scrypt_hash
 from unittest import TestCase, main as unittest_main
@@ -143,29 +144,34 @@ class Cisco:
     #     cls.pwd_check(password)
     #     return cisco_type7.hash(password)
 
-    # @classmethod
-    # def type8(cls, password: str, hash_str: str | None = None) -> str:
-    #     """
-    #     Hashes cleartext password to Cisco type 8
-    #
-    #     :param pwd: Clear text password to be hashed
-    #     :raises InvalidPassword: If the password contains invalid characters
-    #     :return: Hashed password
-    #     """
-    #     cls.pwd_check(password)
-    #     salt_chars = []
-    #     for _ in range(14):
-    #         salt_chars.append(random_char(cls.B64))
-    #     salt = ''.join(salt_chars)
-    #     # Create the hash
-    #     hash = pbkdf2_hmac(
-    #         'sha256', password.encode(), salt.encode(), 20000, 32)
-    #     # Convert the hash from Standard Base64 to Cisco Base64
-    #     hash = b64encode(hash).translate(cls.B64_TABLE)  # FIXME remove =?
-    #     # Print the hash in the Cisco IOS CLI format
-    #     password_string = f'$8${salt}${hash}'
-    #
-    #     return password_string
+    @classmethod
+    def type8(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Cisco Type 9
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        cls.pwd_check(password)
+
+        saltlen = 14
+        password = password.encode()
+
+        if hash_str:
+            assert hash_str.startswith('$8$'), hash_str
+            salt = hash_str[3:3 + saltlen].encode()
+        else:
+            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+        assert len(salt) == saltlen, salt
+
+        # Type 8 is scrypt hash.
+        binhash = pbkdf2_hmac('sha256', password, salt, 20000, 32)
+        safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
+        ciscohash = '$8${}${}'.format(salt.decode(), safehash.decode())
+
+        return ciscohash
 
     @classmethod
     def type9(cls, password: str, hash_str: str | None = None) -> str:
@@ -206,6 +212,8 @@ class Cisco:
 
         if hash_str.startswith('$1$') and len(hash_str) == 30:
             return cls.type5(password, hash_str)
+        if hash_str.startswith('$8$') and len(hash_str) == 61:
+            return cls.type8(password, hash_str)
         if hash_str.startswith('$9$') and len(hash_str) == 61:
             return cls.type9(password, hash_str)
 
@@ -281,9 +289,9 @@ def md5crypt(password: bytes, salt: bytes, magic: bytes = '$1$') -> bytes:
 
 ALGOS = (
     Algo('cisco', Cisco.autodetect, 'Cisco autodetect/default'),
-    Algo('cisco-type5', Cisco.type5, 'Cisco Type 5 (MD5)'),
+    Algo('cisco-type5', Cisco.type5, 'Cisco Type 5 (MD5-crypt)'),
     # Algo('cisco-type7', Cisco.type7, 'Cisco Type 7 (XOR Cipher)'),
-    # Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
+    Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
     Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
     # Algo('django-1234', Django.fixme, 'Django password blah'),
     # Algo('wordpress', Wordpress.blah, 'Wordpress?'),
@@ -298,6 +306,10 @@ class BasicTests(TestCase):
 
     def test_cisco_autodetect_type5(self):
         hash_ = '$1$e.N8$Q2P5fWCnrFAM/NeO2iYFb1'
+        self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
+
+    def test_cisco_autodetect_type8(self):
+        hash_ = '$8$xPNISQRzSouZHp$x6Z8J7DhroiSoFRVO1xv7gjHGjook1Q4OGFPfcM7myI'
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
 
     def test_cisco_autodetect_type9(self):
@@ -317,6 +329,11 @@ class BasicTests(TestCase):
         generated_without_password = f'{void}${one}${salt}$...'
         self.assertEqual(
             generated, Cisco.type5(password, generated_without_password))
+
+    def test_cisco_type8_pass_cisco(self):
+        self.assertEqual(
+            Cisco.type8('cisco', '$8$dsYGNam3K1SIJO$...'),
+            '$8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs')
 
     def test_cisco_type9_empty(self):
         self.assertEqual(
