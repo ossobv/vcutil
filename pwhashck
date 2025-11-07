@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+# pwhashck (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
+#
+# Standalone dependency free password hash creator and hash verifier.
+#
+# Primary use case is checking whether stored hashes match: for example
+# to compare a Cisco "show running-config" secret with an expected
+# value.
+#
+# Secondary use case is offline creation of hashed passwords so
+# cleartext passwords don't need to be typed remotely.
+#
+# Currently supported algorithms:
+# - Cisco Type 5 (mdcrypt)
+# - Cisco Type 9 (scrypt)
+#
+# Usage examples:
+#
+#     $ pwhashck -a cisco-type9
+#     Password:
+#     Password (again):
+#     $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
+#
+#     $ pwhashck -a cisco \
+#         -H '$9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk' \
+#         -p abc
+#     $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
+#
+#     $ pwhashck -a cisco \
+#         -H '$9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk' \
+#         -p BADPASSWORD
+#     Supplied:  $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
+#     Generated: $9$O5FrjYLvJQz1UI$FpQiGzdR.DfDUxMxvBoE8wfxW66C/J9TdRiW2zEJoIk
+#     mismatch!
+#
+import os
+import sys
+from argparse import ArgumentParser
+from base64 import b64encode
+from collections import namedtuple
+from getpass import getpass
+from hashlib import md5
+from random import choice as random_char, getrandbits
+from scrypt import hash as scrypt_hash
+from unittest import TestCase, main as unittest_main
+
+
+# Standard base64 chars. Used for translation tables for alternate alphabets.
+B64_STD = b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+B64_URL = b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+
+
+Algo = namedtuple('Algo', 'id function description')
+
+
+class InvalidPassword(Exception):
+    """
+    Exception thrown if an invalid password is submitted to be hashed.
+    """
+    pass
+
+
+class InvalidHash(Exception):
+    """
+    Exception thrown if an invalid or unknown hash is supplied.
+    """
+    pass
+
+
+class Cisco:
+    """
+    Cisco password tools.
+
+    Original "Cisco Password Hasher" by Brett Verney (@wifiwizardofoz)
+    Contributors - Josh Schmelzle (@joshschmelzle), Kyle Kowalczyk(@superadm1n)
+    Version: v1.0 | 21-04-2021
+
+    Adapted by Walter Doekes (@wdoekes) for inclusion in this more generic
+    pwhashck tool that requires fewer dependencies and supports password
+    validation/checking.
+    """
+    # Translate Standard Base64 table to Cisco Base64 Table (for Type8/9)
+    B64 = b'./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    B64_TABLE = bytes.maketrans(B64_STD, B64)
+
+    @classmethod
+    def pwd_check(cls, password):
+        """
+        Checks cleartext password for invalid characters for Cisco devices
+
+        :param password: Clear text password
+        :raises InvalidPassword: If the password contains invalid
+          characters not supported by Cisco
+        :return: None
+        """
+        invalid_chars = '?"'
+        if len(password) > 127:
+            raise InvalidPassword(
+                'Password must be between 1 and 127 characters in length')
+        if any(char in invalid_chars for char in password):
+            raise InvalidPassword(
+                '? and " are invalid characters for Cisco passwords')
+
+    @classmethod
+    def type5(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Cisco type 5
+
+        :param password: Clear text password to be hashed
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        cls.pwd_check(password)
+
+        password = password.encode()
+        magic = b'$1$'
+        saltlen = 4
+
+        if hash_str:
+            assert hash_str.startswith('$1$'), hash_str
+            salt = hash_str[3:3 + saltlen].encode()
+        else:
+            # TODO: random_char is not the best for secure salts
+            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+        assert len(salt) == saltlen, salt
+
+        # Type 5 is md5crypt.
+        binhash = md5crypt(password, salt, magic)
+        safehash = b64encode(binhash).translate(cls.B64_TABLE)[0:22]
+        ciscohash = '{}{}${}'.format(
+            magic.decode(), salt.decode(), safehash.decode())
+
+        return ciscohash
+
+    # @classmethod
+    # def type7(cls, password: str, hash_str: str | None = None) -> str:
+    #     """
+    #     Hashes cleartext password to Cisco type 7
+    #     :param password: Clear text password to be hashed
+    #     :raises InvalidPassword: If the password contains invalid characters
+    #     :return: Hashed password
+    #     """
+    #     cls.pwd_check(password)
+    #     return cisco_type7.hash(password)
+
+    # @classmethod
+    # def type8(cls, password: str, hash_str: str | None = None) -> str:
+    #     """
+    #     Hashes cleartext password to Cisco type 8
+    #
+    #     :param pwd: Clear text password to be hashed
+    #     :raises InvalidPassword: If the password contains invalid characters
+    #     :return: Hashed password
+    #     """
+    #     cls.pwd_check(password)
+    #     salt_chars = []
+    #     for _ in range(14):
+    #         salt_chars.append(random_char(cls.B64))
+    #     salt = ''.join(salt_chars)
+    #     # Create the hash
+    #     hash = pbkdf2_hmac(
+    #         'sha256', password.encode(), salt.encode(), 20000, 32)
+    #     # Convert the hash from Standard Base64 to Cisco Base64
+    #     hash = b64encode(hash).translate(cls.B64_TABLE)  # FIXME remove =?
+    #     # Print the hash in the Cisco IOS CLI format
+    #     password_string = f'$8${salt}${hash}'
+    #
+    #     return password_string
+
+    @classmethod
+    def type9(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Cisco Type 9
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        cls.pwd_check(password)
+
+        saltlen = 14
+        password = password.encode()
+
+        if hash_str:
+            assert hash_str.startswith('$9$'), hash_str
+            salt = hash_str[3:3 + saltlen].encode()
+        else:
+            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+        assert len(salt) == saltlen, salt
+
+        # Type 9 is scrypt hash.
+        binhash = scrypt_hash(password, salt, 16384, 1, 1, 32)
+        safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
+        ciscohash = '$9${}${}'.format(salt.decode(), safehash.decode())
+
+        return ciscohash
+
+    @classmethod
+    def autodetect(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Detects algorithm based on hash or chooses a default.
+        """
+        if not hash_str:
+            return cls.type9(password, None)
+
+        if hash_str.startswith('$1$') and len(hash_str) == 30:
+            return cls.type5(password, hash_str)
+        if hash_str.startswith('$9$') and len(hash_str) == 61:
+            return cls.type9(password, hash_str)
+
+        raise InvalidHash(hash_str)
+
+
+def md5crypt(password: bytes, salt: bytes, magic: bytes = '$1$') -> bytes:
+    """
+    Portable dependency free md5crypt
+
+    Partially generated by Mr. Chat. Cleaned up.
+    """
+    assert len(salt) in (4, 8), salt
+
+    def flip6(a: int, b: int, c: int) -> int:
+        """Reverse order of four 6-bit groups in 24-bit integer."""
+        v = (a << 16 | b << 8 | c)
+        flipped = (
+            ((v & 0x3f) << 18) |
+            ((v >> 6 & 0x3f) << 12) |
+            ((v >> 12 & 0x3f) << 6) |
+            (v >> 18 & 0x3f))
+        return flipped.to_bytes(3, 'big')
+
+    # Step 1: Initial hash A
+    ctx = md5()
+    ctx.update(password + magic + salt)
+
+    # Step 2: Add alternate sum
+    alt = md5(password + salt + password).digest()
+    for i in range(len(password)):
+        ctx.update(alt[i % 16:i % 16 + 1])
+
+    # Step 3: Add bits depending on password length
+    i = len(password)
+    while i:
+        if i & 1:
+            ctx.update(b'\x00')
+        else:
+            ctx.update(password[:1])
+        i >>= 1
+    final = ctx.digest()
+
+    # Step 4: 1000 rounds of mixing
+    for i in range(1000):
+        md = md5()
+        if i & 1:
+            md.update(password)
+        else:
+            md.update(final)
+        if i % 3:
+            md.update(salt)
+        if i % 7:
+            md.update(password)
+        if i & 1:
+            md.update(final)
+        else:
+            md.update(password)
+        final = md.digest()
+
+    # Step 5: rearrange and fix endianness
+    rearranged = b''.join([
+        flip6(final[0], final[6], final[12]),
+        flip6(final[1], final[7], final[13]),
+        flip6(final[2], final[8], final[14]),
+        flip6(final[3], final[9], final[15]),
+        flip6(final[4], final[10], final[5]),
+        flip6(0, 0, final[11])[0:2],
+    ])
+
+    return rearranged
+
+
+ALGOS = (
+    Algo('cisco', Cisco.autodetect, 'Cisco autodetect/default'),
+    Algo('cisco-type5', Cisco.type5, 'Cisco Type 5 (MD5)'),
+    # Algo('cisco-type7', Cisco.type7, 'Cisco Type 7 (XOR Cipher)'),
+    # Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
+    Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
+    # Algo('django-1234', Django.fixme, 'Django password blah'),
+    # Algo('wordpress', Wordpress.blah, 'Wordpress?'),
+)
+
+ALGODICT = dict((algo.id, algo) for algo in ALGOS)
+
+
+class BasicTests(TestCase):
+    def getrandpass(self):
+        return b64encode(getrandbits(128).to_bytes(16)).decode()
+
+    def test_cisco_autodetect_type5(self):
+        hash_ = '$1$e.N8$Q2P5fWCnrFAM/NeO2iYFb1'
+        self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
+
+    def test_cisco_autodetect_type9(self):
+        hash_ = '$9$iRIslBHoCHW.An$3jTXMOGi6Lw3V6nBQbzBcEaifnCOYP9q6vRBWXV2kso'
+        self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
+
+    def test_cisco_type5_pass_somepass(self):
+        self.assertEqual(
+            Cisco.type5('somepass', '$1$uOFH$...'),
+            '$1$uOFH$nuMn/p38pLcBGIEK9I5/n1')
+
+    def test_cisco_type5_random(self):
+        password = self.getrandpass()
+        generated = Cisco.type5(password)
+        void, one, salt, pwd = generated.split('$')
+        self.assertEqual([void, one, len(salt), len(pwd)], ['', '1', 4, 22])
+        generated_without_password = f'{void}${one}${salt}$...'
+        self.assertEqual(
+            generated, Cisco.type5(password, generated_without_password))
+
+    def test_cisco_type9_empty(self):
+        self.assertEqual(
+            Cisco.type9('', '$9$BRvU0Gj/aK/DLE$...'),
+            '$9$BRvU0Gj/aK/DLE$Tx2uI69utzmMXgUq1Y8n7j6/N2lfN8meEpzIBI/Rl4w')
+
+    def test_cisco_type9_random(self):
+        password = self.getrandpass()
+        generated = Cisco.type9(password)
+        void, nine, salt, pwd = generated.split('$')
+        self.assertEqual([void, nine, len(salt), len(pwd)], ['', '9', 14, 43])
+        generated_without_password = f'{void}${nine}${salt}$...'
+        self.assertEqual(
+            generated, Cisco.type9(password, generated_without_password))
+
+
+def main(argv=None):
+    parser = ArgumentParser(
+        description=(
+            'Create or verify password hashes (Cisco, Django, '
+            'WordPress, ...)'))
+    parser.add_argument(
+        '-a', '--algo', choices=[algo.id for algo in ALGOS], help=(
+            'Hash algorithm to use'))
+    parser.add_argument(
+        '-p', '--password', help=(
+            'Password to hash or verify. If omitted, you will be prompted'))
+    parser.add_argument(
+        '-H', '--hash', dest='hash_str', help=(
+            'Turns on check mode. Supply existing hash to verify against. '
+            'If hash is the empty string, you will be prompted for one.'))
+
+    args = parser.parse_args(argv)
+
+    if not args.algo:
+        parser.error('Algorithm -a is required')
+        assert False, 'does not get here'
+    func = ALGODICT[args.algo].function
+
+    mode = ('check' if args.hash_str is not None else 'create')
+    if mode == 'check':
+        if not args.hash_str:
+            args.hash_str = input('Hashed password: ')
+        args.hash_str = args.hash_str.rstrip()  # no whitespace / CRs please
+        if not args.password:
+            args.password = getpass('Password to verify: ')
+    else:
+        if not args.password:
+            args.password = getpass('Password: ')
+            password2 = getpass('Password (again): ')
+            if args.password != password2:
+                parser.error('Password confirmation did not match')
+                assert False, 'does not get here'
+    args.password = args.password.rstrip()  # no whitespace / CRs please
+
+    try:
+        if mode == 'create':
+            result = func(args.password)
+            print(result)
+            return 0
+
+        if mode == 'check':
+            result = func(args.password, args.hash_str)
+            if result != args.hash_str:
+                print(f'Supplied:  {args.hash_str}')
+                print(f'Generated: {result}')
+                print('mismatch!', file=sys.stderr)
+                return 1
+            print(result)
+            return 0
+
+    except InvalidHash as e:
+        parser.error(f'Invalid hash -H supplied: {e}')
+        assert False, 'does not get here'
+
+    except InvalidPassword as e:
+        parser.error(f'Invalid password -p supplied: {e}')
+        assert False, 'does not get here'
+
+    raise NotImplementedError
+
+
+if __name__ == '__main__':
+    if os.environ.get('RUNTESTS', '') not in ('', '0'):
+        unittest_main()
+        assert False, 'does not get here'
+    raise SystemExit(main())
