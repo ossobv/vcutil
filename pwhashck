@@ -15,6 +15,7 @@
 # - Cisco Type 7 (XOR Cipher, DO NOT USE!)
 # - Cisco Type 8 (PBKDF2-HMAC-SHA256)
 # - Cisco Type 9 (Scrypt)
+# - Cisco SHA-512 (PBKDF2-HMAC-SHA512)
 #
 # Usage examples:
 #
@@ -38,11 +39,12 @@
 import os
 import sys
 from argparse import ArgumentParser
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from collections import namedtuple
 from getpass import getpass
 from hashlib import md5, pbkdf2_hmac, scrypt
-from random import choice as random_char, getrandbits, randint
+from random import randint
+from secrets import randbits
 from unittest import TestCase, expectedFailure, main as unittest_main
 
 
@@ -121,8 +123,7 @@ class Cisco:
             assert hash_str.startswith('$1$'), hash_str
             salt = hash_str[3:3 + saltlen].encode()
         else:
-            # TODO: random_char is not the best for secure salts
-            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+            salt = b64encode(randbits(24).to_bytes(3)).translate(cls.B64_TABLE)
         assert len(salt) == saltlen, salt
 
         # Type 5 is md5crypt.
@@ -152,14 +153,14 @@ class Cisco:
             seed = randint(0, 15)  # Cisco uses 0-15 range
 
         xlat = [
-            0x64, 0x73, 0x66, 0x64, 0x3B, 0x6B, 0x66, 0x6F,
-            0x41, 0x2C, 0x2E, 0x69, 0x79, 0x65, 0x77, 0x72,
-            0x6B, 0x6C, 0x64, 0x4A, 0x4B, 0x44, 0x48, 0x53,
+            0x64, 0x73, 0x66, 0x64, 0x3b, 0x6b, 0x66, 0x6f,
+            0x41, 0x2c, 0x2e, 0x69, 0x79, 0x65, 0x77, 0x72,
+            0x6b, 0x6c, 0x64, 0x4a, 0x4b, 0x44, 0x48, 0x53,
             0x55, 0x42, 0x73, 0x67, 0x76, 0x63, 0x61, 0x36,
-            0x39, 0x38, 0x33, 0x34, 0x6E, 0x63, 0x78, 0x76,
-            0x39, 0x38, 0x37, 0x33, 0x32, 0x35, 0x34, 0x6B,
-            0x6C, 0x64, 0x66, 0x73, 0x61, 0x39, 0x38, 0x33,
-            0x37, 0x32, 0x34, 0x6B, 0x6C, 0x64, 0x66, 0x73,
+            0x39, 0x38, 0x33, 0x34, 0x6e, 0x63, 0x78, 0x76,
+            0x39, 0x38, 0x37, 0x33, 0x32, 0x35, 0x34, 0x6b,
+            0x6c, 0x64, 0x66, 0x73, 0x61, 0x39, 0x38, 0x33,
+            0x37, 0x32, 0x34, 0x6b, 0x6c, 0x64, 0x66, 0x73,
         ]
         res = [seed]
         for i, ch in enumerate(password.encode()):
@@ -185,11 +186,13 @@ class Cisco:
             assert hash_str.startswith('$8$'), hash_str
             salt = hash_str[3:3 + saltlen].encode()
         else:
-            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+            salt = (
+                b64encode(randbits(80).to_bytes(10))
+                .translate(cls.B64_TABLE).rstrip(b'='))
         assert len(salt) == saltlen, salt
 
         # Type 8 is pbkdf2_hmac.
-        binhash = pbkdf2_hmac('sha256', password, salt, 20000, 32)
+        binhash = pbkdf2_hmac('sha256', password, salt, 20000, dklen=32)
         safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
         ciscohash = '$8${}${}'.format(salt.decode(), safehash.decode())
 
@@ -214,7 +217,9 @@ class Cisco:
             assert hash_str.startswith('$9$'), hash_str
             salt = hash_str[3:3 + saltlen].encode()
         else:
-            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+            salt = (
+                b64encode(randbits(80).to_bytes(10))
+                .translate(cls.B64_TABLE).rstrip(b'='))
         assert len(salt) == saltlen, salt
 
         # Type 9 is scrypt hash.
@@ -225,9 +230,9 @@ class Cisco:
         return ciscohash
 
     @classmethod
-    def type10(cls, password: str, hash_str: str | None = None) -> str:
+    def sha512(cls, password: str, hash_str: str | None = None) -> str:
         """
-        Hashes cleartext password to Cisco Type 10 (SHA-512)
+        Hashes cleartext password to Cisco SHA-512.
 
         :param password: Clear text password
         :param hash_str: Original hash to take parameters from
@@ -236,18 +241,33 @@ class Cisco:
         """
         cls.pwd_check(password)
 
-        saltlen = 16
+        saltlen = 16  # binary salt
+        rounds = 5000
         password = password.encode()
 
         if hash_str:
-            assert hash_str.startswith('$6$'), hash_str
-            salt = hash_str[3:3 + saltlen].encode()
+            # There's also something called "Type 10" which looks like:
+            # ('$6$MMvhlj1CzSd2nJfB$Bbzvxzriwx4iLFg75w4zj15YK3yeoq5Uo'
+            #  'Ryc1evtSX0c4EuaMlqK.v7E3zbY1yKKxkN6rXpQuhMJOuyRHItDc1')
+            # But I haven't managed to produce/validate those.
+            # assert hash_str.startswith('$6$'), hash_str
+            # salt = hash_str[3:3 + saltlen].encode()
+            # saltbin = b64decode(salt.translate(cls.B64_TABLE_REV) + b'=')
+            assert hash_str.startswith('$sha512$'), hash_str
+            void, algo, rounds, salt, digest = hash_str.split('$')
+            salt = b64decode(salt.encode())
+            rounds = int(rounds)
         else:
-            salt = bytes([random_char(cls.B64) for i in range(saltlen)])
+            salt = randbits(128).to_bytes(16)
         assert len(salt) == saltlen, salt
 
-        # Type 10 is sha512_crypt (I think??).
-        raise NotImplementedError('x')
+        digest = pbkdf2_hmac('sha512', password, salt, rounds, dklen=16)
+        ciscohash = '$sha512${rounds}${salt}${digest}'.format(
+            rounds=rounds,
+            salt=b64encode(salt).decode(),
+            digest=b64encode(digest).decode())
+
+        return ciscohash
 
     @classmethod
     def autodetect(cls, password: str, hash_str: str | None = None) -> str:
@@ -263,8 +283,10 @@ class Cisco:
             return cls.type8(password, hash_str)
         if hash_str.startswith('$9$') and len(hash_str) == 61:
             return cls.type9(password, hash_str)
-        if hash_str.startswith('$6$') and len(hash_str) == 106:
-            return cls.type10(password, hash_str)
+        # if hash_str.startswith('$6$') and len(hash_str) == 106:
+        #     return cls.type10(password, hash_str)
+        if hash_str.startswith('$sha512$'):
+            return cls.sha512(password, hash_str)
 
         raise InvalidHash(hash_str)
 
@@ -342,6 +364,7 @@ ALGOS = (
     Algo('cisco-type7', Cisco.type7, 'Cisco Type 7 (XOR Cipher, DO NOT USE!)'),
     Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
     Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
+    Algo('cisco-sha512', Cisco.sha512, 'Cisco SHA-512'),
     # Algo('django-1234', Django.fixme, 'Django password blah'),
     # Algo('wordpress', Wordpress.blah, 'Wordpress?'),
 )
@@ -351,7 +374,7 @@ ALGODICT = dict((algo.id, algo) for algo in ALGOS)
 
 class BasicTests(TestCase):
     def getrandpass(self):
-        return b64encode(getrandbits(128).to_bytes(16)).decode()
+        return b64encode(randbits(128).to_bytes(16)).decode()
 
     def test_cisco_autodetect_type5(self):
         hash_ = '$1$e.N8$Q2P5fWCnrFAM/NeO2iYFb1'
@@ -365,11 +388,9 @@ class BasicTests(TestCase):
         hash_ = '$9$iRIslBHoCHW.An$3jTXMOGi6Lw3V6nBQbzBcEaifnCOYP9q6vRBWXV2kso'
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
 
-    @expectedFailure
-    def test_cisco_autodetect_type10(self):
+    def test_cisco_autodetect_sha512(self):
         hash_ = (
-            '$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
-            'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1')
+            '$sha512$5000$Jhz6OQ7AKGJTVG6PR/7kWQ==$xE36SYeKJuc4m7xXJDnlRw==')
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
 
     def test_cisco_type5_pass_PAssw0rd(self):
@@ -441,9 +462,27 @@ class BasicTests(TestCase):
         #   asr9k-r7-8/system-security/configuration/guide/
         #   b-system-security-cg-asr9000-78x/configuring-aaa-services.html
         self.assertEqual(
-            Cisco.type10('testpassword', '$6$nhEmQVczB7dqsO$...'),
+            Cisco.type10('testpassword', '$6$9UvJidvsTEqgkAPU$...'),
             ('$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
              'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1'))
+        self.assertEqual(
+            Cisco.type10('testpassword', '$6$MMvhlj1CzSd2nJfB$...'),
+            ('$6$MMvhlj1CzSd2nJfB$Bbzvxzriwx4iLFg75w4zj15YK3yeoq5Uo'
+             'Ryc1evtSX0c4EuaMlqK.v7E3zbY1yKKxkN6rXpQuhMJOuyRHItDc1'))
+
+    def test_cisco_sha512_pass_empty(self):
+        # https://github.com/BrettVerney/ciscoPWDhasher/issues/3
+        # https://www.attackdebris.com/?p=451
+        self.assertEqual(
+            Cisco.sha512('', '$sha512$5000$vlCP+V07DGEJ9TcSV/GpuA==$...'),
+            '$sha512$5000$vlCP+V07DGEJ9TcSV/GpuA==$2S8SLoECmbtb/o17ZhXuKg==')
+
+    def test_cisco_sha512_pass_cisco(self):
+        # https://github.com/BrettVerney/ciscoPWDhasher/issues/3
+        # https://www.attackdebris.com/?p=451
+        self.assertEqual(
+            Cisco.sha512('cisco', '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$...'),
+            '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$Yu0w7sFjhLnbtZQJ/nyp+A==')
 
 
 def main(argv=None):
