@@ -16,6 +16,7 @@
 # - Cisco Type 8 (PBKDF2-HMAC-SHA256)
 # - Cisco Type 9 (Scrypt)
 # - Cisco SHA-512 (PBKDF2-HMAC-SHA512)
+# - Wordpress phpass ($P$...)
 #
 # Usage examples:
 #
@@ -45,7 +46,18 @@ from getpass import getpass
 from hashlib import md5, pbkdf2_hmac, scrypt
 from random import randint
 from secrets import randbits
-from unittest import TestCase, expectedFailure, main as unittest_main
+from unittest import TestCase, expectedFailure, skipIf, main as unittest_main
+
+try:
+    import passlib.hash
+except ImportError:
+    passlib = None
+
+    def requires_passlib(func):
+        return skipIf(True, 'requires python3-passlib')(func)
+else:
+    def requires_passlib(func):
+        return func
 
 
 # Standard base64 chars. Used for translation tables for alternate alphabets.
@@ -291,6 +303,55 @@ class Cisco:
         raise InvalidHash(hash_str)
 
 
+class Wordpress:
+    """
+    Wordpress password tools.
+    """
+    # Translate Standard Base64 table to Cisco Base64 Table (for Type8/9)
+    B64 = b'./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    B64_TABLE = bytes.maketrans(B64_STD, B64)
+
+    @classmethod
+    def phpass(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Wordpress "$P$..." style hash
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        saltlen = 8
+
+        if hash_str:
+            assert hash_str.startswith('$P$'), hash_str
+            rounds = cls.B64.index(hash_str[3].encode())
+            salt = hash_str[4:4 + saltlen]
+        else:
+            rounds = None  # use default
+            salt = b64encode(randbits(48).to_bytes(6)).decode().rstrip('=')
+        assert len(salt) == saltlen, salt
+
+        # Optional dependency.
+        from passlib.hash import phpass as passlib_phpass  # python3-passlib
+        return passlib_phpass.using(rounds=rounds, salt=salt).hash(password)
+
+    @classmethod
+    def autodetect(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Detects algorithm based on hash or chooses a default.
+        """
+        if not hash_str:
+            return cls.phpass(password, None)
+
+        if hash_str.startswith('$P$') and len(hash_str) == 34:
+            return cls.phpass(password, hash_str)
+        # if hash_str.startswith('$wp$') and len(hash_str) == 12345:
+        #     return cls.phpass(password, hash_str)
+
+        raise InvalidHash(hash_str)
+
+
 def md5crypt(password: bytes, salt: bytes, magic: bytes = '$1$') -> bytes:
     """
     Portable dependency free md5crypt
@@ -365,14 +426,14 @@ ALGOS = (
     Algo('cisco-type8', Cisco.type8, 'Cisco Type 8 (PBKDF2-HMAC-SHA256)'),
     Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
     Algo('cisco-sha512', Cisco.sha512, 'Cisco SHA-512'),
-    # Algo('django-1234', Django.fixme, 'Django password blah'),
-    # Algo('wordpress', Wordpress.blah, 'Wordpress?'),
+    Algo('wordpress', Wordpress.autodetect, 'Wordpress autodetect/default'),
+    Algo('wordpress-phpass', Wordpress.phpass, 'Wordpress ($P$...)'),
 )
 
 ALGODICT = dict((algo.id, algo) for algo in ALGOS)
 
 
-class BasicTests(TestCase):
+class CiscoTests(TestCase):
     def getrandpass(self):
         return b64encode(randbits(128).to_bytes(16)).decode()
 
@@ -485,11 +546,35 @@ class BasicTests(TestCase):
             '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$Yu0w7sFjhLnbtZQJ/nyp+A==')
 
 
+class WordpressTests(TestCase):
+    def getrandpass(self):
+        return b64encode(randbits(128).to_bytes(16)).decode()
+
+    @requires_passlib
+    def test_wordpress_autodetect_phpass_7_rounds(self):
+        hash_ = '$P$54lRmf8jtQqLkM5WQ6DP0lcm4hVPOo1'
+        self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
+
+    @requires_passlib
+    def test_wordpress_autodetect_phpass_13_rounds(self):
+        hash_ = '$P$B2x.t.aO79h5xx1A9NaB7cnZBdjJc5.'
+        self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
+
+    @requires_passlib
+    def test_wordpress_autodetect_phpass_19_rounds(self):
+        hash_ = '$P$HoFS15WRDrvrs/4wMYrK48kp2tEVSh1'
+        self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
+
+    @requires_passlib
+    def test_wordpress_phpass_empty(self):
+        hash_ = '$P$HjSoTlRVoaMO/6/eLHxXfdyXGc5dj..'
+        self.assertEqual(Wordpress.phpass('', hash_), hash_)
+
+
 def main(argv=None):
     parser = ArgumentParser(
         description=(
-            'Create or verify password hashes (Cisco, Django, '
-            'WordPress, ...)'))
+            'Create or verify password hashes (Cisco, Wordpress, ...)'))
     parser.add_argument(
         '-a', '--algo', choices=[algo.id for algo in ALGOS], help=(
             'Hash algorithm to use'))
