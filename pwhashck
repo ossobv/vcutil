@@ -43,21 +43,41 @@ from argparse import ArgumentParser
 from base64 import b64decode, b64encode
 from collections import namedtuple
 from getpass import getpass
-from hashlib import md5, pbkdf2_hmac, scrypt
-from random import randint
+from hashlib import md5, pbkdf2_hmac, scrypt, sha384
+from hmac import new as hmac_new
+from random import choice, randint
 from secrets import randbits
 from unittest import TestCase, expectedFailure, skipIf, main as unittest_main
 
 try:
-    import passlib.hash
+    import passlib.hash as has_passlib
 except ImportError:
-    passlib = None
-
-    def requires_passlib(func):
-        return skipIf(True, 'requires python3-passlib')(func)
+    has_passlib = False
+    try:
+        import bcrypt as has_bcrypt
+    except ImportError:
+        has_bcrypt = False
 else:
+    has_bcrypt = None
+
+if has_passlib:
     def requires_passlib(func):
         return func
+
+    def requires_bcrypt_or_passlib(func):
+        return func
+elif has_bcrypt:
+    def requires_passlib(func):
+        return skipIf(True, 'requires python3-passlib')(func)
+
+    def requires_bcrypt_or_passlib(func):
+        return func
+else:
+    def requires_passlib(func):
+        return skipIf(True, 'requires python3-passlib')(func)
+
+    def requires_bcrypt_or_passlib(func):
+        return skipIf(True, 'requires python3-bcrypt/passlib')(func)
 
 
 # Standard base64 chars. Used for translation tables for alternate alphabets.
@@ -321,6 +341,9 @@ class Wordpress:
         :raises InvalidPassword: If the password contains invalid characters
         :return: Hashed password
         """
+        # Optional dependency.
+        from passlib.hash import phpass as passlib_phpass  # python3-passlib
+
         saltlen = 8
 
         if hash_str:
@@ -329,12 +352,83 @@ class Wordpress:
             salt = hash_str[4:4 + saltlen]
         else:
             rounds = None  # use default
-            salt = b64encode(randbits(48).to_bytes(6)).decode().rstrip('=')
+            # No need for translate(). Since we're not stripping '=' at
+            # the end, the order of our alphabet doesn't matter.
+            salt = (
+                b64encode(randbits(48).to_bytes(6)).decode().replace('+', '.'))
         assert len(salt) == saltlen, salt
 
-        # Optional dependency.
-        from passlib.hash import phpass as passlib_phpass  # python3-passlib
         return passlib_phpass.using(rounds=rounds, salt=salt).hash(password)
+
+    @classmethod
+    def bcrypt(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Wordpress "$wp$2y$10$..." style hash
+
+        > WordPress 6.8 will use bcrypt for password hashing
+        > https://github.com/WordPress/WordPress/commit/
+        >   05770e25c32e415a9f26383d80ed9a0a904fd3a0
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        # Optional dependency: bcrypt is fast. Passlib falls back to a
+        # python3 implementation if there is no bcrypt. But maybe you
+        # have bcrypt and not passlib.
+        try:
+            from bcrypt import hashpw as bcrypt  # python3-bcrypt
+        except ImportError:
+            from passlib.hash import (
+                bcrypt as passlib_bcrypt)  # python3-passlib OR python3-bcrypt
+            bcrypt = None
+
+        password = password.encode()
+
+        if hash_str:
+            void, wp, ident, rounds, salt_checksum_digest = hash_str.split('$')
+            rounds = int(rounds)
+            salt = salt_checksum_digest[0:22]
+            saltmagic = f'${ident}${rounds}${salt}'.encode()
+        else:
+            wp, ident, rounds = 'wp', '2b', 10  # '2y' is old, '2b' is new
+            # bcrypt_gensalt(rounds=rounds)     # b'$2y$10$...'
+            # The bcrypt salt is rather picky. It not only uses the B64
+            # alphabet but also little endian bit order, which python
+            # b64encode does not do. So, to ensure that we're not
+            # setting the wrong bits, we'll simply replace the last byte
+            # with a new (but) valid one.
+            salt = (
+                b64encode(randbits(128).to_bytes(16)).translate(cls.B64_TABLE)
+                .rstrip(b'='))
+            assert len(salt) == 22, salt
+            salt = salt[0:21] + choice([b'.', b'O', b'e', b'u'])  # 2 bits
+            salt = salt.decode()
+            saltmagic = f'${ident}${rounds}${salt}'.encode()
+        assert ident in ('2y', '2b'), ident
+
+        # WordPress uses bcrypt for password hashing, but bcrypt has a
+        # limitation - it only considers the first 72 bytes of the
+        # password. Anything longer is simply truncated and does not
+        # participate in the hash. This can weaken the security of long
+        # passwords.
+        #
+        # To avoid this, WordPress first passes the password through
+        # SHA-384 - this is called pre-hashing. As a result, a
+        # fixed-length string is produced, which fits within the 72-byte
+        # limit. This string is then processed by bcrypt.
+        pre_hash = b64encode(
+            hmac_new(b'wp-sha384', password, digestmod=sha384).digest())
+        assert len(pre_hash) <= 72, 'BCrypt would silently truncate'
+
+        if bcrypt:
+            bcrypthash = bcrypt(pre_hash, saltmagic).decode()
+        else:
+            bcrypthash = (
+                passlib_bcrypt.using(salt=salt, ident=ident, rounds=rounds)
+                .hash(pre_hash))
+        return "${}{}".format(wp, bcrypthash)
 
     @classmethod
     def autodetect(cls, password: str, hash_str: str | None = None) -> str:
@@ -344,10 +438,11 @@ class Wordpress:
         if not hash_str:
             return cls.phpass(password, None)
 
+        if hash_str.startswith('$wp$') and len(hash_str) in (62, 63):
+            # 62 or 63 depending on '2' or '2y'.
+            return cls.bcrypt(password, hash_str)
         if hash_str.startswith('$P$') and len(hash_str) == 34:
             return cls.phpass(password, hash_str)
-        # if hash_str.startswith('$wp$') and len(hash_str) == 12345:
-        #     return cls.phpass(password, hash_str)
 
         raise InvalidHash(hash_str)
 
@@ -427,7 +522,8 @@ ALGOS = (
     Algo('cisco-type9', Cisco.type9, 'Cisco Type 9 (Scrypt)'),
     Algo('cisco-sha512', Cisco.sha512, 'Cisco SHA-512'),
     Algo('wordpress', Wordpress.autodetect, 'Wordpress autodetect/default'),
-    Algo('wordpress-phpass', Wordpress.phpass, 'Wordpress ($P$...)'),
+    Algo('wordpress-bcrypt', Wordpress.bcrypt, 'Wordpress ($wp$.. >= WP 6.8)'),
+    Algo('wordpress-phpass', Wordpress.phpass, 'Wordpress ($P$..)'),
 )
 
 ALGODICT = dict((algo.id, algo) for algo in ALGOS)
@@ -549,6 +645,18 @@ class CiscoTests(TestCase):
 class WordpressTests(TestCase):
     def getrandpass(self):
         return b64encode(randbits(128).to_bytes(16)).decode()
+
+    @requires_bcrypt_or_passlib
+    def test_wordpress_autodetect_bcrypt(self):
+        hash_ = (
+            '$wp$2y$10$h7qfnKnrwvLYe7O4hHwCAOMwAvbvfVKyIqapg4GGI.xtI0vNrmtxi')
+        self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
+
+    @requires_bcrypt_or_passlib
+    def test_wordpress_autodetect_bcrypt_2(self):
+        hash_ = (
+            '$wp$2b$10$02XkzZGMghMFeQpsk6lwked1I0czG5XbchPAsJuWnfv4zsCiBcSRi')
+        self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
 
     @requires_passlib
     def test_wordpress_autodetect_phpass_7_rounds(self):
