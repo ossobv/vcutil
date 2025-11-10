@@ -272,9 +272,59 @@ class Cisco:
         return ciscohash
 
     @classmethod
+    def type10(cls, password: str, hash_str: str | None = None) -> str:
+        """
+        Hashes cleartext password to Cisco Type 10 (NOT WORKING!)
+
+        :param password: Clear text password
+        :param hash_str: Original hash to take parameters from
+        :raises InvalidPassword: If the password contains invalid characters
+        :return: Hashed password
+        """
+        # Optional dependency.
+        from passlib.hash import sha512_crypt  # python3-passlib
+
+        cls.pwd_check(password)
+
+        saltlen = 16  # or 8 for non-Cisco hashes?
+        rounds = 5000
+        password = password.encode()
+
+        if hash_str:
+            assert hash_str.startswith('$6$'), hash_str
+            if len(hash_str) > 19 and hash_str[19] == '$':
+                saltlen = 16
+            elif len(hash_str) > 11 and hash_str[11] == '$':
+                saltlen = 8
+            else:
+                raise InvalidHash('expected 8 or 16 character salt')
+            salt = hash_str[3:3 + saltlen]
+            # TODO: take rounds into account?
+        else:
+            salt = (
+                b64encode(randbits(96).to_bytes(12, cls.ENDIAN_IRRELEVANT))
+                .translate(cls.B64_TABLE).decode())
+        assert len(salt) == saltlen, salt
+
+        if False:
+            # Type 10 is pbkdf2_hmac?
+            binhash = pbkdf2_hmac('sha512', password, salt.encode(), rounds, dklen=64)
+            safehash = b64encode(binhash).translate(cls.B64_TABLE).rstrip(b'=')
+            ciscohash = '$6${}${}'.format(salt, safehash.decode())
+        else:
+            # Type 10 is sha512_crypt?
+            ciscohash = (
+                sha512_crypt.using(rounds=rounds, salt=salt).hash(password))
+
+        return ciscohash
+
+    @classmethod
     def sha512(cls, password: str, hash_str: str | None = None) -> str:
         """
         Hashes cleartext password to Cisco SHA-512.
+
+        Here and there this is referenced as Type 10, but elsewhere a
+        Type 10 password looks different.
 
         :param password: Clear text password
         :param hash_str: Original hash to take parameters from
@@ -288,13 +338,6 @@ class Cisco:
         password = password.encode()
 
         if hash_str:
-            # There's also something called "Type 10" which looks like:
-            # ('$6$MMvhlj1CzSd2nJfB$Bbzvxzriwx4iLFg75w4zj15YK3yeoq5Uo'
-            #  'Ryc1evtSX0c4EuaMlqK.v7E3zbY1yKKxkN6rXpQuhMJOuyRHItDc1')
-            # But I haven't managed to produce/validate those.
-            # assert hash_str.startswith('$6$'), hash_str
-            # salt = hash_str[3:3 + saltlen].encode()
-            # saltbin = b64decode(salt.translate(cls.B64_TABLE_REV) + b'=')
             assert hash_str.startswith('$sha512$'), hash_str
             void, algo, rounds, salt, digest = hash_str.split('$')
             salt = b64decode(salt.encode())
@@ -663,6 +706,12 @@ class CiscoTests(PwhashckTest):
         void, nine, salt, pwd = generated.split('$')
         self.assertEqual([void, nine, len(salt), len(pwd)], ['', '9', 14, 43])
 
+    @requires_passlib
+    def test_cisco_random_type10(self):
+        password, generated = self.generate_random_and_test(Cisco.type10)
+        void, six, salt, pwd = generated.split('$')
+        self.assertEqual([void, six, len(salt), len(pwd)], ['', '6', 16, 86])
+
     def test_cisco_random_sha512(self):
         password, generated = self.generate_random_and_test(Cisco.sha512)
         void, algo, rounds, salt, pwd = generated.split('$')
@@ -743,8 +792,20 @@ class CiscoTests(PwhashckTest):
             Cisco.sha512('cisco', '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$...'),
             '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$Yu0w7sFjhLnbtZQJ/nyp+A==')
 
+    @requires_passlib
+    def test_cisco_WRONG_type10_pass_testpassword(self):
+        # This password matches if we use passlib sha512_crypt.
+        # But this is not the Cisco one.
+        self.assertEqual(
+            # Taken from: https://openwall.info/wiki/john/sample-hashes
+            Cisco.type10('password', '$6$zWwwXKNj$...'),  # short salt!!
+            ('$6$zWwwXKNj$gLAOoZCjcr8p/.VgV/FkGC3NX7BsXys3KHYePfuIG'
+             'MNjY83dVxugPYlxVg/evpcVEJLT/rSwZcDMlVVf/bhf.1'))
+
+    @requires_passlib
     @expectedFailure
     def test_cisco_type10_pass_testpassword(self):
+        # This password doesn't match. Still not found.
         # https://www.cisco.com/c/en/us/td/docs/routers/asr9000/software/
         #   asr9k-r7-8/system-security/configuration/guide/
         #   b-system-security-cg-asr9000-78x/configuring-aaa-services.html
