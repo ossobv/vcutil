@@ -297,7 +297,7 @@ class ZItem(object):
                 pass
 
         if isinstance(value, float):
-            return '{:.1f}'.format(value)
+            return '{:.2e}'.format(value)
         return str(value)
 
     def __init__(self, iteminfo):
