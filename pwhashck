@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # pwhashck (part of ossobv/vcutil) // wdoekes/2025 // Public Domain
 #
-# Standalone dependency free password hash creator and hash verifier.
+# Password hash creator and hash verifier with minimal dependencies for
+# Cisco and Wordpress passwords. Might be more in the future.
+#
+# (Optional dependencies: python3-bcrypt, python3-passlib)
 #
 # Primary use case is checking whether stored hashes match: for example
 # to compare a Cisco "show running-config" secret with an expected
@@ -16,6 +19,7 @@
 # - Cisco Type 8 (PBKDF2-HMAC-SHA256)
 # - Cisco Type 9 (Scrypt)
 # - Cisco SHA-512 (PBKDF2-HMAC-SHA512)
+# - Wordpress bcrypt ($wp$...)
 # - Wordpress phpass ($P$...)
 #
 # Usage examples:
@@ -23,18 +27,18 @@
 #     $ pwhashck -a cisco-type9
 #     Password:
 #     Password (again):
-#     $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
+#     $9$U2fpKV8W5CkHyU$GTyqN66V..dUILHdzUlAYms6ML.M1jyuhRcGylQhSFU
 #
 #     $ pwhashck -a cisco \
-#         -H '$9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk' \
-#         -p abc
-#     $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
+#         -H '$9$U2fpKV8W5CkHyU$GTyqN66V..dUILHdzUlAYms6ML.M1jyuhRcGylQhSFU' \
+#         -p goodpassword
+#     $9$U2fpKV8W5CkHyU$GTyqN66V..dUILHdzUlAYms6ML.M1jyuhRcGylQhSFU
 #
 #     $ pwhashck -a cisco \
-#         -H '$9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk' \
+#         -H '$9$U2fpKV8W5CkHyU$GTyqN66V..dUILHdzUlAYms6ML.M1jyuhRcGylQhSFU' \
 #         -p BADPASSWORD
-#     Supplied:  $9$O5FrjYLvJQz1UI$Goi2OLhQHOCVgM5kc.rM.xizRIhNU27eRb6pAFB1cGk
-#     Generated: $9$O5FrjYLvJQz1UI$FpQiGzdR.DfDUxMxvBoE8wfxW66C/J9TdRiW2zEJoIk
+#     Supplied:  $9$U2fpKV8W5CkHyU$GTyqN66V..dUILHdzUlAYms6ML.M1jyuhRcGylQhSFU
+#     Generated: $9$U2fpKV8W5CkHyU$IOUwUPn.XV4c.s5KB.GTBSSyBYND1uM/qDjisIFLuko
 #     mismatch!
 #
 import os
@@ -118,6 +122,10 @@ class Cisco:
     B64 = b'./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
     B64_TABLE = bytes.maketrans(B64_STD, B64)
 
+    # When generating random tokens, the endianness is generally irrelevant.
+    # Use this constant.
+    ENDIAN_IRRELEVANT = 'little'
+
     @classmethod
     def pwd_check(cls, password):
         """
@@ -155,7 +163,9 @@ class Cisco:
             assert hash_str.startswith('$1$'), hash_str
             salt = hash_str[3:3 + saltlen].encode()
         else:
-            salt = b64encode(randbits(24).to_bytes(3)).translate(cls.B64_TABLE)
+            salt = (
+                b64encode(randbits(24).to_bytes(3, cls.ENDIAN_IRRELEVANT))
+                .translate(cls.B64_TABLE))
         assert len(salt) == saltlen, salt
 
         # Type 5 is md5crypt.
@@ -179,7 +189,7 @@ class Cisco:
         cls.pwd_check(password)
 
         if hash_str:
-            seed = int(hash_str[0:2])
+            seed = int(hash_str[0:2], 16)
             assert 0 <= seed <= 15, seed
         else:
             seed = randint(0, 15)  # Cisco uses 0-15 range
@@ -219,7 +229,7 @@ class Cisco:
             salt = hash_str[3:3 + saltlen].encode()
         else:
             salt = (
-                b64encode(randbits(80).to_bytes(10))
+                b64encode(randbits(80).to_bytes(10, cls.ENDIAN_IRRELEVANT))
                 .translate(cls.B64_TABLE).rstrip(b'='))
         assert len(salt) == saltlen, salt
 
@@ -250,7 +260,7 @@ class Cisco:
             salt = hash_str[3:3 + saltlen].encode()
         else:
             salt = (
-                b64encode(randbits(80).to_bytes(10))
+                b64encode(randbits(80).to_bytes(10, cls.ENDIAN_IRRELEVANT))
                 .translate(cls.B64_TABLE).rstrip(b'='))
         assert len(salt) == saltlen, salt
 
@@ -290,7 +300,7 @@ class Cisco:
             salt = b64decode(salt.encode())
             rounds = int(rounds)
         else:
-            salt = randbits(128).to_bytes(16)
+            salt = randbits(128).to_bytes(16, cls.ENDIAN_IRRELEVANT)
         assert len(salt) == saltlen, salt
 
         digest = pbkdf2_hmac('sha512', password, salt, rounds, dklen=16)
@@ -331,6 +341,10 @@ class Wordpress:
     B64 = b'./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
     B64_TABLE = bytes.maketrans(B64_STD, B64)
 
+    # When generating random tokens, the endianness is generally irrelevant.
+    # Use this constant.
+    ENDIAN_IRRELEVANT = 'little'
+
     @classmethod
     def phpass(cls, password: str, hash_str: str | None = None) -> str:
         """
@@ -347,18 +361,26 @@ class Wordpress:
         saltlen = 8
 
         if hash_str:
-            assert hash_str.startswith('$P$'), hash_str
+            # Allow both '$P$' (Wordpress) and '$H$' (phpBB3).
+            assert hash_str.startswith(('$P$', '$H$')), hash_str
             rounds = cls.B64.index(hash_str[3].encode())
             salt = hash_str[4:4 + saltlen]
+            prefix = hash_str[0:3]
         else:
             rounds = None  # use default
             # No need for translate(). Since we're not stripping '=' at
             # the end, the order of our alphabet doesn't matter.
             salt = (
-                b64encode(randbits(48).to_bytes(6)).decode().replace('+', '.'))
+                b64encode(randbits(48).to_bytes(6, cls.ENDIAN_IRRELEVANT))
+                .decode().replace('+', '.'))
+            prefix = None
         assert len(salt) == saltlen, salt
 
-        return passlib_phpass.using(rounds=rounds, salt=salt).hash(password)
+        hash_ = passlib_phpass.using(rounds=rounds, salt=salt).hash(password)
+        if prefix:
+            hash_ = prefix + hash_[3:]  # maybe replace '$P$' with '$H$'
+
+        return hash_
 
     @classmethod
     def bcrypt(cls, password: str, hash_str: str | None = None) -> str:
@@ -400,8 +422,8 @@ class Wordpress:
             # setting the wrong bits, we'll simply replace the last byte
             # with a new (but) valid one.
             salt = (
-                b64encode(randbits(128).to_bytes(16)).translate(cls.B64_TABLE)
-                .rstrip(b'='))
+                b64encode(randbits(128).to_bytes(16, cls.ENDIAN_IRRELEVANT))
+                .translate(cls.B64_TABLE).rstrip(b'='))
             assert len(salt) == 22, salt
             salt = salt[0:21] + choice([b'.', b'O', b'e', b'u'])  # 2 bits
             salt = salt.decode()
@@ -529,13 +551,33 @@ ALGOS = (
 ALGODICT = dict((algo.id, algo) for algo in ALGOS)
 
 
-class CiscoTests(TestCase):
+class PwhashckTest(TestCase):
     def getrandpass(self):
-        return b64encode(randbits(128).to_bytes(16)).decode()
+        ENDIAN_IRRELEVANT = 'little'
+        return (
+            b64encode(randbits(128).to_bytes(16, ENDIAN_IRRELEVANT)).decode())
 
+    def generate_random_and_test(self, generate, get_salt_magic=None):
+        password = self.getrandpass()
+        generated = generate(password)
+
+        if get_salt_magic:
+            salt_magic, password_digest = get_salt_magic(generated)
+        else:
+            salt_magic, password_digest = generated.rsplit('$', 1)
+            salt_magic += '$...'
+
+        generated2 = generate(password, salt_magic)
+        self.assertEqual(generated, generated2)
+        return password, generated
+
+
+class CiscoTests(PwhashckTest):
     def test_cisco_autodetect_type5(self):
         hash_ = '$1$e.N8$Q2P5fWCnrFAM/NeO2iYFb1'
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
+
+    # test_cisco_autodetect_type7 <- no autodetection
 
     def test_cisco_autodetect_type8(self):
         hash_ = '$8$xPNISQRzSouZHp$x6Z8J7DhroiSoFRVO1xv7gjHGjook1Q4OGFPfcM7myI'
@@ -550,6 +592,33 @@ class CiscoTests(TestCase):
             '$sha512$5000$Jhz6OQ7AKGJTVG6PR/7kWQ==$xE36SYeKJuc4m7xXJDnlRw==')
         self.assertEqual(Cisco.autodetect('abcd', hash_), hash_)
 
+    def test_cisco_random_type5(self):
+        password, generated = self.generate_random_and_test(Cisco.type5)
+        void, one, salt, pwd = generated.split('$')
+        self.assertEqual([void, one, len(salt), len(pwd)], ['', '1', 4, 22])
+
+    def test_cisco_random_type7(self):
+        password, generated = self.generate_random_and_test(
+            Cisco.type7, (lambda x: (x[0:2], x[2:])))
+        self.assertEqual(len(generated), 50)
+        self.assertTrue(int(generated[0:2], 16) <= 15)
+
+    def test_cisco_random_type8(self):
+        password, generated = self.generate_random_and_test(Cisco.type8)
+        void, eight, salt, pwd = generated.split('$')
+        self.assertEqual([void, eight, len(salt), len(pwd)], ['', '8', 14, 43])
+
+    def test_cisco_random_type9(self):
+        password, generated = self.generate_random_and_test(Cisco.type9)
+        void, nine, salt, pwd = generated.split('$')
+        self.assertEqual([void, nine, len(salt), len(pwd)], ['', '9', 14, 43])
+
+    def test_cisco_random_sha512(self):
+        password, generated = self.generate_random_and_test(Cisco.sha512)
+        void, algo, rounds, salt, pwd = generated.split('$')
+        self.assertEqual([void, algo, rounds, len(salt), len(pwd)], [
+            '', 'sha512', '5000', 24, 24])
+
     def test_cisco_type5_pass_PAssw0rd(self):
         self.assertEqual(
             Cisco.type5('P@ssw0rd', '$1$w1Jm$...'),
@@ -559,15 +628,6 @@ class CiscoTests(TestCase):
         self.assertEqual(
             Cisco.type5('somepass', '$1$uOFH$...'),
             '$1$uOFH$nuMn/p38pLcBGIEK9I5/n1')
-
-    def test_cisco_type5_random(self):
-        password = self.getrandpass()
-        generated = Cisco.type5(password)
-        void, one, salt, pwd = generated.split('$')
-        self.assertEqual([void, one, len(salt), len(pwd)], ['', '1', 4, 22])
-        generated_without_password = f'{void}${one}${salt}$...'
-        self.assertEqual(
-            generated, Cisco.type5(password, generated_without_password))
 
     def test_cisco_type7_pass_firewall_cx(self):
         self.assertEqual(
@@ -579,6 +639,11 @@ class CiscoTests(TestCase):
             Cisco.type7('P@ssw0rd', '08...'),
             '08116C5D1A0E550516')
 
+    def test_cisco_type7_pass_PAssw0rd(self):
+        self.assertEqual(
+            Cisco.type7('catcat', '09...'),
+            '094F4F1D1A0403')
+
     def test_cisco_type8_pass_cisco(self):
         self.assertEqual(
             Cisco.type8('cisco', '$8$dsYGNam3K1SIJO$...'),
@@ -588,6 +653,11 @@ class CiscoTests(TestCase):
         self.assertEqual(
             Cisco.type8('cisco', '$8$mTj4RZG8N9ZDOk$...'),
             '$8$mTj4RZG8N9ZDOk$elY/asfm8kD3iDmkBe3hD2r4xcA/0oWS5V3os.O91u.')
+
+    def test_cisco_type9_pass_hashcat(self):
+        self.assertEqual(
+            Cisco.type8('hashcat', '$8$TnGX/fE4KGHOVU$...'),
+            '$8$TnGX/fE4KGHOVU$pEhnEvxrvaynpi8j4f.EMHr6M.FzU8xnZnBr/tJdFWk')
 
     def test_cisco_type9_empty(self):
         self.assertEqual(
@@ -604,28 +674,10 @@ class CiscoTests(TestCase):
             Cisco.type9('cisco', '$9$nhEmQVczB7dqsO$...'),
             '$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM')
 
-    def test_cisco_type9_random(self):
-        password = self.getrandpass()
-        generated = Cisco.type9(password)
-        void, nine, salt, pwd = generated.split('$')
-        self.assertEqual([void, nine, len(salt), len(pwd)], ['', '9', 14, 43])
-        generated_without_password = f'{void}${nine}${salt}$...'
+    def test_cisco_type9_pass_hashcat(self):
         self.assertEqual(
-            generated, Cisco.type9(password, generated_without_password))
-
-    @expectedFailure
-    def test_cisco_type10_pass_testpassword(self):
-        # https://www.cisco.com/c/en/us/td/docs/routers/asr9000/software/
-        #   asr9k-r7-8/system-security/configuration/guide/
-        #   b-system-security-cg-asr9000-78x/configuring-aaa-services.html
-        self.assertEqual(
-            Cisco.type10('testpassword', '$6$9UvJidvsTEqgkAPU$...'),
-            ('$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
-             'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1'))
-        self.assertEqual(
-            Cisco.type10('testpassword', '$6$MMvhlj1CzSd2nJfB$...'),
-            ('$6$MMvhlj1CzSd2nJfB$Bbzvxzriwx4iLFg75w4zj15YK3yeoq5Uo'
-             'Ryc1evtSX0c4EuaMlqK.v7E3zbY1yKKxkN6rXpQuhMJOuyRHItDc1'))
+            Cisco.type9('hashcat', '$9$2MJBozw/9R3UsU$...'),
+            '$9$2MJBozw/9R3UsU$2lFhcKvpghcyw8deP25GOfyZaagyUOGBymkryvOdfo6')
 
     def test_cisco_sha512_pass_empty(self):
         # https://github.com/BrettVerney/ciscoPWDhasher/issues/3
@@ -641,11 +693,22 @@ class CiscoTests(TestCase):
             Cisco.sha512('cisco', '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$...'),
             '$sha512$5000$SvZkzlRDO115YrLXsZuWCg==$Yu0w7sFjhLnbtZQJ/nyp+A==')
 
+    @expectedFailure
+    def test_cisco_type10_pass_testpassword(self):
+        # https://www.cisco.com/c/en/us/td/docs/routers/asr9000/software/
+        #   asr9k-r7-8/system-security/configuration/guide/
+        #   b-system-security-cg-asr9000-78x/configuring-aaa-services.html
+        self.assertEqual(
+            Cisco.type10('testpassword', '$6$9UvJidvsTEqgkAPU$...'),
+            ('$6$9UvJidvsTEqgkAPU$3CL1Ei/F.E4v/Hi.UaqLwX8UsSEr9ApG6'
+             'c5pzhMJmZtgW4jObAQ7meAwyhu5VM/aRFJqe/jxZG17h6xPrvJWf1'))
+        self.assertEqual(
+            Cisco.type10('testpassword', '$6$MMvhlj1CzSd2nJfB$...'),
+            ('$6$MMvhlj1CzSd2nJfB$Bbzvxzriwx4iLFg75w4zj15YK3yeoq5Uo'
+             'Ryc1evtSX0c4EuaMlqK.v7E3zbY1yKKxkN6rXpQuhMJOuyRHItDc1'))
 
-class WordpressTests(TestCase):
-    def getrandpass(self):
-        return b64encode(randbits(128).to_bytes(16)).decode()
 
+class WordpressTests(PwhashckTest):
     @requires_bcrypt_or_passlib
     def test_wordpress_autodetect_bcrypt(self):
         hash_ = (
@@ -673,10 +736,36 @@ class WordpressTests(TestCase):
         hash_ = '$P$HoFS15WRDrvrs/4wMYrK48kp2tEVSh1'
         self.assertEqual(Wordpress.autodetect('abcd', hash_), hash_)
 
+    @requires_bcrypt_or_passlib
+    def test_wordpress_random_bcrypt(self):
+        def bcrypt_split(x):
+            rest, salt_and_pwd = x.rsplit('$', 1)
+            return f'{rest}${salt_and_pwd[0:22]}', salt_and_pwd[22:]
+
+        password, generated = self.generate_random_and_test(
+            Wordpress.bcrypt, bcrypt_split)
+        void, wp, id_, rnd, salt_and_pwd = generated.split('$')
+        self.assertEqual([void, wp, id_, rnd, len(salt_and_pwd)], [
+            '', 'wp', '2b', '10', 53])
+
+    @requires_passlib
+    def test_wordpress_random_phpass(self):
+        password, generated = self.generate_random_and_test(
+            Wordpress.phpass, (lambda x: (x[0:12], x[12:])))
+        void, p, salt_and_pwd = generated.split('$')
+        self.assertEqual([void, p, len(salt_and_pwd)], ['', 'P', 31])
+
     @requires_passlib
     def test_wordpress_phpass_empty(self):
         hash_ = '$P$HjSoTlRVoaMO/6/eLHxXfdyXGc5dj..'
         self.assertEqual(Wordpress.phpass('', hash_), hash_)
+
+    @requires_passlib
+    def test_wordpress_phpass_hashcat(self):
+        hash_ = '$P$984478476IagS59wHZvyQMArzfx58u.'  # 'P' wordpress, joomla
+        self.assertEqual(Wordpress.phpass('hashcat', hash_), hash_)
+        hash_ = '$H$984478476IagS59wHZvyQMArzfx58u.'  # 'H' phpBB3
+        self.assertEqual(Wordpress.phpass('hashcat', hash_), hash_)
 
 
 def main(argv=None):
