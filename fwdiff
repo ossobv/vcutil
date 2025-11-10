@@ -40,7 +40,24 @@ dump_ip6tables() {
     done
 }
 
+dump_ipset() {
+    if ! ipset --version >/dev/null 2>&1; then
+        return
+    fi
+
+    # Sort options to sort by:
+    # - ipset name (field 2-2: ignore blanks (b))
+    # - then "create" before "add" (field 1-1: reverse sort (r))
+    # - lastly sort the rest of the line for IPs (field 3: version sort (V))
+    ipset -q save 2>/dev/null |
+        LC_ALL=C sort -k 2bV,2 -k 1br,1 -k 3bV |
+        sed -e 's/ initval 0x[0-9a-f]*//;s/^/ipset /'
+}
+
 fwdiff_dump() {
+    # ipset needs to come before iptables if we want to use the sets
+    dump_ipset
+
     dump_iptables
     dump_ip6tables
 }
