@@ -689,7 +689,7 @@ class CiscoTests(PwhashckTest):
             Cisco.type7('P@ssw0rd', '08...'),
             '08116C5D1A0E550516')
 
-    def test_cisco_type7_pass_PAssw0rd(self):
+    def test_cisco_type7_pass_catcat(self):
         self.assertEqual(
             Cisco.type7('catcat', '09...'),
             '094F4F1D1A0403')
@@ -704,7 +704,7 @@ class CiscoTests(PwhashckTest):
             Cisco.type8('cisco', '$8$mTj4RZG8N9ZDOk$...'),
             '$8$mTj4RZG8N9ZDOk$elY/asfm8kD3iDmkBe3hD2r4xcA/0oWS5V3os.O91u.')
 
-    def test_cisco_type9_pass_hashcat(self):
+    def test_cisco_type8_pass_hashcat(self):
         self.assertEqual(
             Cisco.type8('hashcat', '$8$TnGX/fE4KGHOVU$...'),
             '$8$TnGX/fE4KGHOVU$pEhnEvxrvaynpi8j4f.EMHr6M.FzU8xnZnBr/tJdFWk')
