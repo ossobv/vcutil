@@ -6,16 +6,22 @@
 # Optionally add /etc/default/fwdiff to override fwdiff_dump_override().
 #
 set -eu
-LSMOD=$(lsmod 2>/dev/null)
+UNAME=$(uname -r)
+BUILTINS=$(grep -E '^CONFIG_IP6?_NF_(FILTER=y|NAT=y|MANGLE=y|RAW=y)' \
+    /boot/config-"$UNAME" || true)  # =m for modules
+MODULES=$(lsmod 2>/dev/null)
 if test $? -ne 0 -o $(id -u) -ne 0; then
     echo "Failed to get modules or root status; root perms required" >&2
     exit 1
 fi
 
 dump_iptables() {
-    local tables="$(echo "$LSMOD" |
-        sed '/^iptable_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
-        sort)"
+    local tables="$({
+        echo "$BUILTINS" | sed -Ene '
+            s/^CONFIG_IP_NF_([^=]*)=.*/\1/p' | tr '[:upper:]' '[:lower:]';
+        echo "$MODULES" | sed -e '
+            /^iptable_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//';
+        } | LC_ALL=C sort)"
     if test -z "$tables"; then
         #echo 'fwdiff: no ip4 tables found, error?' >&2
         # I guess, nftables? Does not add modules for nothing.
@@ -27,9 +33,12 @@ dump_iptables() {
 }
 
 dump_ip6tables() {
-    local tables="$(echo "$LSMOD" |
-        sed '/^ip6table_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//' |
-        sort)"
+    local tables="$({
+        echo "$BUILTINS" | sed -Ene '
+            s/^CONFIG_IP6_NF_([^=]*)=.*/\1/p' | tr '[:upper:]' '[:lower:]';
+        echo "$MODULES" | sed -e '
+            /^ip6table_/!d;/.*[[:blank:]]0$/d;s/^[^_]*_//;s/[[:blank:]].*//';
+        } | LC_ALL=C sort)"
     if test -z "$tables"; then
         #echo 'fwdiff: no ip6 tables found, error?' >&2
         # I guess, nftables? Does not add modules for nothing.
