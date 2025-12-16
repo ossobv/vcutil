@@ -38,6 +38,16 @@
 #         echo "$global_tempdir/application.crt"
 #     }
 #
+# You can also alter the entire output, in case you want to exclude
+# specific certificates (or expiry values):
+#
+#     custom_filter_cert_expiry_days() {
+#         grep -v "^[0-9]\\+[[:blank:]]\\+\\(\
+#     /etc/ssl/certs/ssl-cert-snakeoil.pem (CN = localhost.localdomain)\
+#     \\|Kubernetes (NS = dostno-frontend, CRT = dostno.systems, CTX = io)\
+#     \\)\$"
+#     }
+#
 # See also:
 #
 #     cert-expiry-check
@@ -80,6 +90,10 @@ global_tempdir=$(mktemp -d /dev/shm/cert-expiry-finder.XXXX || exit 1)
 global_temp="$global_tempdir/scratchpad"
 trap "rm -rf '$global_tempdir'" EXIT
 
+
+custom_filter_cert_expiry_days() {
+    cat  # override me in $CONFIG_FILE
+}
 
 enum_custom_certs() {
     :  # override me in $CONFIG_FILE
@@ -499,11 +513,13 @@ if test $# -gt 0; then
     if $SUMMARY; then
         for file in "$@"; do
             list_local_cert_expiry_days "$file"
-        done | take_negative_value_nearest_zero
+        done |
+            custom_filter_cert_expiry_days |
+            take_negative_value_nearest_zero
     else
         for file in "$@"; do
             list_local_cert_expiry_days "$file"
-        done
+        done | custom_filter_cert_expiry_days
     fi
     exit 0
 fi
@@ -513,9 +529,12 @@ if test $(id -u) != 0 && test -t 2; then
     echo "WARNING: Running as non-root might not find all certificates" >&2
 fi
 if $SUMMARY; then
-    list_cert_expiry_days $INCLUDE | take_negative_value_nearest_zero
+    list_cert_expiry_days $INCLUDE |
+        custom_filter_cert_expiry_days |
+        take_negative_value_nearest_zero
 else
-    list_cert_expiry_days $INCLUDE
+    list_cert_expiry_days $INCLUDE |
+        custom_filter_cert_expiry_days
 fi
 
 # vim: set ts=8 sw=4 sts=4 et ai:
