@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# nbdig (part of ossobv/vcutil) // wdoekes/2024 // Public Domain
+# nbdig (part of ossobv/vcutil) // wdoekes/2024-2026 // Public Domain
 #
 # Quickly query the netbox server for hosts and hostnames/IPs, using the
 # Netbox REST API.
@@ -32,7 +32,7 @@ from argparse import ArgumentParser
 from collections import namedtuple
 from configparser import ConfigParser, MissingSectionHeaderError
 from fnmatch import translate as glob_to_re
-from ipaddress import IPv4Address, IPv4Network
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from json import dumps
 from os import environ, path
 from re import IGNORECASE, compile as re_compile, split as re_split
@@ -46,13 +46,78 @@ import warnings
 CONF_FILE = f'{environ.get("XDG_CONFIG_HOME", "~/.config")}/nbdig.ini'
 
 
-def net2ip(s):
-    "'1.2.3.4/31' -> IPv4Address('1.2.3.4')"
+class StartupError(ValueError):
+    pass
+
+
+class UserError(ValueError):
+    pass
+
+
+def data_netstr2ip(s):
+    """
+    '1.2.3.4/24' -> IPv4Address('1.2.3.4')
+
+    This is supposed to be called with valid netbox-supplied data. This should
+    not raise a UserError.
+    """
+    if ':' in s:
+        return IPv6Address(s.rsplit('/', 1)[0])
     return IPv4Address(s.rsplit('/', 1)[0])
 
 
-class StartupError(ValueError):
-    pass
+def data_str2net(s):
+    """
+    '1.2.3.4' -> IPv4Address('1.2.3.4')
+
+    This is supposed to be called with valid netbox-supplied data. This should
+    not raise a UserError.
+    """
+    if ':' in s:
+        return IPv6Network(s)
+    return IPv4Network(s)
+
+
+def user_str2ip(s):
+    """
+    '1.2.3.4' -> IPv4Address('1.2.3.4')
+
+    This is supposed to be called with data supplied by the user (via the
+    command line) and not for persisted/validated netbox-data:
+    raises UserError.
+    """
+    try:
+        if ':' in s:
+            ip = IPv6Address(s)
+        else:
+            ip = IPv4Address(s)
+    except ValueError as e:
+        raise UserError(str(e)) from e
+    return ip
+
+
+def user_str2net(s):
+    """
+    '1.2.3.0/24' -> IPv4Network('1.2.3.0/24')
+
+    This is supposed to be called with data supplied by the user (via the
+    command line) and not for persisted/validated netbox-data:
+    raises UserError.
+    """
+    try:
+        if ':' in s:
+            cidr = IPv6Network(s)
+        else:
+            cidr = IPv4Network(s)
+    except ValueError as e:
+        raise UserError(str(e)) from e
+    return cidr
+
+
+def is_known_family(interface):
+    return interface['family'] in (
+        {'value': 4, 'label': 'IPv4'},
+        {'value': 6, 'label': 'IPv6'})
 
 
 class Config(namedtuple('Config', 'api_url api_token')):
@@ -267,7 +332,8 @@ class ThinNetboxWrapper:
         primary_ip = info['primary_ip']
         if primary_ip is not None:
             primary_ip = IpAddress(
-                address=net2ip(primary_ip['address']), name='?',  # with '?'?
+                address=data_netstr2ip(primary_ip['address']),
+                name='?',  # with '?'?
                 iface='?', vrf='?', is_primary=True)
 
         if info['id'] in interfaces_by_id:
@@ -311,9 +377,9 @@ class ThinNetboxWrapper:
 
         interfaces_by_id = {}
         for interface in pages['results']:
-            assert interface['family'] == {'value': 4, 'label': 'IPv4'}, (
+            assert is_known_family(interface), (
                 interface['id'], interface['address'], interface['family'])
-            assigned_address = net2ip(interface['address'])
+            assigned_address = data_netstr2ip(interface['address'])
             assigned_vrf = (interface.get('vrf') or {}).get('rd', None)
             assigned_to_id = interface['assigned_object'][lookup_short]['id']
             assigned_iface = interface['assigned_object']['name']
@@ -374,9 +440,12 @@ class ThinNetboxWrapper:
 
         return ids, ids_exact
 
-    def find_ip_address(self, ip_address):
-        cidr = IPv4Network(ip_address)
-        if cidr.prefixlen != 32:
+    def find_ip_address(self, cidr):
+        if isinstance(cidr, IPv6Network):
+            is_net = (cidr.prefixlen != 128)
+        elif isinstance(cidr, IPv4Network):
+            is_net = (cidr.prefixlen != 32)
+        if is_net:
             params = [('limit', 1000), ('parent', str(cidr))]
         else:
             params = [('limit', 1000), ('address', str(cidr.network_address))]
@@ -397,7 +466,7 @@ class ThinNetboxWrapper:
         assigned = []
         for address in results:
             # Discard network bits for now
-            ip_address = net2ip(address['address'])
+            ip_address = data_netstr2ip(address['address'])
             vrf = (address.get('vrf') or {}).get('rd', None)
             assignment = address['assigned_object']
             iface = (assignment['name'] if assignment else None)
@@ -428,7 +497,6 @@ class ThinNetboxWrapper:
         return assigned
 
     def find_networks(self, cidr):
-        cidr = IPv4Network(cidr)
         params = [('limit', 1000), ('contains', str(cidr))]
         ret = self._get_query(self.NB_PREFIX, params)
         pages = ret.json()
@@ -468,7 +536,7 @@ class ThinNetboxWrapper:
         nets = []
         for res in results:
             net = Network(
-                prefix=IPv4Network(res['prefix']),
+                prefix=data_str2net(res['prefix']),
                 description=res['description'],
                 children=[])
             nets.append(net)
@@ -505,7 +573,8 @@ def show_ipaddresses(hosts, interface_match=None):
 
     # Sort. We want primary first.
     ip_addresses = sorted(ip_addresses, key=(lambda x: (
-        not x.is_primary, x.address, x.vrf, x.iface)))
+        not x.is_primary, x.address.__class__.__name__,
+        x.address, x.vrf, x.iface)))
 
     ip_addresses = [
         str(ip.address) for ip in ip_addresses
@@ -516,24 +585,33 @@ def show_ipaddresses(hosts, interface_match=None):
 
 def show_name_addr_extra(hosts):
     for host in hosts:
-        addr = ' '.join(str(ip.address) for ip in host.ip_addresses) or '-'
+        addr = ' '.join((ip.address) for ip in host.ip_addresses) or '-'
         print(f'{host.safename!s:30}  {addr!s:15}  {host.optdetails}'.rstrip())
 
 
 def show_name_addr_iface_vrf(hosts, interface_match=None):
+    def rpadded_ip_optional_primary(ip):
+        addr = f'[{ip.address}]' if ip.is_primary else f' {ip.address} '
+
+        if isinstance(ip.address, IPv4Address):
+            return addr.ljust(17)  # SP+15+SP
+        if isinstance(ip.address, IPv6Address):
+            return addr.ljust(41)  # SP+39+SP (very long though..)
+
+        assert False, (ip, addr)
+
     for host in hosts:
         host_name = host.safename
         host_details = host.optdetails
 
         # Sort. We want primary first.
         ip_addresses = sorted(host.ip_addresses, key=(lambda x: (
-            not x.is_primary, x.address, x.vrf, x.iface)))
+            not x.is_primary, x.address.__class__.__name__,
+            x.address, x.vrf, x.iface)))
 
         for ip in ip_addresses:
             if interface_match is None or interface_match in ip.iface:
-                addr = (
-                    f'[{ip.address}]' if ip.is_primary
-                    else f' {ip.address} ')
+                addr_with_sp = rpadded_ip_optional_primary(ip)
 
                 if host_details:
                     extra = host_details
@@ -541,7 +619,7 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
                     extra = ip.optname
 
                 print(
-                    f'{host_name!s:30} {addr!s:17} {ip.safeiface!s:15}  '
+                    f'{host_name!s:30} {addr_with_sp} {ip.safeiface!s:15}  '
                     f'{ip.safevrf!s:15}  {extra}'.rstrip())
 
 
@@ -588,11 +666,11 @@ def do_forward_lookup(nb, hostfragment, load_properties, verbose=False):
 
 def do_reverse_lookup(nb, ip_or_cidr, tree=False, verbose=False):
     if not tree:
-        hosts = nb.find_ip_address(ip_or_cidr)
+        hosts = nb.find_ip_address(user_str2net(ip_or_cidr))
         networks = None
     elif tree and not verbose:
         hosts = None
-        networks = nb.find_networks(ip_or_cidr)
+        networks = nb.find_networks(user_str2net(ip_or_cidr))
     else:
         raise NotImplementedError(
             'lookup with networks and multiple hosts not implemented')
@@ -672,20 +750,24 @@ def main():
         parser.error(str(e))
 
     nb = ThinNetboxWrapper(config)
-    if args.hostfragment is not None:
-        if args.iface is None:
-            do_forward_lookup(
-                nb, args.hostfragment, args.property, verbose=args.verbose)
+    try:
+        if args.hostfragment is not None:
+            if args.iface is None:
+                do_forward_lookup(
+                    nb, args.hostfragment, args.property, verbose=args.verbose)
+            else:
+                do_interface_lookup(
+                    nb, args.hostfragment, args.iface, args.property,
+                    verbose=args.verbose)
+        elif args.x is not None:
+            if args.property:
+                raise NotImplementedError('-x with -p not implemented')
+            do_reverse_lookup(nb, args.x, tree=args.tree, verbose=args.verbose)
         else:
-            do_interface_lookup(
-                nb, args.hostfragment, args.iface, args.property,
-                verbose=args.verbose)
-    elif args.x is not None:
-        if args.property:
-            raise NotImplementedError('-x with -p not implemented')
-        do_reverse_lookup(nb, args.x, tree=args.tree, verbose=args.verbose)
-    else:
-        raise NotImplementedError('cannot get here')
+            raise NotImplementedError('cannot get here')
+    except (NotImplementedError, UserError) as e:
+        print(f'{parser.prog}: error: {e!s}', file=stderr)
+        exit(1)
 
 
 if __name__ == '__main__':
