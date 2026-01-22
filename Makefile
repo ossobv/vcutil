@@ -8,6 +8,9 @@ SYSCONFDIR = /etc
 SYSSBINDIR = /sbin
 
 BINS = \
+	2json.js \
+	2json.py \
+	2json.yaml \
 	apt-find-foreign \
 	argecho \
 	bson2json \
@@ -75,6 +78,7 @@ BINS = \
 	wvpn \
 	xdg-recent \
 	zabdig \
+	_multi2json \
 
 SBINS = \
 	arpfix \
@@ -151,9 +155,9 @@ install:
 hashes: $(HASHES)
 
 make_has_all_files:
-	@bash -c "diff -pu <(git ls-files | grep -vF / | sort -V) \
+	@bash -c "diff -pu <(git ls-files | grep -vF / | LC_ALL=C sort -V) \
 	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) $(OTHERX) | \
-	    tr ' ' '\n' | sort -V)"
+	    tr ' ' '\n' | LC_ALL=C sort -V)"
 
 all_bins_are_executable:
 	@ok=true; for bin in $(BINS) $(SBINS) $(SYSSBINDIR) $(OTHERX); do \

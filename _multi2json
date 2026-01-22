@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# _multi2json (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
+#
+# Convert various serialized formats to json. Mainly useful when dealing
+# with Python repr() output.
+#
+# For example this hypothetical information about cluster D:
+#
+# $ D="{'cluster': 'c1', 'nodes': [2, 4, 5]}"  # a Python REPR string
+#
+# If we want to do something with it, we'll want it converted to JSON:
+#
+# $ echo "$D" | 2json.py
+# {
+#   "cluster": "c1",
+#   "nodes": [
+#     2,
+#     4,
+#     5
+#   ]
+# }
+#
+# Since it was easy, the tool also has ".yaml" and ".js" versions.
+#
+import json
+import os.path
+import sys
+
+output = UNKNOWN_FORMAT = object()
+whatami = os.path.basename(sys.argv[0])
+ext = whatami.rsplit('.', 1)[-1]
+input_ = sys.stdin.read()
+
+try:
+    if ext == 'js':  # JSON
+        output = json.loads(input_)
+
+    elif ext == 'py':  # Python
+        import ast
+        output = ast.literal_eval(input_)
+
+    elif ext in ('yaml', 'yml'):  # YAML
+        import yaml
+        output = yaml.safe_load(input_)
+
+except Exception as e:
+    print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
+    sys.exit(1)
+
+if output is UNKNOWN_FORMAT:
+    print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
+    sys.exit(2)
+
+print(json.dumps(output, indent=2))  # sort_keys=True?
