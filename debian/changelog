@@ -1,3 +1,30 @@
+vcutil (1.58) stable; urgency=low
+
+  * Additions:
+    - 2json.*: Multi-call binaries that convert from Python repr(), or Rust
+      Debug, or YAML to JSON. Mainly useful for consistent output/comparison.
+    - phpserde: Tool to convert to/from PHP serialize()d data (requires php);
+      useful when dealing with WordPress serialized config from a DB.
+    - pwhashck: Tool to check/validate/create Cisco hashed passwords; also
+      does WordPress passwords. Useful if you want to do offline password
+      checks: "does the stored password match the hashed password?"
+
+  * Improvements:
+    - cert-expiry-finder: Add custom_filter_cert_expiry_days() override
+    - fwdiff: Add ipset to the listing as well
+    - gounsafe: Fix/improve bash completion support
+    - kubectl-sh-secret: Also export labels when doing --export
+    - zabdig: For --show=data, use scientific notation
+
+  * Fixes:
+    - efibootmirrorsetup: Handle efibootmgr 18+ on Noble. Newer output changes
+      caused us to write duplicate boot records.
+    - fwdiff: Use both /boot/config and lsmod to find builtins/modules; fixes
+      that iptables listing does not change as soon as a module is loaded.
+    - nbdig: Enable IPv6 lookups and friendlier error messages
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 22 Jan 2026 16:16:09 +0100
+
 vcutil (1.57) stable; urgency=low
 
   * Additions:
