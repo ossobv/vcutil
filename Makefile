@@ -56,6 +56,7 @@ BINS = \
 	nbdig \
 	pdns-sql-slave-prune \
 	pgpg \
+	phpserde \
 	psdiff \
 	pwhashck \
 	renum \

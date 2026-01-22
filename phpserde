@@ -1,0 +1,103 @@
+#!/usr/bin/env php
+<?php // phpserde (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
+/**
+ * WordPress and other projects sometimes use PHP serialize()/unserialize()
+ * to persist configuration. For the devs, this is convenient. For those
+ * hacking the values, it is not.
+ *
+ * This tool allows you to unserialize and re-serialize data to alter
+ * some values.
+ *
+ * For example, we have some stored data D:
+ *
+ * $ D='a:2:{s:7:"cluster";s:2:"c1";s:5:"nodes";a:3:{i:0;i:2;i:1;i:4;i:2;i:5;}}'
+ *
+ * It involves a hypothetical cluster with 3 nodes:
+ *
+ * $ echo "$D" | phpserde -d | jq .
+ * {
+ *   "cluster": "c1",
+ *   "nodes": [
+ *     2,
+ *     4,
+ *     5
+ *   ]
+ * }
+ *
+ * We want to remove the first node:
+ *
+ * $ echo "$D" | phpserde -d | jq '.nodes |= .[1:]'
+ * {
+ *   "cluster": "c1",
+ *   "nodes": [
+ *     4,
+ *     5
+ *   ]
+ * }
+ *
+ * And store it back into the DB:
+ *
+ * $ echo "$D" | phpserde -d | jq '.nodes |= .[1:]' | phpserde
+ * a:2:{s:7:"cluster";s:2:"c1";s:5:"nodes";a:2:{i:0;i:4;i:1;i:5;}}
+ */
+
+$action = null;
+
+if (count($argv) == 1) {
+    $action = 'JSON_TO_PHPSER';
+} elseif (count($argv) == 2 && $argv[1] == '-d') {
+    $action = 'PHPSER_TO_JSON';
+} else {
+    fprintf(
+        STDERR, "Usage: %s [-d]\nConvert json to php serialized format\n",
+        $argv[0]);
+    fprintf(
+        STDERR, "\n".
+        "**WARNING**\n".
+        "Do not pass untrusted user input to unserialize() regardless of\n".
+        "the options value of allowed_classes. Unserialization can result\n".
+        "in code being loaded and executed due to object instantiation and\n".
+        "autoloading, and a malicious user may be able to exploit this.\n".
+        "\n");
+    exit(1);
+}
+
+function all_objects_as_arrays($data) {
+    // If $data is an array or object, recursively convert all stdClass objects
+    // to arrays.
+    if (is_array($data) || is_object($data)) {
+        $ret = array();
+        foreach ($data as $key => $value) {
+            assert(!is_array($key) && !is_object($key));
+            $ret[$key] = all_objects_as_arrays($value);
+        }
+    } else {
+        $ret = $data;
+    }
+    return $ret;
+}
+
+function act($action, $data) {
+    switch ($action) {
+    case 'JSON_TO_PHPSER':
+        $data = json_decode($data);
+        $data = all_objects_as_arrays($data); // not stdClass, but Array
+        echo serialize($data)."\n";
+        break;
+    case 'PHPSER_TO_JSON':
+        $data = unserialize($data);
+        echo json_encode($data)."\n";
+        break;
+    default:
+        fprintf(STDERR, "unknown action: %s\n", $action);
+        exit(1);
+    }
+}
+
+$buf = '';
+do {
+    $in = fread(STDIN, 1024 * 1024);
+    $buf .= $in;
+} while ($in !== '');
+
+act($action, $buf);
