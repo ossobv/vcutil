@@ -2,7 +2,7 @@
 # _multi2json (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
 #
 # Convert various serialized formats to json. Mainly useful when dealing
-# with Python repr() output.
+# with Python repr() output or with sloppy Rust Debug representations.
 #
 # For example this hypothetical information about cluster D:
 #
@@ -22,33 +22,505 @@
 #
 # Since it was easy, the tool also has ".yaml" and ".js" versions.
 #
+# Currently implemented:
+# - 2json.js <-- indents JSON
+# - 2json.py <-- parses Python repr()
+# - 2json.rs <-- reads Rust-like curly bracket representation and writes JSON
+# - 2json.yaml <- converts YAML to JSON
+#
 import json
 import os.path
 import sys
 
-output = UNKNOWN_FORMAT = object()
-whatami = os.path.basename(sys.argv[0])
-ext = whatami.rsplit('.', 1)[-1]
-input_ = sys.stdin.read()
+from unittest import TestCase, main as unittest_main
 
-try:
-    if ext == 'js':  # JSON
-        output = json.loads(input_)
 
-    elif ext == 'py':  # Python
-        import ast
-        output = ast.literal_eval(input_)
+class RustyIndentTest(TestCase):
+    def test_main(self):
+        data = ('''{ client: Client { info: Receiver { shared: Shared {
+        value: RwLock(PhantomData<std::sync::poison::rwlock::RwLock\
+<async_nats::ServerInfo>>,
+        RwLock { data: ServerInfo { server_id:
+        "NBRC0..",
+        server_name: "nats-1", host: "0.0.0.0", port: 4222, version:
+        "2.10.20", auth_required: true, tls_required: true, max_payload:
+        1048576, proto: 1, client_id: 1048, go: "go1.22.6", nonce: "",
+        connect_urls: [], client_ip: "10.20.30.40", headers: true,
+        lame_duck_mode: false } }), version: Version(0), is_closed:
+        false, ref_count_rx: 1 }, version: Version(0) }, state: Receiver
+        { shared: Shared { value:
+        RwLock(PhantomData<std::sync::poison::rwlock::RwLock\
+<async_nats::connection::State>>,
+        RwLock { data: Connected }), version: Version(2), is_closed:
+        false, ref_count_rx: 1 }, version: Version(0) }, sender: Sender
+        { chan: Tx { inner: Chan { tx: Tx { block_tail: 0x7200a0733580,
+        tail_position: 0 }, semaphore: Semaphore { semaphore: Semaphore
+        { permits: 2048 }, bound: 2048 }, rx_waker: AtomicWaker,
+        tx_count: 1, rx_fields: "..." } } }, next_subscription_id: 1,
+        subscription_capacity: 65536, inbox_prefix: "_INBOX",
+        request_timeout: Some(10s) }, prefix: "$JS.API", timeout: 5s }'''
+                .replace('\n', ' '))
 
-    elif ext in ('yaml', 'yml'):  # YAML
-        import yaml
-        output = yaml.safe_load(input_)
+        parser = RustyIndent(data)
+        result = parser.parse()
+        expected_rwlock = {
+            'RwLock': {
+                'data': {
+                    'ServerInfo': {
+                        'server_id': 'NBRC0..',
+                        'server_name': 'nats-1',
+                        'host': '0.0.0.0',
+                        'port': 4222,
+                        'version': '2.10.20',
+                        'auth_required': True,
+                        'tls_required': True,
+                        'max_payload': 1048576,
+                        'proto': 1,
+                        'client_id': 1048,
+                        'go': 'go1.22.6',
+                        'nonce': '',
+                        'connect_urls': [],
+                        'client_ip': '10.20.30.40',
+                        'headers': True,
+                        'lame_duck_mode': False
+                    },
+                },
+            },
+        }
+        expected_chan = {
+            'Chan': {
+                'tx': {
+                    'Tx': {
+                        'block_tail': '0x7200a0733580',
+                        'tail_position': 0
+                    }
+                },
+                'semaphore': {
+                    'Semaphore': {
+                        'semaphore': {'Semaphore': {'permits': 2048}},
+                        'bound': 2048
+                    }
+                },
+                'rx_waker': 'AtomicWaker',
+                'tx_count': 1,
+                'rx_fields': '...'
+            },
+        }
+        expected = {
+            'client': {
+                'Client': {
+                    'info': {
+                        'Receiver': {
+                            'shared': {
+                                'Shared': {
+                                    'value': {
+                                        'RwLock': [
+                                            '\
+PhantomData<std::sync::poison::rwlock::RwLock<async_nats::ServerInfo>>',
+                                            expected_rwlock,
+                                        ]
+                                    },
+                                    'version': {'Version': [0]},
+                                    'is_closed': False,
+                                    'ref_count_rx': 1,
+                                }
+                            },
+                            'version': {'Version': [0]},
+                        },
+                    },
+                    'state': {
+                        'Receiver': {
+                            'shared': {
+                                'Shared': {
+                                    'value': {
+                                        'RwLock': [
+                                            '\
+PhantomData<std::sync::poison::rwlock::RwLock<async_nats::connection::State>>',
+                                            {
+                                                'RwLock': {'data': 'Connected'}
+                                            },
+                                        ],
+                                    },
+                                    'version': {'Version': [2]},
+                                    'is_closed': False,
+                                    'ref_count_rx': 1,
+                                }
+                            },
+                            'version': {'Version': [0]},
+                        }
+                    },
+                    'sender': {
+                        'Sender': {
+                            'chan': {
+                                'Tx': {
+                                    'inner': expected_chan,
+                                }
+                            }
+                        }
+                    },
+                    'next_subscription_id': 1,
+                    'subscription_capacity': 65536,
+                    'inbox_prefix': '_INBOX',
+                    'request_timeout': {
+                        'Some': [
+                            '10s'
+                        ]
+                    }
+                }
+            },
+            'prefix': '$JS.API',
+            'timeout': '5s'
+        }
+        self.assertEqual(result, expected)
 
-except Exception as e:
-    print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
-    sys.exit(1)
+    def test_generics(self):
+        """Test long generic type name"""
+        data = ('''{
+            client: Client {
+                val: PhantomData<std::sync::poison::rwlock::\
+RwLock < async_nats::ServerInfo > >,
+                other: 10
+            }
+        }'''.replace('\n', ' '))
+        parser = RustyIndent(data)
+        result = parser.parse()
+        expected = {
+            'client': {
+                'Client': {
+                    'val': (
+                        'PhantomData<std::sync::poison::rwlock::RwLock < '
+                        'async_nats::ServerInfo > >'),
+                    'other': 10,
+                },
+            },
+        }
+        self.assertEqual(result, expected)
 
-if output is UNKNOWN_FORMAT:
-    print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
-    sys.exit(2)
+    def test_simple_flat_struct(self):
+        """Test a basic struct with primitive fields"""
+        data = 'User { name: "Alice", id: 101, active: true }'
+        expected = {'User': {'name': 'Alice', 'id': 101, 'active': True}}
+        parser = RustyIndent(data)
+        self.assertEqual(parser.parse(), expected)
 
-print(json.dumps(output, indent=2))  # sort_keys=True?
+    def test_tuple_struct(self):
+        """Test a tuple struct (wrapper around a list of values)"""
+        data = 'Color(255, 0, 128)'
+        expected = {'Color': [255, 0, 128]}
+        parser = RustyIndent(data)
+        self.assertEqual(parser.parse(), expected)
+
+    def test_nested_empty_structs(self):
+        """Test nesting and empty structures"""
+        data = 'Outer { inner: Inner { empty: {}, nothing: None }, list: [] }'
+        expected = {
+            'Outer': {
+                'inner': {'Inner': {'empty': {}, 'nothing': None}},
+                'list': []
+            }
+        }
+        parser = RustyIndent(data)
+        self.assertEqual(parser.parse(), expected)
+
+    def test_mixed_generics_and_paths(self):
+        """Test that complex type paths are kept as single strings"""
+        data = 'Ctr { type: std::vec::Vec<i32>, data: Some<Cmplx<int, int>> }'
+        expected = {
+            'Ctr': {
+                'type': 'std::vec::Vec<i32>',
+                # 'Some' is treated as a string here because it is not
+                # followed by ( or {
+                'data': 'Some<Cmplx<int, int>>'
+            }
+        }
+        parser = RustyIndent(data)
+        self.assertEqual(parser.parse(), expected)
+
+    def test_timestamp(self):
+        """Test that timestamp is a single string"""
+        data = 'Lg { created: 2025-05-12 13:58:48.641542136 +00:00:00, id: 1 }'
+        expected = {
+            'Lg': {
+                'created': '2025-05-12 13:58:48.641542136 +00:00:00',
+                'id': 1
+            }
+        }
+        parser = RustyIndent(data)
+        result = parser.parse()
+        self.assertEqual(result, expected)
+
+    def test_fails_on_extra_input(self):
+        """Should fail if input contains more than one root element"""
+        data = 'text Hi {val: 2}'
+        parser = RustyIndent(data)
+        with self.assertRaises(ValueError):
+            parser.parse()
+
+
+class RustyIndent:
+    def __init__(self, data):
+        self.data = data.strip()
+        self.tokens = self._tokenize(self.data)
+        self.pos = 0
+
+    def parse(self):
+        if not self.tokens:
+            return {}
+
+        # 1. Parse the main object/value
+        if self._peek() == '{':
+            result = self._parse_object()
+        elif self._peek() == '[':
+            result = self._parse_list()
+        else:
+            result = self._parse_value()
+
+        # 2. FAIL if there is anything left over
+        if self.pos < len(self.tokens):
+            leftover = self.tokens[self.pos:]
+            # truncating output for readability if it's huge
+            snippet = str(leftover[:5]) + ('...' if len(leftover) > 5 else '')
+            raise ValueError(
+                f'Parsed successfully but found extra data at the end: '
+                f'{snippet}')
+
+        return result
+
+    def _tokenize(self, text):
+        tokens = []
+        i = 0
+        n = len(text)
+
+        while i < n:
+            if text[i].isspace():
+                i += 1
+                continue
+
+            char = text[i]
+
+            # 1. Strings
+            if char == '"':
+                start = i
+                i += 1
+                while i < n:
+                    if text[i] == '"' and text[i-1] != '\\':
+                        i += 1
+                        break
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                tokens.append(text[start:i])
+                continue
+
+            # 2. Check for Colons special handling
+            # We want to keep ':' in times (12:00:00) and offsets (+00:00)
+            # But split on keys (key: value)
+            is_time_colon = (
+                char == ':'
+                and i > 0 and text[i-1].isdigit()
+                and i + 1 < n and text[i+1].isdigit()
+            )
+            is_path_colon = (char == ':' and i + 1 < n and text[i+1] == ':')
+
+            # 3. Structural Characters
+            if char in '{}[]():,' and not is_time_colon and not is_path_colon:
+                tokens.append(char)
+                i += 1
+                continue
+
+            # 4. Atoms
+            start = i
+            angle_depth = 0
+
+            while i < n:
+                curr = text[i]
+
+                if angle_depth == 0:
+                    # Allow '::' (Path)
+                    if curr == ':' and i + 1 < n and text[i+1] == ':':
+                        i += 2
+                        continue
+
+                    # Allow ':' if sandwiched between digits (Time/Offset)
+                    if (curr == ':'
+                            and i > 0 and text[i-1].isdigit()
+                            and i + 1 < n and text[i+1].isdigit()):
+                        i += 1
+                        continue
+
+                    if curr in '{}[]():,"' or curr.isspace():
+                        break
+
+                if curr == '<':
+                    angle_depth += 1
+                elif curr == '>':
+                    if angle_depth > 0:
+                        angle_depth -= 1
+
+                i += 1
+
+            tokens.append(text[start:i])
+
+        return tokens
+
+    def _peek(self):
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _consume(self):
+        token = self.tokens[self.pos]
+        self.pos += 1
+        return token
+
+    def _parse_value(self):
+        token = self._consume()
+
+        if token == '{':
+            return self._parse_object_body()
+        if token == '[':
+            return self._parse_list_body()
+        if token.startswith('"'):
+            return token[1:-1]
+
+        next_token = self._peek()
+
+        # Struct: Name { ... }
+        if next_token == '{':
+            self._consume()
+            return {token: self._parse_object_body()}
+
+        # Tuple/Wrapper: Name( ... )
+        elif next_token == '(':
+            self._consume()
+            return {token: self._parse_tuple_body()}
+
+        # --- HEURISTIC: Timestamp Gluing ---
+        # If we have a date-like token "YYYY-MM-DD", check if next
+        # tokens are time/offset Date pattern: 4 digits, dash, etc.
+        if self._is_date_part(token):
+            return self._try_glue_timestamp(token)
+
+        return self._convert_atom(token)
+
+    def _is_date_part(self, token):
+        # Simple check: "2025-05-12" -> len 10, starts with digit, has dashes
+        return len(token) == 10 and token[0].isdigit() and '-' in token
+
+    def _try_glue_timestamp(self, date_part):
+        # We have "2025-05-12".
+        # Check for Time part "13:58:48..."
+        next_tok = self._peek()
+        if next_tok and next_tok[0].isdigit() and ':' in next_tok:
+            time_part = self._consume()
+            full_str = f'{date_part} {time_part}'
+
+            # Check for Offset part "+00:00:00" or "Z"
+            next_next_tok = self._peek()
+            if next_next_tok and (
+                    next_next_tok.startswith('+')
+                    or next_next_tok.startswith('-')
+                    or next_next_tok == 'Z'):
+                offset_part = self._consume()
+                full_str += f' {offset_part}'
+
+            return full_str
+
+        return self._convert_atom(date_part)
+
+    def _parse_object(self):
+        self._consume()
+        return self._parse_object_body()
+
+    def _parse_object_body(self):
+        obj = {}
+        while self._peek() not in ('}', None):
+            key = self._consume()
+            if key.startswith('"'):
+                key = key[1:-1]
+
+            if self._peek() == ':':
+                self._consume()
+                obj[key] = self._parse_value()
+
+            if self._peek() == ',':
+                self._consume()
+
+        if self._peek() == '}':
+            self._consume()
+        return obj
+
+    def _parse_list(self):
+        self._consume()
+        return self._parse_list_body()
+
+    def _parse_list_body(self):
+        lst = []
+        while self._peek() not in (']', None):
+            lst.append(self._parse_value())
+            if self._peek() == ',':
+                self._consume()
+        if self._peek() == ']':
+            self._consume()
+        return lst
+
+    def _parse_tuple_body(self):
+        lst = []
+        while self._peek() not in (')', None):
+            lst.append(self._parse_value())
+            if self._peek() == ',':
+                self._consume()
+        if self._peek() == ')':
+            self._consume()
+        return lst
+
+    def _convert_atom(self, token):
+        if token == 'true':
+            return True
+        if token == 'false':
+            return False
+        if token == 'None':
+            return None
+        if token.isdigit():
+            return int(token)
+        try:
+            return float(token)
+        except ValueError:
+            return token
+
+
+def main():
+    output = UNKNOWN_FORMAT = object()
+    whatami = os.path.basename(sys.argv[0])
+    ext = whatami.rsplit('.', 1)[-1]
+    input_ = sys.stdin.read()
+
+    try:
+        if ext == 'js':  # JSON
+            output = json.loads(input_)
+
+        elif ext == 'py':  # Python
+            import ast
+            output = ast.literal_eval(input_)
+
+        elif ext == 'rs':  # Rust/Curlyindent
+            output = RustyIndent(input_).parse()
+
+        elif ext in ('yaml', 'yml'):  # YAML
+            import yaml
+            output = yaml.safe_load(input_)
+
+    except Exception as e:
+        print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+    if output is UNKNOWN_FORMAT:
+        print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
+        sys.exit(2)
+
+    print(json.dumps(output, indent=2))  # sort_keys=True?
+
+
+if __name__ == '__main__':
+    if os.environ.get('RUNTESTS', '') not in ('', '0'):
+        unittest_main()
+        assert False, 'does not get here'
+    main()

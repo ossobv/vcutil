@@ -10,6 +10,7 @@ SYSSBINDIR = /sbin
 BINS = \
 	2json.js \
 	2json.py \
+	2json.rs \
 	2json.yaml \
 	apt-find-foreign \
 	argecho \
@@ -131,6 +132,7 @@ test:
 	RUNTESTS=1 ./renum && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./pwhashck && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./sshglob && printf '\342\234\205\n\n'
+	RUNTESTS=1 ./_multi2json && printf '\342\234\205\n\n'
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
 	  printf '\342\234\205\n\n'
 
