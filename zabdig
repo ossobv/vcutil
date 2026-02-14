@@ -153,7 +153,8 @@ class ZAlert(object):
     def severity_zabbix_to_str(cls, num):
         return cls.SEVERITIES[num]
 
-    def __init__(self, problem, trigger):
+    @classmethod
+    def from_problem_trigger(cls, problem, trigger):
         assert trigger['value'] == '1', trigger  # 1=Problem
         assert trigger['flags'] in (
             '0',  # Normal item
@@ -162,16 +163,22 @@ class ZAlert(object):
             '4',  # Auto-created item
         ), trigger  # XXX?
 
-        assert len(trigger['hosts']) == 1, trigger
-        host = trigger['hosts'][0]
-        del trigger['hosts']
+        hosts = trigger.pop('hosts')
+        assert len(hosts) >= 1, trigger
+        items = trigger.pop('items')
 
-        assert all(
-            i['hostid'] == host['hostid'] for i in trigger['items']), (
-                trigger)
-        items = trigger['items']
-        del trigger['items']
+        zalerts = []
+        items_used = 0
+        for host in hosts:
+            host_items = [
+                item for item in items if item['hostid'] == host['hostid']]
+            items_used += len(host_items)
+            zalerts.append(cls(problem, trigger, host, host_items))
+        assert items_used == len(items), (items_used, hosts, items)
 
+        return zalerts
+
+    def __init__(self, problem, trigger, host, items):
         self._problem = problem
         self._trigger = trigger
         self._host = host
@@ -578,20 +585,21 @@ class ZInterface(object):
                 warn('no trigger for alert {!r}'.format(problem))
                 continue
 
-            alert = ZAlert(problem, trigger)
-            if not alert.host_enabled:
-                # host is disabled, skip
-                continue
+            possible_alerts = ZAlert.from_problem_trigger(problem, trigger)
+            for alert in possible_alerts:
+                if not alert.host_enabled:
+                    # host is disabled, skip
+                    continue
 
-            if not alert.all_items_enabled:
-                # Some of the trigger items are disabled. This is generally
-                # rather annoying. Do check and re-enable them if possible.
-                # There are better ways to fix this.
-                warn('some or all items disabled in {}'.format(alert))
-                continue
+                if not alert.all_items_enabled:
+                    # Some of the trigger items are disabled. This is generally
+                    # rather annoying. Do check and re-enable them if possible.
+                    # There are better ways to fix this.
+                    warn('some or all items disabled in {}'.format(alert))
+                    continue
 
-            if alert.enabled or not enabled_only:
-                alerts.append(alert)
+                if alert.enabled or not enabled_only:
+                    alerts.append(alert)
 
         alerts.sort(key=(lambda x: (
             x._problem['severity'], x.description, x.hostname)))
