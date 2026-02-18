@@ -1,5 +1,5 @@
 #!/bin/sh
-# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2023 // Public Domain
+# ipmikvm (part of ossobv/vcutil) // wdoekes/2019-2026 // Public Domain
 #
 # A wrapper to call the SuperMicro iKVM console bypassing Java browser
 # plugins.
@@ -200,8 +200,8 @@ get_launch_jnlp() {
 
         # Add --compressed. The Quanta BMC will send gzipped regardless
         # of provided support.
-        local data="$(curl "$url" --fail -LksS --cookie-jar "$temp" \
-            --compressed)"
+        local data="$(curl "$url" --fail -LksS --cookie "$temp" \
+            --cookie-jar "$temp" --compressed)"
         local ret=$?
         if test $ret -eq 0 && echo "$data" |
                 grep -q '<title>Quanta Cloud</title>'; then
@@ -216,7 +216,8 @@ get_launch_jnlp() {
                 url=$(as_http "$url")
                 echo "retrying without ssl on $url" >&2
                 local_append='<!-- DISABLED_SSL -->'
-                data=$(curl "$url" --fail -LksS --cookie-jar "$temp")
+                data=$(curl "$url" --fail -LksS --cookie "$temp" \
+                    --cookie-jar "$temp")
                 if test $? -ne 0 || ! echo "$data" | grep -q '<form '; then
                     echo "sad times" >&2
                     data=
@@ -227,49 +228,66 @@ get_launch_jnlp() {
                 break
             fi
         fi
-        local use_base64=$(echo "$data" | grep -q '=.*btoa' && echo 1)
 
-        if test -n "$use_base64"; then
-            user=$(echo -n "$user" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
-            pass=$(echo -n "$pass" | base64 -w0 | sed -e 's/=/%3D/g;s/+/%2B/g')
+        if echo "$data" | grep -qF chkRequired; then
+            # Try new javascript login.
+            if curl "$url/redfish/v1/SessionService/Sessions" --fail -LksS \
+                    --cookie "$temp" --cookie-jar "$temp" \
+                    -H 'Content-Type: application/json' \
+                    -XPOST --data-raw \
+                    "{\"UserName\":\"$user\",\"Password\":\"$pass\"}" >&2; then
+                data=1
+                echo >&2
+                break
+            fi
+            data=
+        else
+            # Old fashioned login.
+            local use_base64=$(echo "$data" | grep -q '=.*btoa' && echo 1)
+
+            if test -n "$use_base64"; then
+                user=$(echo -n "$user"|base64 -w0|sed -e 's/=/%3D/g;s/+/%2B/g')
+                pass=$(echo -n "$pass"|base64 -w0|sed -e 's/=/%3D/g;s/+/%2B/g')
+            fi
+            data=$(test -n "$data" &&
+              curl "$url/cgi/login.cgi" --fail -LksS --cookie "$temp" \
+                --cookie-jar "$temp" -XPOST \
+                --data "name=$user&pwd=$pass&check=00")
+            local ret=$?
+            local fail_heur=0
+            if test $ret -eq 0; then
+                local ok_heur=$(echo "$data" |
+                    grep -cF 'url_redirect.cgi?url_name=mainmenu')
+                fail_heur=$(echo "$data" | grep -ciE \
+                    "url_redirect[.]cgi[?]url_name=login_alert|alert[(]|\
+    <META HTTP-EQUIV=\"refresh\" CONTENT=\"0;URL=/\">")
+                if test $ok_heur -gt 0 && test $fail_heur -gt 0; then
+                    echo "response looks like success AND failure: $data" 2>&1
+                    rm "$temp"
+                    exit 1
+                fi
+                if test $fail_heur -gt 0; then
+                    ret=1
+                fi
+                if test -z "$data"; then
+                    # We get an empty 200 response for login failure on
+                    # Supermicro BMC 01.03.21 with 1.14.0 redfish.
+                    ret=1
+                fi
+            fi
+            test $ret -eq 0 && break
+            echo "login failure ($fail_heur markers on page)" >&2
+            data=
+            false
         fi
-        data=$(test -n "$data" &&
-          curl "$url/cgi/login.cgi" --fail -LksS --cookie "$temp" \
-            --cookie-jar "$temp" -XPOST --data "name=$user&pwd=$pass&check=00")
-        local ret=$?
-        local fail_heur=0
-        if test $ret -eq 0; then
-            local ok_heur=$(echo "$data" |
-                grep -cF 'url_redirect.cgi?url_name=mainmenu')
-            fail_heur=$(echo "$data" | grep -ciE \
-                "url_redirect[.]cgi[?]url_name=login_alert|alert[(]|\
-<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;URL=/\">")
-            if test $ok_heur -gt 0 && test $fail_heur -gt 0; then
-                echo "login page looks like success AND failure: $data" 2>&1
-                rm "$temp"
-                exit 1
-            fi
-            if test $fail_heur -gt 0; then
-                ret=1
-            fi
-            if test -z "$data"; then
-                # We get an empty 200 response for login failure on
-                # Supermicro BMC 01.03.21 with 1.14.0 redfish.
-                ret=1
-            fi
-        fi
-        test $ret -eq 0 && break
-        echo "login failure ($fail_heur markers on page)" >&2
-        data=
-        false
     done
 
     if test -n "$data"; then
-        for url_name in man_ikvm ikvm; do
+        for url_name in ikvm man_ikvm; do
             data=$(curl \
                 "$url/cgi/url_redirect.cgi?url_name=$url_name&url_type=jwsk" \
-                --fail -LksS --cookie "$temp" \
-                -H "Referer: $url/cgi/url_redirect.cgi?url_name=man_ikvm")
+                --fail -LksS --cookie "$temp" --cookie-jar "$temp" \
+                -H "Referer: $url/cgi/url_redirect.cgi?url_name=$url_name")
             test $? -ne 0 && echo "$data" | grep -q '^<jnlp spec=' && break
         done
         if ! echo "$data" | grep -q '^<jnlp spec='; then
