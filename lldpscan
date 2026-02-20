@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# lldpscan (part of ossobv/vcutil) // wdoekes/2022,2023 // Public Domain
+# lldpscan (part of ossobv/vcutil) // wdoekes/2022,2023,2026 // Public Domain
 #
 # Link Layer Discovery Protocol (LLDP) is a link layer protocol used by network
 # devices for advertising their identity, primarily on wired ethernet. Network
@@ -410,6 +410,24 @@ def get_tlv(pkt):
     return (type_, val), pkt
 
 
+def get_all_local_macs():
+    """
+    Returns a dictionary of MAC addresses to interface names.
+    """
+    mac_to_ifname = {}
+    devices = [d for d in os.listdir('/sys/class/net')]
+    for device in devices:
+        try:
+            with open(os.path.join('/sys/class/net', device, 'address')) as fp:
+                addr = fp.read().strip().lower()
+                mac_to_ifname[addr] = device
+        except NotADirectoryError:
+            pass
+        except Exception as e:
+            warn(f"Could not read tap address of {device}: {e}")
+    return mac_to_ifname
+
+
 def get_custom_tlv(tlv):
     """
     Lookup vendor specific Organisational Unit Identifier (OUI) types
@@ -484,10 +502,15 @@ poller.register(s.sock, select.POLLIN)
 
 print(
     'Please wait at least 30 seconds for LLDP frames to arrive...\n'
+    'Ignoring tap devices (local VMs?) unless you supply --include-tap\n'
+    'Ignoring LLDP generated locally unless you supply --include-self\n'
     'Hint: use "ip link set up promisc on dev DEV" for unused devices\n\n',
     end='', file=sys.stderr)
 t0 = time.time()
 shown = set()
+include_tap = ('--include-tap' in sys.argv)
+include_self = ('--include-self' in sys.argv)
+mac_to_ifname = get_all_local_macs()
 try:
     while True:
         seconds = int(time.time() - t0)
@@ -501,22 +524,34 @@ try:
 
             for (ifname, ts, pkt) in s.recv_packets():
                 (tv_sec, tv_usec) = ts
-                if ifname:
-                    tm = datetime.fromtimestamp(tv_sec).strftime('%H:%M:%S')
-                    dt = f'{tm}.{tv_usec:06}'
-                    src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
-                    shown_key = f'{ifname} {src_mac} {dst_mac} {proto} {tlvs}'
-                    print('\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
-                    message = f'{dt} {src_mac} -> {dst_mac} [{ifname}]'
 
-                    if shown_key in shown:
-                        print(f'{message} (already shown)')
-                    else:
-                        shown.add(shown_key)
-                        print(message)
-                        print(pformat(tlvs))
-                        print()
-                    n_packets += 1
+                if not include_self and not ifname:
+                    continue
+
+                src_mac, dst_mac, proto, tlvs = decode_ether_lldp(pkt)
+                if not ifname:
+                    ifname = mac_to_ifname.get(src_mac)
+                    if ifname:
+                        ifname += ':out'
+                if ifname and not include_tap and ifname.startswith('tap'):
+                    continue
+
+                tm = datetime.fromtimestamp(tv_sec).strftime('%H:%M:%S')
+                dt = f'{tm}.{tv_usec:06}'
+
+                shown_key = (
+                    f'{ifname or "-"} {src_mac} {dst_mac} {proto} {tlvs}')
+                print('\r\x1b[K', file=sys.stderr, end='')  # wipe stderr
+                message = f'{dt} {src_mac} -> {dst_mac} [{ifname or "-"}]'
+
+                if shown_key in shown:
+                    print(f'{message} (already shown)')
+                else:
+                    shown.add(shown_key)
+                    print(message)
+                    print(pformat(tlvs))
+                    print()
+                n_packets += 1
 except KeyboardInterrupt:
     print('\r\x1b[K', file=sys.stderr, end='')
 except BaseException:
