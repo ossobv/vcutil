@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# rshall (part of ossobv/vcutil) // wdoekes/2024-2025 // Public Domain
+# rshall (part of ossobv/vcutil) // wdoekes/2024-2026 // Public Domain
 #
 # Run script on many hosts at once and collect output.
 #
@@ -81,10 +81,17 @@ ProcInfo = namedtuple('ProcInfo', 'target process pipe')
 ProcResult = namedtuple('ProcResult', 'target is_success value')
 
 VERBOSE = False
-SCRIPT_TIMEOUT = 30
+CONCURRENT_JOBS = 40
+CONNECT_TIMEOUT = 10
+SCRIPT_TIMEOUT = 60
 
 
 class Runner:
+    STATUS_TICK = 0
+    STATUS_NEW = 1
+    STATUS_SUCCESS = 2
+    STATUS_FAILURE = 3
+
     def __init__(self):
         self._script = '''\
 set -eu
@@ -93,7 +100,7 @@ echo "I am a sample script on $(hostname)"
         self._targets = []
         self.successes = {}
         self.failures = {}
-        self.concurrency = 30
+        self.concurrency = CONCURRENT_JOBS
 
         self._procinfos = []
 
@@ -104,17 +111,20 @@ echo "I am a sample script on $(hostname)"
         self._targets.extend(targets)
 
     def _cycle(self, state):
-        assert state in (True, False, None)
-
         if VERBOSE:
             return
 
-        if state is True:
+        if state == self.STATUS_NEW:
             print('+', end='', file=sys.stderr)
-        elif state is False:
+        elif state == self.STATUS_SUCCESS:
             print('-', end='', file=sys.stderr)
-        elif state is None:
+        elif state == self.STATUS_FAILURE:
+            print('x', end='', file=sys.stderr)
+        elif state == self.STATUS_TICK:
             print('.', end='', file=sys.stderr)
+        else:
+            raise NotImplementedError
+
         sys.stderr.flush()
 
     def _reap(self):
@@ -135,13 +145,17 @@ echo "I am a sample script on $(hostname)"
                     maybe_ok = ('OK' if result.is_success else 'FAIL')
                     print(result.target.hostname, maybe_ok, file=sys.stderr)
 
-                self._cycle(False)
+                if result.is_success:
+                    self._cycle(self.STATUS_SUCCESS)
+                else:
+                    self._cycle(self.STATUS_FAILURE)
 
     def run(self):
         for target in self._targets:
+            self._reap()  # try reaping reapable
             while len(self._procinfos) >= self.concurrency:
                 self._reap()
-                sleep(0.1)  # some sleep before spawning too much at once
+                sleep(0.1)
 
             parent_conn, child_conn = Pipe()
             proc = Process(
@@ -151,13 +165,13 @@ echo "I am a sample script on $(hostname)"
                 ProcInfo(target=target, process=proc, pipe=parent_conn))
             proc.start()
             child_conn.close()
-            self._cycle(True)
-            sleep(0.1)  # some sleep before spawning too much at once
+            self._cycle(self.STATUS_NEW)
+            sleep(0.5)  # some sleep before spawning too much at once
 
         while self._procinfos:
             self._reap()
             sleep(0.5)
-            self._cycle(None)
+            self._cycle(self.STATUS_TICK)
 
         if not VERBOSE:
             print('', file=sys.stderr)  # last _cycle
@@ -177,7 +191,7 @@ def run_remote(parent_conn, child_conn, target, script):
     try:
         proc = Popen(
             ['ssh', '-l', username,
-             '-oConnectTimeout=8',
+             '-oConnectTimeout={}'.format(CONNECT_TIMEOUT),
              '-oLogLevel=error',  # suppress banners on stderr
              '-oPasswordAuthentication=no',
              target.ip, '--',
@@ -187,7 +201,7 @@ def run_remote(parent_conn, child_conn, target, script):
             out, err = proc.communicate(timeout=SCRIPT_TIMEOUT)
         except TimeoutExpired:
             proc.kill()
-            out, err = proc.communicate(timeout=30)  # should be instant?
+            out, err = proc.communicate(timeout=3)  # should be instant?
             err += '\n\nTIMEOUT'
         if proc.wait() != 0 or err:
             # WARNING: Runs in nazi mode right now and fails if anything
