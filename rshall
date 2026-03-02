@@ -63,13 +63,15 @@
 # - Any output on stderr is now considered a failure. This abides by the
 #   principle of least surprise. If you want to ignore stderr, redirect
 #   stderr to /dev/null where appropriate.
+# - The script must start with #!/bin/sh for now. Except if you're using
+#   "!#/usr/bin/rshall", in which case #!/bin/sh is silently assumed.
 #
 import sys
 
 from collections import namedtuple
 from ipaddress import AddressValueError, IPv4Address
 from multiprocessing import Process, Pipe
-from os import environ, rename
+from os import environ, path, rename
 from shlex import quote as shell_escape
 from subprocess import CalledProcessError, PIPE, Popen, TimeoutExpired
 from time import sleep
@@ -93,6 +95,7 @@ class Runner:
 
     def __init__(self):
         self._script = '''\
+#!/bin/sh
 set -eu
 echo "I am a sample script on $(hostname)"
 '''
@@ -244,9 +247,24 @@ class Project:
             raise ValueError(f'expected at least one target in {filename}')
         return targets
 
-    def __init__(self, project_name):
-        self.name = project_name
-        self.script = self._load_script(self.get_script_name())
+    def __init__(self, script_name, alt_project_name=None):
+        self.name = script_name
+        # We get the script name based off the project first.
+        self.script_name = self.get_script_name()
+
+        # If alt_project_name is set, use that. If it included the ".targets"
+        # suffix, drop that.
+        if alt_project_name:
+            if (alt_project_name.endswith('.targets')
+                    and len(alt_project_name) > 8
+                    and path.exists(alt_project_name)):
+                alt_project_name = alt_project_name[0:-8]
+            self.name = alt_project_name
+            # Check that user is not trying to run a different script after
+            # all.
+            assert not path.exists(self.get_script_name())
+
+        self.script = self._load_script(self.script_name)
         self.targets = self._load_targets(self.get_targets_name())
         self.skipped = 0
 
@@ -310,12 +328,20 @@ class Project:
     def _load_script(filename):
         """
         Load foobar.rsh file, containing "#!/bin/sh .. echo foo; echo bar"
+
+        As an exception, instead of "#!/bin/sh" the shebang may also point to
+        "rshall" so the script can be run directly.
         """
         try:
             with open(filename) as fp:
                 script = fp.read()
                 first_line = script.split('\n', 1)[0].strip()
-                if first_line != '#!/bin/sh':
+                if '\n' in script and first_line in (
+                        '#!/usr/bin/env rshall', '#!/usr/bin/rshall'):
+                    # Replace their "rshall" shebang with regular /bin/sh.
+                    script = '#!/bin/sh' + script[script.index('\n'):]
+                elif first_line != '#!/bin/sh':
+                    # This is the expected syntax.
                     raise NotImplementedError('we only support sh-syntax now')
         except FileNotFoundError:
             print(
@@ -381,8 +407,8 @@ class Project:
         return targets
 
 
-def main(project_name):
-    project = Project(project_name)
+def main(script_name, alt_project_name=None):
+    project = Project(script_name, alt_project_name)
     runner = Runner()
 
     runner.add_targets(project.targets)
@@ -406,4 +432,5 @@ def main(project_name):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1])  # USERNAME=root rshall samplescript.rsh
+    # USERNAME=root rshall samplescript.rsh [ALT_NAME[.targets]]
+    main(*sys.argv[1:])
