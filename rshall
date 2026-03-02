@@ -186,6 +186,11 @@ def run_remote(parent_conn, child_conn, target, script):
     out, err = '', ''
 
     env = environ.copy()  # keep SSH_AGENT stuff
+
+    # Remove language stuff that causes different output.
+    for key in list(env.keys()):
+        if key.startswith('LC_') or key == 'LANG':
+            del env[key]
     env['LC_ALL'] = 'C'
     username = env['USERNAME']
     try:
