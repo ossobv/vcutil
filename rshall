@@ -209,6 +209,8 @@ def run_remote(parent_conn, child_conn, target, script):
              '-oConnectTimeout={}'.format(CONNECT_TIMEOUT),
              '-oLogLevel=error',  # suppress banners on stderr
              '-oPasswordAuthentication=no',
+             '-oUpdateHostKeys=yes',
+             '-oStrictHostKeyChecking=accept-new',
              ip, '--',
              'sudo', 'sh', '-c', quoted_script],
             stdin=None, stdout=PIPE, stderr=PIPE, text=True, env=env)
