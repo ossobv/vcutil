@@ -36,7 +36,7 @@
 #
 #   #hostname;#ip4
 #   foo.com;1.2.3.4
-#   bar.com;55.55.55.55
+#   myuser@bar.com;55.55.55.55
 #
 # - Run the script on all target hosts, using rshall:
 #
@@ -51,15 +51,15 @@
 #   #hostname;#ip4;#result
 #   foo.com;1.2.3.4;nameserver;127.0.0.53
 #   foo.com;1.2.3.4;resolvectl;8.8.8.8 1.1.1.1
-#   bar.com;55.55.55.55;nameserver;127.0.0.53
-#   bar.com;55.55.55.55;resolvectl;8.8.8.8 1.1.1.1
+#   myuser@bar.com;55.55.55.55;nameserver;127.0.0.53
+#   myuser@bar.com;55.55.55.55;resolvectl;8.8.8.8 1.1.1.1
 #
 # Caveats:
 #
 # - Right now, you're stuck with semi-colon delimited CSV for targets (input)
 #   and output. This is a fair compromise between readability and automation.
 # - Configuring the USERNAME is cumbersome if you're not using the same
-#   username everywhere.
+#   username everywhere. You can set the user as "myuser@hostname" instead.
 # - Any output on stderr is now considered a failure. This abides by the
 #   principle of least surprise. If you want to ignore stderr, redirect
 #   stderr to /dev/null where appropriate.
@@ -75,7 +75,6 @@ from subprocess import CalledProcessError, PIPE, Popen, TimeoutExpired
 from time import sleep
 
 
-# TODO: maybe add properties to ip, like '1.2.3.4?username=xyz'
 Target = namedtuple('Target', 'hostname ip')
 ProcInfo = namedtuple('ProcInfo', 'target process pipe')
 ProcResult = namedtuple('ProcResult', 'target is_success value')
@@ -192,14 +191,22 @@ def run_remote(parent_conn, child_conn, target, script):
         if key.startswith('LC_') or key == 'LANG':
             del env[key]
     env['LC_ALL'] = 'C'
-    username = env['USERNAME']
+
+    # The hostname may be "hostname" or "user@hostname".
+    if '@' in target.hostname:
+        username, ip = target.hostname.split('@')
+    else:
+        username, ip = env['USERNAME'], target.hostname
+    if target.ip:
+        ip = target.ip  # always prefer IP if available
+
     try:
         proc = Popen(
             ['ssh', '-l', username,
              '-oConnectTimeout={}'.format(CONNECT_TIMEOUT),
              '-oLogLevel=error',  # suppress banners on stderr
              '-oPasswordAuthentication=no',
-             target.ip, '--',
+             ip, '--',
              'sudo', 'sh', '-c', quoted_script],
             stdin=None, stdout=PIPE, stderr=PIPE, text=True, env=env)
         try:
