@@ -1,5 +1,3 @@
-HASHES = $(wildcard *.hash)
-
 DESTDIR =
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -108,7 +106,6 @@ OTHER = \
 	ikvmocr.js \
 	ikvmocr-1.png \
 	ikvmocr-2.png \
-	psdiff.hash \
 	psdiff.rst \
 	tcpdump247.default \
 	udiff.selftest \
@@ -117,9 +114,9 @@ OTHERX = \
 	tcpdump247 \
 
 
-.PHONY: all clean deb hashes make_has_all_files all_bins_are_executable
+.PHONY: all clean deb make_has_all_files all_bins_are_executable
 .PHONY: all_other_has_no_x
-all: hashes make_has_all_files all_bins_are_executable all_other_has_no_x
+all: make_has_all_files all_bins_are_executable all_other_has_no_x
 
 clean:
 	$(MAKE) -f udiff.selftest clean
@@ -151,12 +148,6 @@ install:
 	#install -m0600 -D -T \
 	#  tcpdump247.default $(DESTDIR)$(SYSCONFDIR)/default/tcpdump247
 
-# salt.states.file.managed likes to have hashes to download, to check
-# whether it has the newest version. See:
-# https://docs.saltstack.com/en/latest/ref/states/all/
-#   salt.states.file.html#salt.states.file.managed
-hashes: $(HASHES)
-
 make_has_all_files:
 	@bash -c "diff -pu <(git ls-files | grep -vF / | LC_ALL=C sort -V) \
 	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) $(OTHERX) | \
@@ -172,6 +163,3 @@ all_other_has_no_x:
 	  if ! test -f $$nox || test -x $$nox; then \
 	    echo "$$nox: unexpected perms/availability" >&2; \
 	    ok=false; fi; done; $$ok
-
-%.hash: % Makefile
-	sha256sum $< > $@
