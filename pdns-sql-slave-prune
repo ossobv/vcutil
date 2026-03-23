@@ -1,6 +1,6 @@
 #!/bin/sh
-# pdns-sql-slave-prune (part of ossobv/vcutil) // wdoekes/2017,2021,2023,2025
-#   // Public Domain
+# pdns-sql-slave-prune (part of ossobv/vcutil)
+#   // wdoekes/2017,2021,2023,2025-2026 // Public Domain
 #
 # Reads PowerDNS SQL backend SLAVE data for stale domains and prunes
 # those.
@@ -154,8 +154,13 @@ if test "$DBTYPE" = bind; then
             fi
         done
         # Files have been updated recently?
-        if ! find /var/lib/powerdns -type f -mtime -1 | grep -qF ''; then
-            echo "No recent changes" >&2
+        # > find /var/lib/powerdns -type f -mtime +7  # none contain DNSKEY
+        # > find /var/lib/powerdns -type f -mtime -7  # all contain DNSKEY
+        #   # .. except some, which have been altered by the user.
+        # We'll use the PDNS automatic KSK Thursday rollover to conclude that
+        # slaving still works.
+        if ! find /var/lib/powerdns -type f -mtime -7 | grep -qF ''; then
+            echo 'No recent slave updates (slaving broken?)' >&2
             exit 1
         fi
     }
@@ -163,7 +168,9 @@ if test "$DBTYPE" = bind; then
         local auto autos id domain
         autos=$(sed -e 's/[[:blank:]].*//' /etc/powerdns/autoprimaries.list)
         # Or: pdns_control list-zones
-        find /var/lib/powerdns/zones.slave.d/ -type f |
+        # Also use the mtime +7 here (see Thursday rollover at
+        # test_slave_running). This will keep old records for at least a week.
+        find /var/lib/powerdns/zones.slave.d/ -type f -mtime +7 |
             LC_ALL=C sort |
             sed -Ee 's@^(.*)/([^/]*)$@\1/\2\t\2@' | while read id domain
         do
