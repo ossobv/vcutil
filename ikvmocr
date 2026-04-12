@@ -351,6 +351,9 @@ class ConsoleGrid(ImageMixin):
 
 
 class ConsoleChar:
+    """
+    Holds a single glyph and does RLE encoding/decoding.
+    """
     @classmethod
     def from_int63s(cls, colsize, rowsize, int63s):
         "Decode a list of 64 bit integers (63 bit actually)"
@@ -358,24 +361,14 @@ class ConsoleChar:
 
         # Extract the 3-bit chunks
         chunks = []
-        for idx, val in enumerate(int63s):
+        for val in int63s:
             assert val <= 0x7fff_ffff_ffff_ffff, hex(val)
             # We process 21 chunks of 3 bits (21 * 3 = 63)
-            new_chunks = []
-            for i in range(20, -1, -1):
+            for i in range(21):
                 chunk = (val >> (i * 3)) & 0x7
-                new_chunks.append(chunk)
-            # Remove all leading zeroes in last element.
-            if len(int63s) == (idx + 1):
-                while new_chunks[0] == 0:
-                    if chunks and chunks[-1] == 7 and new_chunks[1] != 0:
-                        # BUG: Currently the encoding is ambiguous.
-                        # Skip this drop, might be needed. Because of
-                        # the big endian shift we do not know where the
-                        # int started.
-                        break
-                    new_chunks.pop(0)
-            chunks.extend(new_chunks)
+                chunks.append(chunk)
+        while chunks and chunks[-1] == 0:
+            chunks.pop()
 
         # Reconstruct the RLE counts
         counts = [0]
@@ -419,27 +412,30 @@ class ConsoleChar:
         self._bwdata = bwdata
 
     def as_int63s(self):
-        "Encode as list of 64 bit integers (63 bit actually)"
+        """Encode as list of 64 bit integers (63 bit actually)
+
+        Stored in LSB-first order (used to be MSB!)."""
         ret = []
         bitsum = bits = 0  # encode values per three bits
+        pos = 0
         for number in self._as_array():
             # Turn any number higher than 7 into 7+0.
             while number > 7:
                 number -= 7
 
-                bitsum = (bitsum << 3) | 7
+                bitsum |= 7 << bits
                 bits += 3
                 if bits >= 63:
                     ret.append(bitsum)
                     bitsum = bits = 0
 
-                bitsum = (bitsum << 3) | 0
+                # Adds zero.
                 bits += 3
                 if bits >= 63:
                     ret.append(bitsum)
                     bitsum = bits = 0
 
-            bitsum = (bitsum << 3) | number
+            bitsum |= number << bits
             bits += 3
             if bits >= 63:
                 ret.append(bitsum)

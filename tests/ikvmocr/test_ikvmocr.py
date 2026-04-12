@@ -24,20 +24,21 @@ ikvmocr = load_script_as_module(BIN_DIR / 'ikvmocr')
 
 class GlyphTest(TestCase):
     def test_letter_X(self):
+        glyph_id = (0x528c28b30a30b1c7, 0x61461651851ab2)
         glyphs = ikvmocr.ConsoleGlyphs()
         glyphs.set_active_size(8, 19)
-        glyphs.set((0x704c28c2ca30a356, 0x2a51851661461), 'X')
-        self.assertEqual(
-            glyphs.get((0x704c28c2ca30a356, 0x2a51851661461)), 'X')
+        glyphs.set(glyph_id, 'X')
+        self.assertEqual(glyphs.get(glyph_id), 'X')
 
 
 class CharTest(TestCase):
     maxDiff = 8192
 
     def test_char_open_paren(self):
+        glyph_id_str = '73cf3cf3ce3ce387:1239e48'
         glyphs = ikvmocr.ConsoleGlyphs()
-        char = ikvmocr.ConsoleChar.from_int63s(
-            8, 16, glyphs._str_to_glyph_id('718e3ce3cf3cf3cf:279e09'))
+        glyph_id = glyphs._str_to_glyph_id(glyph_id_str)
+        char = ikvmocr.ConsoleChar.from_int63s(8, 16, glyph_id)
         self.assertEqual(char.as_string(), '''\
  -  -  -  -  -  -  -  - |
  -  -  -  -  - [X] -  - |
@@ -55,4 +56,4 @@ class CharTest(TestCase):
  -  -  -  -  -  -  -  - |
  -  -  -  -  -  -  -  - |
  -  -  -  -  -  -  -  - |''')
-        self.assertEqual(glyphs._str_from_glyph_id(char.as_int63s()), '718e3ce3cf3cf3cf:279e09')
+        self.assertEqual(char.as_int63s(), glyph_id)
