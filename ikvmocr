@@ -334,7 +334,7 @@ class ConsoleGrid(ImageMixin):
             line = []
             for col in range(0, self.cols):
                 char = self.get_character(col, row)
-                glyph_id = char.as_int16s()
+                glyph_id = char.as_int63s()
                 string = self.glyphs.get(glyph_id, as_string=char.as_string)
                 line.append(string)
             lines.append(''.join(line))
@@ -347,22 +347,78 @@ class ConsoleGrid(ImageMixin):
         for y in range(yoff, yoff + self.rowsize):
             for x in range(xoff, xoff + self.colsize):
                 pixels.append(self._img.getpixel((x, y)))
-        return ConsoleChar(self.colsize, self.rowsize, pixels)
+        return ConsoleChar.from_pixels(self.colsize, self.rowsize, pixels)
 
 
 class ConsoleChar:
-    def __init__(self, colsize, rowsize, data):
+    @classmethod
+    def from_int63s(cls, colsize, rowsize, int63s):
+        "Decode a list of 64 bit integers (63 bit actually)"
+        total_length = colsize * rowsize
+
+        # Extract the 3-bit chunks
+        chunks = []
+        for idx, val in enumerate(int63s):
+            assert val <= 0x7fff_ffff_ffff_ffff, hex(val)
+            # We process 21 chunks of 3 bits (21 * 3 = 63)
+            new_chunks = []
+            for i in range(20, -1, -1):
+                chunk = (val >> (i * 3)) & 0x7
+                new_chunks.append(chunk)
+            # Remove all leading zeroes in last element.
+            if len(int63s) == (idx + 1):
+                while new_chunks[0] == 0:
+                    if chunks and chunks[-1] == 7 and new_chunks[1] != 0:
+                        # BUG: Currently the encoding is ambiguous.
+                        # Skip this drop, might be needed. Because of
+                        # the big endian shift we do not know where the
+                        # int started.
+                        break
+                    new_chunks.pop(0)
+            chunks.extend(new_chunks)
+
+        # Reconstruct the RLE counts
+        counts = [0]
+        ptr = 0
+        for chunk in chunks:
+            if chunk == 0:
+                # Previous was probably 7, so we got a 0 and keep counting.
+                ptr -= 1
+                continue
+
+            counts[ptr] += chunk
+            ptr += 1
+            if ptr == len(counts):
+                counts.append(0)
+        counts.pop()
+
+        # Turns counts into bool array
+        bwdata = []
+        state = False
+        for count in counts:
+            bwdata.extend([state] * count)
+            state = not state
+
+        # Fill the remaining length with the final state
+        bwdata.extend([state] * (total_length - len(bwdata)))
+
+        return ConsoleChar(colsize, rowsize, bwdata)
+
+    @classmethod
+    def from_pixels(cls, colsize, rowsize, pixels):
+        "Decode pixels into boolean on/off"
+        bwdata = []
+        for pixel in pixels:
+            # print(colsize, rowsize, bwdata)
+            bwdata.append(cls._is_on(pixel))
+        return cls(colsize, rowsize, bwdata)
+
+    def __init__(self, colsize, rowsize, bwdata):
         self.colsize = colsize
         self.rowsize = rowsize
-        self._parse_data(data)
-
-    def _parse_data(self, data):
-        bwdata = []
-        for pixel in data:
-            bwdata.append(self._is_on(pixel))
         self._bwdata = bwdata
 
-    def as_int16s(self):
+    def as_int63s(self):
         "Encode as list of 64 bit integers (63 bit actually)"
         ret = []
         bitsum = bits = 0  # encode values per three bits
@@ -443,7 +499,7 @@ class ConsoleGlyphs:
 
     def save_to_file(self, fp):
         """This does manual JS writing so we get a pretty/readable DB.
-        We wanted to store the int16s as 0xNUMBER, but JS does not allow
+        We wanted to store the int63s as 0xNUMBER, but JS does not allow
         0x notation, so now it's a hex string instead (see
         _str_from_glyph_id)."""
         fp.write('{\n')
@@ -546,6 +602,15 @@ def main(screenshot_filenames, glyph_db_filename):
             os.makedirs(os.path.dirname(glyph_db_filename))
         except FileExistsError:
             pass
+
+    if 0:
+        glyphs.set_active_size(8, 16)
+        g = glyphs.get((0x718e3ce3cf3cf3cf, 0x279e09))
+        print(g)
+        q = ConsoleChar.from_int63s(
+            8, 16, glyphs._str_to_glyph_id('718e3ce3cf3cf3cf:279e09'))
+        print(q)
+        print(q.as_string())
 
     try:
         for screenshot_filename in screenshot_filenames:
