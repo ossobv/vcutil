@@ -108,35 +108,48 @@ Press ENTER to continue or 'Q' break:_                                          
 
     def test_ikvmocr_2(self):
         self.check_equal(TEST_DIR / 'ikvmocr-2.png', '''\
-Version 2.20.1276. Copyright (C) 2021 American Megatrends, Inc.                                         $
-Supermicro X11SCE-F BIOS Date:06/01/2021 Rev:1.6                                                        $
-                                                                                                        $
-CPU : Intel(R) Xeon(R) E-2236 CPU @ 3.40GHz                                                             $
- Speed : 3.40 GHz                                                                                       $
-The IMC is operating with DDR4 2667 MHz                                                                 $
-  Invoking Boot Menu                                                                                    $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-Press DEL to run Setup                                                                                  $
-Press F11 to invoke Boot Menu                                                                           $
-Press F12 to boot from PXE/LAN                                                                          $
-  DXE--SuperIO Initialization..                                                                         $
-                                                                             99                         $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
-                                                                                                        $
+Version 2.20.1276. Copyright (C) 2021 American Megatrends, Inc.                $
+Supermicro X11SCE-F BIOS Date:06/01/2021 Rev:1.6                               $
+                                                                               $
+CPU : Intel(R) Xeon(R) E-2236 CPU @ 3.40GHz                                    $
+ Speed : 3.40 GHz                                                              $
+The IMC is operating with DDR4 2667 MHz                                        $
+  Invoking Boot Menu                                                           $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+                                                                               $
+Press DEL to run Setup                                                         $
+Press F11 to invoke Boot Menu                                                  $
+Press F12 to boot from PXE/LAN                                                 $
+  DXE--SuperIO Initialization..                                                $
+                                                                             99$
+''')
+
+    def test_ikvmocr_3(self):
+        self.check_equal(TEST_DIR / 'ikvmocr-3.png', '''\
+Ubuntu 22.04.5 LTS node1.dr.io.osso.cloud tty1                                                                                  $
+                                                                                                                                $
+node1 login: [27812653.946938] Memory cgroup out of memory: Killed process 3561120 (apt-cacher-ng) total-vm:10552492kB, anon-rss$
+:1044464kB, file-rss:0kB, shmem-rss:0kB, UID:101 pgtables:2808kB oom_score_adj:996                                              $
+[29555029.026327] Memory cgroup out of memory: Killed process 2544256 (beam.smp) total-vm:17168796kB, anon-rss:8332664kB, file-r$
+ss:0kB, shmem-rss:61004kB, UID:1001 pgtables:17824kB oom_score_adj:-997                                                         $
+''')
+
+    def test_ikvmocr_4(self):
+        self.check_equal(TEST_DIR / 'ikvmocr-4.png', '''\
+Ubuntu 22.04.5 LTS node1.dr.io.osso.cloud tty1                                                                                  $
+                                                                                                                                $
+node1 login: [27812653.946938] Memory cgroup out of memory: Killed process 3561120 (apt-cacher-ng) total-vm:10552492kB, anon-rss$
+:1044464kB, file-rss:0kB, shmem-rss:0kB, UID:101 pgtables:2808kB oom_score_adj:996                                              $
+[29555029.026327] Memory cgroup out of memory: Killed process 2544256 (beam.smp) total-vm:17168796kB, anon-rss:8332664kB, file-r$
+ss:0kB, shmem-rss:61004kB, UID:1001 pgtables:17824kB oom_score_adj:-997                                                         $
 ''')

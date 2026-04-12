@@ -192,35 +192,29 @@ class IKvmScreenshot(ImageMixin):
         raise IKvmOcrError('{} black lines not found'.format(how_many))
 
     def _find_right_left(self, top, height):
-        if height == 600:
-            width = 800
-        elif height == 768:
-            width = 1024
-        else:
-            raise IKvmOcrError('height {} not implemented'.format(height))
-
-        # Take top left position, and stop when it's black.
-        for x in range(0, self._img.width - width):
+        # Dynamically find left and right edges of the console at y=top.
+        # For a screenshot with a window frame, the frame pixels are non-black
+        # and the console border is black. For an image that IS the console
+        # (no surrounding frame), left=0 and right=width-1.
+        for x in range(0, self._img.width):
             if self._is_blackish(x, top):
                 left = x
                 break
         else:
             raise IKvmOcrError('no top left black pixel found')
 
-        # Check right side.
-        right = x + width - 1
-        assert right < self._img.width, (x, width, self._img.width)
-        if not self._is_blackish(right, top):
-            pixel = self._img.getpixel((right, top))
-            raise IKvmOcrError('top right {},{} pixel not black: {}'.format(
-                right, top, pixel))
-        if right < self._img.width:
-            # Check that the right side of the console window looks like
-            # a window (non-black). Only useful when we assume that this is
-            # a screenshot of a window and not simply the window contents.
-            if self._is_blackish(right + 1, top):
-                raise IKvmOcrError('expected non-black pixel at {},{}'.format(
-                    right + 1, top))
+        for x in range(self._img.width - 1, left, -1):
+            if self._is_blackish(x, top):
+                right = x
+                break
+        else:
+            raise IKvmOcrError('no top right black pixel found')
+
+        # If there is a pixel to the right of the detected edge, it should be
+        # non-black (the window frame). Skip this check when at image boundary.
+        if right + 1 < self._img.width and self._is_blackish(right + 1, top):
+            raise IKvmOcrError('expected non-black pixel at {},{}'.format(
+                right + 1, top))
 
         assert left < right, (left, right)
         return left, right
@@ -234,13 +228,14 @@ class ConsoleWindow(ImageMixin):
         self._img = pilimg
 
     def get_console_grid(self):
-        (col_width, row_height), (left, top) = self.find_col_dimensions()
+        (col_width, row_height), (x_start, y_start), (x_end, y_end) = (
+            self.find_col_dimensions())
 
-        col_count = (self._img.width - left) // col_width
-        row_count = (self._img.height - top) // row_height
-        right = left + col_count * col_width - 1
-        bottom = top + row_count * row_height - 1
-        extent = Extent(top, right, bottom, left)
+        col_count = (x_end - x_start + 1) // col_width
+        row_count = (y_end - y_start + 1) // row_height
+        right = x_start + col_count * col_width - 1
+        bottom = y_start + row_count * row_height - 1
+        extent = Extent(y_start, right, bottom, x_start)
         assert extent.width % col_width == 0, extent
         assert extent.height % row_height == 0, extent
 
@@ -265,14 +260,14 @@ class ConsoleWindow(ImageMixin):
         horizontal_black_lines = [
             y for y in range(0, self._img.height)
             if self.is_horizontal_black_line(y)]
-        row_height, y_offset = self._find_size_offset_from_black(
-            horizontal_black_lines)
+        row_height, y_start, y_end = self._find_size_and_content_bounds(
+            horizontal_black_lines, self._img.height)
 
         vertical_black_lines = [
             x for x in range(0, self._img.width)
             if self.is_vertical_black_line(x)]
-        col_width, x_offset = self._find_size_offset_from_black(
-            vertical_black_lines)
+        col_width, x_start, x_end = self._find_size_and_content_bounds(
+            vertical_black_lines, self._img.width)
 
         if not (3 <= col_width <= 72 and 3 <= row_height <= 72):
             print('DEBUG: detected width x height: {}x{}'.format(
@@ -288,12 +283,34 @@ class ConsoleWindow(ImageMixin):
             raise IKvmOcrError('grid width/height not sane: {}x{}'.format(
                 col_width, row_height))
 
-        return ((col_width, row_height), (x_offset, y_offset))
+        return ((col_width, row_height), (x_start, y_start), (x_end, y_end))
 
-    def _find_size_offset_from_black(self, black_lines):
+    def _find_size_and_content_bounds(self, black_lines, total_count):
+        """Return (size, content_start, content_end) aligned to the grid.
+
+        size is detected from the most common spacing between black-line groups.
+        content_start/end are aligned to size boundaries and derived from the
+        first and last non-black positions, so trailing blank rows/cols are
+        excluded while blank rows/cols between content are preserved.
+        """
         outlines = self._outlines(black_lines)
-        size, offset = self._most_common_diff(outlines)
-        return size, offset
+        size, _ = self._most_common_diff(outlines)
+
+        black_set = set(black_lines)
+        first_non_black = next(
+            (i for i in range(total_count) if i not in black_set), None)
+        last_non_black = next(
+            (i for i in range(total_count - 1, -1, -1) if i not in black_set),
+            None)
+
+        if first_non_black is None:
+            raise IKvmOcrError('no non-black positions found')
+
+        start = first_non_black
+        glyphs = (last_non_black - first_non_black + size - 1) // size
+        end = first_non_black + glyphs * size
+
+        return size, start, end
 
     @staticmethod
     def _outlines(numbers):
@@ -475,8 +492,10 @@ class ConsoleChar:
 
     @staticmethod
     def _is_on(pixel):
-        assert pixel[3] == 255, pixel
-        return (pixel[0] + pixel[1] + pixel[2]) >= 144
+        # If we're looking too much to the right/bottom, we might see
+        # some transparency. Ignore it for now.
+        # assert pixel[3] == 255, pixel
+        return (pixel[0] + pixel[1] + pixel[2]) >= 144 and pixel[3] == 255
 
 
 class ConsoleGlyphs:
