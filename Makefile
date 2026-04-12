@@ -104,8 +104,6 @@ OTHER = \
 	README.rst \
 	gitlab-hook-postcommit-coloremail.example \
 	ikvmocr.js \
-	ikvmocr-1.png \
-	ikvmocr-2.png \
 	psdiff.rst \
 	tcpdump247.default \
 	udiff.selftest \

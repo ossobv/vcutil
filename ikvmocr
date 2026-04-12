@@ -314,7 +314,7 @@ class ConsoleWindow(ImageMixin):
 
 class ConsoleGrid(ImageMixin):
     """
-    Hold the console window with letters
+    Holds the console window with letters.
     """
     def __init__(self, pilimg, cols, rows, colsize, rowsize):
         super().__init__(pilimg)
@@ -338,7 +338,7 @@ class ConsoleGrid(ImageMixin):
                 string = self.glyphs.get(glyph_id, as_string=char.as_string)
                 line.append(string)
             lines.append(''.join(line))
-        return '\n'.join(lines)
+        return '\n'.join(lines) + '\n'
 
     def get_character(self, col, row):
         pixels = []
@@ -480,6 +480,9 @@ class ConsoleChar:
 
 
 class ConsoleGlyphs:
+    """
+    Holds the set of glyphs for all different character sizes and loads/saves.
+    """
     def __init__(self):
         self._storage = {}
         self._active_cols_rows = None
@@ -566,15 +569,18 @@ class ConsoleGlyphs:
         return ret
 
 
-def read_screenshot_and_dump(screenshot_filename, glyphs):
+def read_screenshot(screenshot_filename, glyphs):
     with IKvmScreenshot.from_filename(screenshot_filename) as screenshot:
         with screenshot.get_console_window() as consolewin:
             with consolewin.get_console_grid() as consolegrid:
                 consolegrid.set_glyphs(glyphs)
-                content = consolegrid.get_content()
-                print('----', screenshot_filename, '----', file=sys.stderr)
-                for line in content.split('\n'):
-                    print(line)
+                return consolegrid.get_content()
+
+
+def read_screenshot_and_dump(screenshot_filename, glyphs):
+    content = read_screenshot(screenshot_filename, glyphs)
+    print('----', screenshot_filename, '----', file=sys.stderr)
+    print(content, end='')
 
 
 def main(screenshot_filenames, glyph_db_filename):
