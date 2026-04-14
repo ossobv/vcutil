@@ -1,23 +1,23 @@
-#!/bin/sh
-# hostsort (part of ossobv/vcutil) // wdoekes/2023 // Public Domain
+#!/usr/bin/env python3
+# hostsort (part of ossobv/vcutil) // wdoekes/2023,2026 // Public Domain
 #
-# Sort input lines by hostname (top-down, right-to-left).
+# Sort input lines by hostname in TLD-first-order.
 #
 # USAGE
 #
 #     $ printf '%s\n' \
-#         node3.example.com node2.domain.tld \
-#         node1.domain.tld master.example.com | hostsort
-#     master.example.com
-#     node3.example.com
-#     node1.domain.tld
-#     node2.domain.tld
+#         node3.example.com node10.domain.tld \
+#         node2.domain.tld master.example.com | hostsort
+#     master.example.com  # "com" < "tld"
+#     node3.example.com   # "node3" > "master"
+#     node2.domain.tld    # "node2" < "node10"
+#     node10.domain.tld
 #
 # EXPLANATION
 #
 #     Sorts the input hostnames top-down, from right to left.
-#     This is done by translating "node2.domain.tld" into
-#     "tld.domain.node2." before sorting.
+#     For all intents and purposes, it is as if "node2.domain.tld" is
+#     translated to "tld.domain.node0002." before sorting.
 #
 # WHY
 #
@@ -32,20 +32,360 @@
 #
 #     Using hostsort, you'll get easier groupings.
 #
-# TODO
+# NOTES
 #
-#     We'll probably want to add the possibility of skipping over parts
-#     before sorting (-k<N>) and leave other non-hostname parts untouched.
-#     E.g. to sort a CSV by hostname. Right now it only works if you put
-#     the hostname in the last field.
+#     This is a Claude assisted rewrite of the previous awk hostsort with the
+#     following features added:
 #
-#     Also, we don't support numeric/version sort, so node11 will sort
-#     before node2.
+#     * The "zone" can now be expressed using -z/--zone or HOSTSORT_ZONE_REGEX.
+#       Allows you to group "zone"-tagged hostnames together (-z "ams|grq"):
+#       $ printf '%s.ex.com\n' nd2.ams nd1.grq nd1.ams | hostsort
+#       nd1.ams.ex.com
+#       nd2.ams.ex.com
+#       nd1.grq.ex.com
+#       $ printf '%s.ex.com\n' nd2.ams nd1.grq nd1.ams | hostsort -z 'ams|grq'
+#       nd1.ams.ex.com
+#       nd1.grq.ex.com
+#       nd2.ams.ex.com
+#       The "zone"-field-position is included in the sorting algorithm, so
+#       hostnames where the zone is in the same field are grouped
+#       together.
 #
-#     mawk does not have asorti. Maybe switch to perl instead?
-#     https://github.com/decklin/bin/blob/master/hostsort
+#     * A field can be selected using -k/--key. Delimiter is non-hostname by
+#       default, or specific using -t/--delimited. The rest of the fields are
+#       also "version-sorted", but from left to right.
+#       $ printf '%s\n' 'A z.10@ex10.com hello' 'B y.20@ex3.com hi301' \
+#           'B x.30@ex2.com hi99 A' | hostsort -k3
+#       B x.30@ex2.com hi99 A
+#       B y.20@ex3.com hi301
+#       A z.10@ex10.com hello
+#       But often you'll use -t/--delimiter: in this case --delimiter=' ' and
+#       --key=2, and then "20@ex3" sorts before "30@ex2".
 #
-exec gawk -F. '
-  {r="";for(i=NF;i>=1;--i)r=r$i".";m[r]=$0}
-  END {n=asorti(m,o);for(i in o)print m[o[i]]}
-'
+import argparse
+import os
+import re
+import sys
+from unittest import TestCase
+
+
+def _zone_re(override=None):
+    """Return compiled zone regex, or None if no pattern configured."""
+    pattern = override or os.environ.get('HOSTSORT_ZONE_REGEX')
+    if not pattern:
+        return None
+    return re.compile(r'^(?:' + pattern + r')$')
+
+
+def version_key(s):
+    """Split string into text/int chunks for natural version sort."""
+    return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', s)]
+
+
+def host_sort_key(hostname, zone_re=None):
+    parts = hostname.split('.')
+    rev = list(reversed(parts))
+    zone = None
+    zone_rpos = None
+
+    if zone_re is not None:
+        for i, p in enumerate(parts):
+            if zone_re.match(p):
+                zone = p
+                zone_rpos = len(parts) - 1 - i  # distance from right (0 = TLD)
+                rev = rev[:zone_rpos] + rev[zone_rpos + 1:]
+                break
+
+    # Key: (rpos, non-zone reversed parts, zone label)
+    # rpos is primary so different-rpos groups never interleave.
+    # No zone match -> sentinel 999, grouped after all zoned hostnames.
+    rpos_key = zone_rpos if zone_rpos is not None else 999
+    return (
+        rpos_key,
+        [version_key(p) for p in rev], version_key(zone) if zone else [])
+
+
+def split_line(line, delim, k):
+    """
+    Split line by delim (string) or by non-hostname-char runs (if delim
+    is None).
+
+    Returns (fields, key_field).
+    """
+    if delim is not None:
+        fields = line.split(delim)
+    else:
+        fields = [f for f in re.split(r'[^a-zA-Z0-9._-]+', line) if f]
+    if not fields:
+        return fields, ''
+    return fields, fields[min(k - 1, len(fields) - 1)]
+
+
+def line_sort_key(line, delim, k, zone_re=None):
+    fields, key_field = split_line(line, delim, k)
+    other = [version_key(f) for i, f in enumerate(fields) if i != k - 1]
+    return (host_sort_key(key_field, zone_re=zone_re), other)
+
+
+# ==== Tests ===================================================
+
+_ZRE = _zone_re('dr|wp|zl')  # zone_re used by most tests
+
+
+def _hs(lst, zre=_ZRE):
+    return sorted(lst, key=(lambda h: host_sort_key(h, zone_re=zre)))
+
+
+class TestHostSortKey(TestCase):
+
+    def test_acceptance(self):
+        self.assertEqual(_hs([
+            'node1.wp.otherstuff.example.more.tld',
+            'node1.zl.backend1.prod.example.more.tld',
+            'node2.dr.backend1.prod.example.more.tld',
+            'node1.dr.otherstuff.example.more.tld',
+            'vault.wp.example.more.tld',
+            'vault.dr.example.more.tld',
+            'abc.nl', 'ada.nl', 'www.aaa.nl', 'def.com',
+        ]), [
+            'vault.dr.example.more.tld',
+            'vault.wp.example.more.tld',
+            'node1.dr.otherstuff.example.more.tld',
+            'node1.wp.otherstuff.example.more.tld',
+            'node1.zl.backend1.prod.example.more.tld',
+            'node2.dr.backend1.prod.example.more.tld',
+            'def.com', 'www.aaa.nl', 'abc.nl', 'ada.nl',
+        ])
+
+    def test_no_zone_re(self):
+        # zone feature disabled: plain reversed-domain sort
+        result = _hs([
+            'node1.dr.x.example.com', 'node1.wp.x.example.com',
+            'node1.aa.x.example.com'], zre=None)
+        self.assertEqual(result, [
+            'node1.aa.x.example.com', 'node1.dr.x.example.com',
+            'node1.wp.x.example.com'])
+
+    def test_tld_order(self):
+        self.assertEqual(
+            _hs(['z.nl', 'a.com', 'b.cloud']),
+            ['b.cloud', 'a.com', 'z.nl'])
+
+    def test_same_tld_ascending(self):
+        self.assertEqual(
+            _hs(['z.com', 'a.com', 'm.com']),
+            ['a.com', 'm.com', 'z.com'])
+
+    def test_zone_is_last_tiebreaker(self):
+        self.assertEqual(
+            _hs(['h.zl.x.example.com', 'h.dr.x.example.com']),
+            ['h.dr.x.example.com', 'h.zl.x.example.com'])
+
+    def test_version_sort_nodes(self):
+        self.assertEqual(
+            _hs(['node11.dr.x.example.com',
+                 'node9.dr.x.example.com',
+                 'node2.dr.x.example.com']),
+            ['node2.dr.x.example.com',
+             'node9.dr.x.example.com',
+             'node11.dr.x.example.com'])
+
+    def test_version_sort_plain(self):
+        self.assertEqual(
+            _hs(['web11.com', 'web9.com', 'web2.com'], zre=None),
+            ['web2.com', 'web9.com', 'web11.com'])
+
+    def test_single_label(self):
+        self.assertEqual(_hs(['zzz', 'aaa', 'mmm'], zre=None),
+                         ['aaa', 'mmm', 'zzz'])
+
+    def test_trailing_dot(self):
+        # trailing dot: "a.com." splits to ['a', 'com', '']
+        # no rstrip, sort by key only
+        result = _hs(['b.com.', 'a.com.'], zre=None)
+        self.assertEqual(result, ['a.com.', 'b.com.'])
+
+    def test_zone_position_grouping(self):
+        zre = _zone_re('nl|com|cloud')
+        inp = [
+            'a.com.whatever.org',    # zone rpos 2
+            'a.nl.whatever.org',     # zone rpos 2
+            'c.com.whatever.org',    # zone rpos 2
+            'e.cloud.whatever.org',  # zone rpos 2
+            'e.com.whatever.org',    # zone rpos 2
+            'b.whatever.org.nl',     # zone rpos 0
+            'd.whatever.org.com',    # zone rpos 0
+        ]
+        result = _hs(inp, zre=zre)
+        rpos0 = [
+            h for h in result
+            if h.split('.')[-1] in ('com', 'nl', 'cloud')
+            and h.split('.')[1] not in ('com', 'nl', 'cloud')]
+        rpos2 = [
+            h for h in result if h.split('.')[1] in ('com', 'nl', 'cloud')]
+        # each group must appear contiguously
+        idx0 = [result.index(h) for h in rpos0]
+        idx2 = [result.index(h) for h in rpos2]
+        self.assertEqual(idx0, list(range(min(idx0), max(idx0) + 1)))
+        self.assertEqual(idx2, list(range(min(idx2), max(idx2) + 1)))
+        # rpos=0 group sorts before rpos=2 group
+        self.assertLess(max(idx0), min(idx2))
+        self.assertEqual(rpos0, ['b.whatever.org.nl', 'd.whatever.org.com'])
+        self.assertEqual(rpos2, [
+            'a.com.whatever.org', 'a.nl.whatever.org', 'c.com.whatever.org',
+            'e.cloud.whatever.org', 'e.com.whatever.org',
+        ])
+
+    def test_zone_any_position(self):
+        zre = _zone_re('dr|wp')
+        result = _hs(['x.y.dr.example.com', 'x.y.wp.example.com'], zre=zre)
+        self.assertEqual(result, ['x.y.dr.example.com', 'x.y.wp.example.com'])
+
+
+class TestLineSortKey(TestCase):
+
+    def lsorted(self, lines, delim=None, k=1, zre=_ZRE):
+        return sorted(
+            lines, key=(lambda l: line_sort_key(l, delim, k, zone_re=zre)))
+
+    def test_default_delim_k2(self):
+        self.assertEqual(
+            self.lsorted([
+                'x vault.wp.example.more.tld',
+                'x vault.dr.example.more.tld'], k=2),
+            ['x vault.dr.example.more.tld',
+             'x vault.wp.example.more.tld'])
+
+    def test_explicit_delim(self):
+        self.assertEqual(
+            self.lsorted([
+                'x,vault.wp.example.more.tld',
+                'x,vault.dr.example.more.tld'], delim=',', k=2),
+            ['x,vault.dr.example.more.tld',
+             'x,vault.wp.example.more.tld'])
+
+    def test_other_fields_sort_ascending(self):
+        lines = [
+            'b vault.dr.example.more.tld',
+            'a vault.dr.example.more.tld',
+            'c vault.dr.example.more.tld']
+        self.assertEqual(
+            self.lsorted(lines, k=2),
+            ['a vault.dr.example.more.tld',
+             'b vault.dr.example.more.tld',
+             'c vault.dr.example.more.tld'])
+
+    def test_other_fields_version_sort(self):
+        lines = [
+            'host9  vault.dr.example.more.tld',
+            'host11 vault.dr.example.more.tld',
+            'host2  vault.dr.example.more.tld']
+        result = self.lsorted(lines, k=2)
+        self.assertEqual(result, [
+            'host2  vault.dr.example.more.tld',
+            'host9  vault.dr.example.more.tld',
+            'host11 vault.dr.example.more.tld'])
+
+    def test_underscore_in_field(self):
+        # underscore is a valid hostname char for split purposes
+        lines = [
+            'mail2019._domainkey.example.tld3;1',
+            'aaa.bbb.zone;3',
+            'mail3._domainkey.example2.tld1;4',
+            'mail3._domainkey.example1.tld2;2']
+        result = self.lsorted(lines, k=1)
+        self.assertEqual(result, [
+            'mail3._domainkey.example2.tld1;4',
+            'mail3._domainkey.example1.tld2;2',
+            'mail2019._domainkey.example.tld3;1',
+            'aaa.bbb.zone;3'])
+
+    def test_line_preserved_exactly(self):
+        # lines must be byte-for-byte identical after passing through sort key
+        lines = ['  vault.dr.example.more.tld  ',
+                 '\tvault.wp.example.more.tld']
+        result = self.lsorted(lines, k=1)
+        self.assertIn('  vault.dr.example.more.tld  ', result)
+        self.assertIn('\tvault.wp.example.more.tld', result)
+
+    def test_custom_zone_regex_envvar(self):
+        import unittest.mock
+        with unittest.mock.patch.dict(
+                os.environ,
+                {'HOSTSORT_ZONE_REGEX': r'dr|wp|zl|am7|nik'}):
+            zre = _zone_re()
+            result = sorted(
+                ['node1.am7.x.example.com', 'node1.nik.x.example.com',
+                 'node1.dr.x.example.com'],
+                key=(lambda h: host_sort_key(h, zone_re=zre)))
+            self.assertEqual(result, [
+                'node1.am7.x.example.com', 'node1.dr.x.example.com',
+                'node1.nik.x.example.com'])
+
+    def test_custom_zone_regex_arg(self):
+        zre = _zone_re('dr|wp|zl|am7|nik')
+        result = sorted(
+            ['node1.am7.x.example.com', 'node1.nik.x.example.com',
+             'node1.dr.x.example.com'],
+            key=(lambda h: host_sort_key(h, zone_re=zre)))
+        self.assertEqual(result, [
+            'node1.am7.x.example.com', 'node1.dr.x.example.com',
+            'node1.nik.x.example.com'])
+
+    def test_arg_overrides_envvar(self):
+        import unittest.mock
+        with unittest.mock.patch.dict(
+                os.environ, {'HOSTSORT_ZONE_REGEX': r'xx'}):
+            zre = _zone_re('dr|am7')  # arg wins in the TestCase
+            result = sorted(
+                ['node1.am7.x.example.com', 'node1.xx.x.example.com',
+                 'node1.dr.x.example.com'],
+                key=(lambda h: host_sort_key(h, zone_re=zre)))
+            keys = [host_sort_key(h, zone_re=zre) for h in result]
+            # am7 and dr are zones (popped to end); xx is not
+            self.assertEqual(keys[0][2], version_key('am7'))
+            self.assertEqual(keys[1][2], version_key('dr'))
+
+    def test_no_zone_re_envvar_unset(self):
+        import unittest.mock
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('HOSTSORT_ZONE_REGEX', None)
+            self.assertIsNone(_zone_re())
+
+
+# ==== Main ====================================================
+
+def main():
+    ap = argparse.ArgumentParser(
+        description='Sort lines by reversed-domain hostname key.')
+    ap.add_argument(
+        '-t', '--delimiter', metavar='DELIM', default=None, help=(
+            'field delimiter (default: runs of non-hostname chars)'))
+    ap.add_argument(
+        '-k', '--key', metavar='N', type=int, default=1, help=(
+            '1-based field to use as hostname sort key (default: 1)'))
+    ap.add_argument(
+        '-z', '--zone', metavar='REGEX', default=None, help=(
+            'zone alternation pattern, e.g. "dr|wp|zl|am7|nik" '
+            '(overrides HOSTSORT_ZONE_REGEX; disabled when unset)'))
+    args = ap.parse_args()
+
+    if args.key < 1:
+        ap.error('field number must be >= 1')
+
+    zone_re = _zone_re(args.zone)
+    data = sys.stdin.read()
+    if data and data[-1] == '\n':
+        data = data[:-1]
+    lines = data.split('\n')
+    lines.sort(key=(
+        lambda l: line_sort_key(l, args.delimiter, args.key, zone_re=zone_re)))
+    print('\n'.join(lines))
+
+
+if __name__ == '__main__':
+    if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
+        from unittest import main as unittest_main
+        unittest_main()
+    else:
+        main()
