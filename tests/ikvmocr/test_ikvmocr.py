@@ -1,8 +1,8 @@
 from importlib.util import spec_from_loader, module_from_spec
 from importlib.machinery import SourceFileLoader
-from unittest import TestCase
+from os import environ
 from pathlib import Path
-
+from unittest import TestCase
 
 TEST_DIR = Path(__file__).parent
 BIN_DIR = DATA_DIR = TEST_DIR / '..' / '..'
@@ -34,8 +34,52 @@ class GlyphTest(TestCase):
 class CharTest(TestCase):
     maxDiff = 8192
 
+    @classmethod
+    def setUpClass(cls):
+        environ['RUNTESTS'] = '1'
+
+    def test_char_make_paren(self):
+        bwdata = [
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 1, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 0, 1, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ]
+        char = ikvmocr.ConsoleChar(8, 16, bwdata)
+        glyph_id = char.as_int63s()
+        self.assertEqual(char.as_string(), '''\
+ -  -  -  -  -  -  -  - |
+ -  -  -  -  - [X] -  - |
+ -  -  -  - [X] -  -  - |
+ -  -  -  - [X] -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  - [X] -  -  -  - |
+ -  -  -  - [X] -  -  - |
+ -  -  -  - [X] -  -  - |
+ -  -  -  -  - [X] -  - |
+ -  -  -  -  -  -  -  - |
+ -  -  -  -  -  -  -  - |
+ -  -  -  -  -  -  -  - |''')
+        self.assertEqual(char.as_int63s(), glyph_id)
+
     def test_char_open_paren(self):
-        glyph_id_str = '73cf3cf3ce3ce387:1239e48'
+        glyph_id_str = 'd0a931433ffff'
         glyphs = ikvmocr.ConsoleGlyphs()
         glyph_id = glyphs._str_to_glyph_id(glyph_id_str)
         char = ikvmocr.ConsoleChar.from_int63s(8, 16, glyph_id)
@@ -57,6 +101,44 @@ class CharTest(TestCase):
  -  -  -  -  -  -  -  - |
  -  -  -  -  -  -  -  - |''')
         self.assertEqual(char.as_int63s(), glyph_id)
+
+
+class GridTest(TestCase):
+    maxDiff = 16384
+
+    def check_image(self, image_name, ex_charsize, ex_window):
+        # Load pixels.
+        img = ikvmocr.Image.open(TEST_DIR / image_name)
+        denoised_img = ikvmocr.IKvmScreenshot.denoise_image(img)
+        width, height = denoised_img.size
+        pixels = denoised_img.load()
+        img.close()
+        denoised_img.close()
+
+        # Calculations on the pixels.
+        charsize, window = ikvmocr.detect_console_grid(pixels, width, height)
+        self.assertEqual(charsize, ex_charsize)
+        mod = (
+            window[0][0] % charsize[0], window[0][1] % charsize[1])
+        ex_mod = (
+            ex_window[0][0] % ex_charsize[0], ex_window[0][1] % ex_charsize[1])
+        self.assertEqual(mod, ex_mod)
+        self.assertEqual((charsize, window), (ex_charsize, ex_window))
+
+    def test_ikvmocr_1(self):
+        self.check_image('ikvmocr-1.png', (8, 19), ((2, 64), (802, 653)))
+
+    def test_ikvmocr_2(self):
+        self.check_image('ikvmocr-2.png', (8, 19), ((2, 72), (1026, 813)))
+
+    def test_ikvmocr_3(self):
+        self.check_image('ikvmocr-3.png', (8, 16), ((7, 9), (1055, 841)))
+
+    def test_ikvmocr_4(self):
+        self.check_image('ikvmocr-4.png', (8, 16), ((0, 0), (1024, 768)))
+
+    def test_ikvmocr_5(self):
+        self.check_image('ikvmocr-5.png', (8, 16), ((7, 9), (1055, 841)))
 
 
 class IkvmOcrTest(TestCase):
@@ -152,4 +234,85 @@ node1 login: [27812653.946938] Memory cgroup out of memory: Killed process 35611
 :1044464kB, file-rss:0kB, shmem-rss:0kB, UID:101 pgtables:2808kB oom_score_adj:996                                              $
 [29555029.026327] Memory cgroup out of memory: Killed process 2544256 (beam.smp) total-vm:17168796kB, anon-rss:8332664kB, file-r$
 ss:0kB, shmem-rss:61004kB, UID:1001 pgtables:17824kB oom_score_adj:-997                                                         $
+''')
+
+    def test_ikvmocr_5(self):
+        self.check_equal(TEST_DIR / 'ikvmocr-5.png', '''\
+Ubuntu 22.04.5 LTS node1.dr.io.osso.cloud tty1                           $
+                                                                         $
+node1 login:                                                             $
+   Tables                                          |                     $
+       For convenience, below are more compact tables in hex and decimal.$
+                                                                         $
+          2 3 4 5 6 7       30 40 50 60 70 80 90 100 110 120             $
+        -------------      ---------------------------------             $
+       0:   0 @ P ` p     0:    (  2  <  F  P  Z  d   n   x              $
+       1: ! 1 A Q a q     1:    )  3  =  G  Q  [  e   o   y              $
+       2: " 2 B R b r     2:    *  4  >  H  R  \\  f   p   z              $
+       3: # 3 C S c s     3: !  +  5  ?  I  S  ]  g   q   {              $
+       4: $ 4 D T d t     4: "  ,  6  @  J  T  ^  h   r   |              $
+       5: % 5 E U e u     5: #  -  7  A  K  U  _  i   s   }              $
+       6: & 6 F V f v     6: $  .  8  B  L  V  `  j   t   ~              $
+       7: ' 7 G W g w     7: %  /  9  C  M  W  a  k   u  DEL             $
+       8: ( 8 H X h x     8: &  0  :  D  N  X  b  l   v                  $
+       9: ) 9 I Y i y     9: '  1  ;  E  O  Y  c  m   w                  $
+       A: * : J Z j z                                                    $
+       B: + ; K [ k {                                                    $
+       C: , < L \\ l |                                                    $
+       D: - = M ] m }                                                    $
+       E: . > N ^ n ~                                                    $
+       F: / ? O _ o DEL                                                  $
+                                                                         $
+_                                                                        $
+''')
+
+    def test_ikvmocr_6(self):
+        self.check_equal(TEST_DIR / 'ikvmocr-6.png', '''\
+    ------------------------------------------------------------$
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    acceee                                                      $
+                                                                $
+    coo var vaz                                                 $
+                                                                $
+    ^^^^^^^^ some carets to mix it up                           $
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    acceee                                                      $
+                                                                $
+    coo var vaz                                                 $
+                                                                $
+    ^^^^^^^^ some carets to mix it up                           $
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    acceee                                                      $
+                                                                $
+    coo var vaz                                                 $
+                                                                $
+    ^^^^^^^^ some carets to mix it up                           $
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+    acceee                                                      $
+                                                                $
+    coo var vaz                                                 $
+                                                                $
+    ^^^^^^^^ some carets to mix it up                           $
+                                                                $
+    ------------------------------------------------------------$
+                                                                $
+                                                                $
+                                                                $
+                                                                $
+                                                                $
+_                                                               $
 ''')

@@ -131,6 +131,7 @@ test:
 	RUNTESTS=1 ./_multi2json && printf '\342\234\205\n\n'
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
 	  printf '\342\234\205\n\n'
+	python3 -m unittest discover tests
 
 deb:
 	# Make sure a valid email with PGP key is in the changelog

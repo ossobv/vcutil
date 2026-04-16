@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ikvmocr (part of ossobv/vcutil) // wdoekes/2022 // Public Domain
+# ikvmocr (part of ossobv/vcutil) // wdoekes/2022,2026 // Public Domain
 #
 # ikvmocr looks for a SuperMicro iKVM console window in the screenshot and does
 # character recognition on it. It dumps the screenshot as characters to stdout.
@@ -19,14 +19,7 @@
 #   inverse of this, which reads characters from the program)
 #
 # Todo:
-# - Bonus points if we can paste directly from the X11 copy buffer.
-# - Vertical grid dection is poor: is_black returns false negatives for
-#   various images. Improve detection before doing other contrast editing..
-# - Maybe optimize some things for speed. (And possibly improve coordinate
-#   detection.)
-# - Maybe do some constrast editing so we can remove some dupe
-#   characters which are only in the DB because they have an artifact.
-# - Also detect color?
+# - Add option to pass in glyph size and grid size manually.
 # - Explain how glyphs are stored and add option to decode/show them.
 # - Maybe crop glyphs before handling. (Requires looping over the entire
 #   screenshot first. Or hardcoding glyph drop size in the DB.)
@@ -42,32 +35,6 @@ from tempfile import NamedTemporaryFile
 from PIL import Image
 
 DATA_DIR = f'{os.environ.get("XDG_DATA_HOME", "~/.local/share")}/ikvmocr'
-
-
-class Extent:
-    def __init__(self, top, right, bottom, left):
-        assert top < bottom, (top, bottom)
-        assert left < right, (left, right)
-        self.top = top
-        self.right = right      # XXX: should we do right+1?
-        self.bottom = bottom    # XXX: should we do bottom+1?
-        self.left = left
-
-    @property
-    def width(self):
-        return self.right + 1 - self.left
-
-    @property
-    def height(self):
-        return self.bottom + 1 - self.top
-
-    def as_box_tuple(self):
-        return (self.left, self.top, self.right + 1, self.bottom + 1)
-
-    def __repr__(self):
-        return (
-            'Exent(({0.left},{0.top}),({0.right},{0.bottom}),'
-            'w={0.width},h={0.height})'.format(self))
 
 
 def timeit(title=None):
@@ -86,13 +53,168 @@ def timeit(title=None):
     return _wrapper
 
 
-class IKvmOcrError(ValueError):
-    pass
+@timeit()
+def detect_console_grid(pixels, width, height):
+    # Calculate the sum of "lit" pixels for every single row and column.
+    # We use at most 90% of the center of the window, so we skip borders.
+    def norm(sum_, max_):
+        return sum_ / 255 / max_
+
+    xoff = width // 10
+    smallwidth = width - 2 * xoff
+    yoff = height // 10
+    smallheight = height - 2 * yoff
+    row_sums = [
+        norm(sum(pixels[x + xoff, y + yoff]
+                 for x in range(smallwidth)), smallwidth)
+        for y in range(smallheight)]
+    col_sums = [
+        norm(sum(pixels[x + xoff, y + yoff]
+                 for y in range(smallheight)), smallheight)
+        for x in range(smallwidth)]
+    # example: [..a bunch of floats, with some being (close to) zero..]
+
+    # Check the max brightness on a line and pretend that all lines with
+    # 20% of that are entirely dark.
+    def binarize_lines(floats):
+        pct20 = max(floats) / 5
+        return [(0 if i < pct20 else 1) for i in floats]
+
+    row_bins = binarize_lines(row_sums)
+    col_bins = binarize_lines(col_sums)
+    # example: [0, 0, 1, 1, 1, 1, 0, ...]
+
+    # Start checking possible character size by taking a few appropriate
+    # offsets and summing all consecutive lines the same distance.
+    def calculate_stride_sums(bins, min=5, max=20):
+        len_ = len(bins)
+        strides = {}
+        for off in range(5, max + 1):
+            sums = []
+            for start in range(off):
+                sums.append(sum(bins[idx] for idx in range(start, len_, off)))
+            strides[off] = sums
+
+        return strides
+
+    row_strides = calculate_stride_sums(row_bins, min=6, max=19)
+    col_strides = calculate_stride_sums(col_bins, min=5, max=15)
+    # example: {5: [33, 34, 31, 34, 33], ..., 8: [0, 0, 48, 4, 15, 27, 7, 40]}
+
+    def get_best_strides(strides):
+        def zero_percent(sums):
+            return sum(not i for i in sums) / len(sums)
+
+        # If we get multiple candidates, we get the smallest one by
+        # doing ascending sort (and reversing the percentage).
+        with_zero_percentages = [
+            (1 - zero_percent(sums), idx) for idx, sums in strides.items()]
+        with_zero_percentages.sort()
+
+        # For now, just take the first one.
+        # print(with_zero_percentages)
+        return with_zero_percentages[0][1]
+
+    row_size = get_best_strides(row_strides)
+    col_size = get_best_strides(col_strides)
+    # example: 8
+
+    # Now that we have the character dimensions, we must go back and
+    # find the most appropriate point to start on.
+    row_stride = row_strides[row_size]
+    col_stride = col_strides[col_size]
+    # example: [0, 0, 48, 4, 15, 27, 7, 40]  # for "8"
+    # (Ideally, we have exactly one 0, but no one has that kind of luck.)
+
+    # For now, we'll center on the zeros in the middle. And then move
+    # the char content to the bottom on a tie
+    def find_stride_offset(stride):
+        def get_max_consecutive_zeros(stride):
+            best_start = max_zeros = current_zeros = 0
+            # Loop through the list doubled to naturally handle the wrap-around
+            for idx, num in enumerate(stride + stride):
+                if current_zeros == 0:
+                    current_start = idx
+                if num == 0:
+                    current_zeros += 1
+                    if current_zeros > max_zeros:
+                        max_zeros = current_zeros
+                        best_start = current_start
+
+                    max_zeros = max(current_zeros, max_zeros)
+                else:
+                    current_zeros = 0
+            return best_start, max_zeros
+
+        first_zero, count = get_max_consecutive_zeros(stride)
+        center_offset = first_zero + (count // 2)  # prefer left zero
+        # [17, 16, 17, 16, 16, 16, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 16, 18]
+        # has center_offset 11, so list[11:] + list[:11] is:
+        # [0, 0, 0, 0, 0, 16, 16, 18, 17, 16, 17, 16, 16, 16, 17, 0, 0, 0, 0]
+        return center_offset % len(stride)
+
+    row_offset = find_stride_offset(row_stride)
+    col_offset = find_stride_offset(col_stride)
+
+    # Now we can finally go back and find the first valid line of the image.
+    # Calculate offset direction first. Taking xoff and yoff into
+    # account as well.
+    validx = xoff + col_offset
+    # Y detection seems off by one. Subtracting one gets us correct
+    # values for all test images.
+    validy = yoff + row_offset - 1
+
+    # Search backwards and forwards.
+    left = validx % col_size
+    top = validy % row_size
+    right = (width // col_size) * col_size + left
+    if right > width:
+        right -= col_size
+    bottom = (height // row_size) * row_size + top
+    if bottom > height:
+        bottom -= row_size
+
+    # Start at the first black line.
+    while top < height:
+        brightness = norm(sum(
+            pixels[x + xoff, top] for x in range(smallwidth)), smallwidth)
+        if brightness < 0.05:
+            break
+        top += row_size
+
+    # Start at the first black line.
+    while left < width:
+        brightness = norm(sum(
+            pixels[left, y + yoff] for y in range(smallheight)), smallheight)
+        if brightness < 0.05:
+            break
+        left += col_size
+
+    # End at the last black line.
+    while bottom > top:
+        bottom -= row_size
+        brightness = norm(sum(
+            pixels[x + xoff, bottom] for x in range(smallwidth)), smallwidth)
+        if brightness < 0.05:
+            break
+    bottom += row_size
+
+    # End at the last black line.
+    while right > left:
+        right -= col_size
+        brightness = norm(sum(
+            pixels[right, y + yoff] for y in range(smallheight)), smallheight)
+        if brightness < 0.05:
+            break
+    right += col_size
+
+    # print(
+    #     (col_size, row_size), (validx, validy), col_stride, row_stride,
+    #     (col_offset, row_offset))
+    return (col_size, row_size), ((left, top), (right, bottom))
 
 
 class ImageMixin:
-    BLACK_PIXEL = (0, 0, 0, 255)  # RGBA
-
     def __init__(self, pilimg):
         self._img = pilimg
 
@@ -106,250 +228,74 @@ class ImageMixin:
         self._img.close()
         self._img = None
 
-    def is_horizontal_black_line(self, y, x_min=0, x_max=None):
-        if x_max is None:
-            x_max = self._img.width
-        for x in range(x_min, x_max):
-            if not self._is_blackish(x, y):
-                return False
-        return True
-
-    def is_vertical_black_line(self, x, y_min=0, y_max=None):
-        if y_max is None:
-            y_max = self._img.height
-        for y in range(y_min, y_max):
-            if not self._is_blackish(x, y):
-                return False
-        return True
-
-    def _is_blackish(self, x, y):
-        "There are too many artifacts to compare against self.BLACK_PIXEL"
-        r, g, b, a = self._img.getpixel((x, y))
-        return (r < 48 and r < 48 and b < 48 and a == 255)
-
 
 class IKvmScreenshot(ImageMixin):
     """
     Take a "active window" screenshot using GNOME Alt-PrintScreen and
     supply the image to this instance.
     """
+    @staticmethod
+    def denoise_image(img, noise_threshold=48):
+        """
+        Return black/white in-memory image with noise cutoff.
+        """
+        return img.convert('L').point(
+            (lambda p: 255 if p > noise_threshold else 0), mode='1')
+
     @classmethod
     def from_filename(cls, filename):
         return cls(Image.open(filename))
 
-    @timeit()
-    def get_console_window(self):
-        extent = self.find_console_window_extent()
-        # NOTE: I wonder if this crop is (too) expensive. We could get
-        # away with adding an offset everywhere: make a virtual
-        # interface to _img instead.
-        pilimg = self._img.crop(extent.as_box_tuple())
-        assert pilimg.width == extent.width, (pilimg.width, extent.width)
-        assert pilimg.height == extent.height, (pilimg.height, extent.height)
-        print('found console window at coords=({},{}) size=({},{})'.format(
-            extent.left, extent.top, extent.width, extent.height),
-            file=sys.stderr)
-        return ConsoleWindow(pilimg)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    def find_console_window_extent(self):
-        # self._img.info
-        # {'Software': 'gnome-screenshot',
-        #  'Creation Time': 'wo 23 feb 2022 09:32:57 CET'}
-        top, bottom = self._find_top_bottom()
-        left, right = self._find_right_left(top, (bottom + 1 - top))
-        extent = Extent(top, right, bottom, left)
-        return extent
+        # Replace image and load pixels for quicker access.
+        denoised_img = self.denoise_image(self._img)
+        self._img.close()
+        self._img = denoised_img
 
-    def _find_top_bottom(self):
-        """Assume the window has a black background. Find N black
-        lines in the middle, starting at the top."""
-        center = self._img.width // 2
-        min_width = 400
-        top = self._find_horizontal_black_lines(
-                3, range(0, self._img.height),
-                center - min_width // 2, center + min_width // 2)
-        bottom = self._find_horizontal_black_lines(
-                3, range(self._img.height - 1, -1, -1),
-                center - min_width // 2, center + min_width // 2)
-        assert top < bottom, (top, bottom)
-        return top, bottom
+        # Get dimensions and pixels for quicker access.
+        self._width, self._height = self._img.size
+        self._pixels = self._img.load()
 
-    def _find_horizontal_black_lines(self, how_many, y_iter, x_min, x_max):
-        found_first = None
-        found = 0
+    def get_auto_console_grid(self):
+        def to_gridsize(charsize, window, idx):
+            assert (window[1][idx] - window[0][idx]) % charsize[idx] == 0, (
+                charsize, window)
+            return (window[1][idx] - window[0][idx]) // charsize[idx]
 
-        for y in y_iter:
-            if self.is_horizontal_black_line(y, x_min, x_max):
-                if found_first is None:
-                    found_first = y
-                found += 1
-                if found >= how_many:
-                    return found_first
-            else:
-                found_first = None
-                found = 0
+        charsize, window = detect_console_grid(
+            self._pixels, self._width, self._height)
+        gridsize = (
+            to_gridsize(charsize, window, 0),
+            to_gridsize(charsize, window, 1),
+        )
+        return self.get_console_grid(charsize, gridsize, window[0])
 
-        raise IKvmOcrError('{} black lines not found'.format(how_many))
-
-    def _find_right_left(self, top, height):
-        # Dynamically find left and right edges of the console at y=top.
-        # For a screenshot with a window frame, the frame pixels are non-black
-        # and the console border is black. For an image that IS the console
-        # (no surrounding frame), left=0 and right=width-1.
-        for x in range(0, self._img.width):
-            if self._is_blackish(x, top):
-                left = x
-                break
-        else:
-            raise IKvmOcrError('no top left black pixel found')
-
-        for x in range(self._img.width - 1, left, -1):
-            if self._is_blackish(x, top):
-                right = x
-                break
-        else:
-            raise IKvmOcrError('no top right black pixel found')
-
-        # If there is a pixel to the right of the detected edge, it should be
-        # non-black (the window frame). Skip this check when at image boundary.
-        if right + 1 < self._img.width and self._is_blackish(right + 1, top):
-            raise IKvmOcrError('expected non-black pixel at {},{}'.format(
-                right + 1, top))
-
-        assert left < right, (left, right)
-        return left, right
+    def get_console_grid(self, charsize, gridsize, offset):
+        return ConsoleGrid(self._pixels, charsize, gridsize, offset)
 
 
-class ConsoleWindow(ImageMixin):
-    """
-    Hold the console window and deduce column/row width/height and offset.
-    """
-    def __init__(self, pilimg):
-        self._img = pilimg
-
-    def get_console_grid(self):
-        (col_width, row_height), (x_start, y_start), (x_end, y_end) = (
-            self.find_col_dimensions())
-
-        col_count = (x_end - x_start + 1) // col_width
-        row_count = (y_end - y_start + 1) // row_height
-        right = x_start + col_count * col_width - 1
-        bottom = y_start + row_count * row_height - 1
-        extent = Extent(y_start, right, bottom, x_start)
-        assert extent.width % col_width == 0, extent
-        assert extent.height % row_height == 0, extent
-
-        # NOTE: I wonder if this crop is (too) expensive. We could get
-        # away with adding an offset everywhere: make a virtual
-        # interface to _img instead.
-        pilimg = self._img.crop(extent.as_box_tuple())
-        assert pilimg.width == extent.width, (pilimg.width, extent.width)
-        assert pilimg.height == extent.height, (pilimg.height, extent.height)
-        print('found console grid at coords=({},{}) size=({},{})'.format(
-            extent.left, extent.top, extent.width, extent.height),
-            file=sys.stderr)
-        assert 3 <= col_width <= 72 and 3 <= row_height <= 72, (
-            col_width, row_height)  # sanity check
-        print('found console grid with {}x{} characters sized=({},{})'.format(
-            col_count, row_count, col_width, row_height), file=sys.stderr)
-        return ConsoleGrid(
-            pilimg, col_count, row_count, col_width, row_height)
-
-    @timeit()
-    def find_col_dimensions(self):
-        horizontal_black_lines = [
-            y for y in range(0, self._img.height)
-            if self.is_horizontal_black_line(y)]
-        row_height, y_start, y_end = self._find_size_and_content_bounds(
-            horizontal_black_lines, self._img.height)
-
-        vertical_black_lines = [
-            x for x in range(0, self._img.width)
-            if self.is_vertical_black_line(x)]
-        col_width, x_start, x_end = self._find_size_and_content_bounds(
-            vertical_black_lines, self._img.width)
-
-        if not (3 <= col_width <= 72 and 3 <= row_height <= 72):
-            print('DEBUG: detected width x height: {}x{}'.format(
-                col_width, row_height), file=sys.stderr)
-            print('DEBUG: horizontal lines {}'.format(
-                horizontal_black_lines), file=sys.stderr)
-            print('DEBUG: horizontal outline {}'.format(self._outlines(
-                horizontal_black_lines)), file=sys.stderr)
-            print('DEBUG: vertical lines {}'.format(
-                vertical_black_lines), file=sys.stderr)
-            print('DEBUG: vertical outline {}'.format(self._outlines(
-                vertical_black_lines)), file=sys.stderr)
-            raise IKvmOcrError('grid width/height not sane: {}x{}'.format(
-                col_width, row_height))
-
-        return ((col_width, row_height), (x_start, y_start), (x_end, y_end))
-
-    def _find_size_and_content_bounds(self, black_lines, total_count):
-        """Return (size, content_start, content_end) aligned to the grid.
-
-        size is detected from the most common spacing between black-line groups.
-        content_start/end are aligned to size boundaries and derived from the
-        first and last non-black positions, so trailing blank rows/cols are
-        excluded while blank rows/cols between content are preserved.
-        """
-        outlines = self._outlines(black_lines)
-        size, _ = self._most_common_diff(outlines)
-
-        black_set = set(black_lines)
-        first_non_black = next(
-            (i for i in range(total_count) if i not in black_set), None)
-        last_non_black = next(
-            (i for i in range(total_count - 1, -1, -1) if i not in black_set),
-            None)
-
-        if first_non_black is None:
-            raise IKvmOcrError('no non-black positions found')
-
-        start = first_non_black
-        glyphs = (last_non_black - first_non_black + size - 1) // size
-        end = first_non_black + glyphs * size
-
-        return size, start, end
-
-    @staticmethod
-    def _outlines(numbers):
-        ret = []
-        for prev, number in zip(numbers[0:-1], numbers[1:]):
-            if prev != number - 1:
-                ret.append(prev)
-        return ret
-
-    @staticmethod
-    def _most_common_diff(consecutive_values):
-        diffs = defaultdict(list)
-        for prev, val in zip(consecutive_values[0:-1], consecutive_values[1:]):
-            diffs[val - prev].append(prev)
-        diffs = list(sorted(diffs.items(), key=(lambda x: -len(x[1]))))
-        return diffs[0][0], diffs[0][1][0]
-
-
-class ConsoleGrid(ImageMixin):
+class ConsoleGrid:
     """
     Holds the console window with letters.
     """
-    def __init__(self, pilimg, cols, rows, colsize, rowsize):
-        super().__init__(pilimg)
-        self.cols = cols
-        self.rows = rows
-        self.colsize = colsize
-        self.rowsize = rowsize
+    def __init__(self, pixels, charsize, gridsize, offset):
+        self.pixels = pixels
+        self.charsize = charsize
+        self.gridsize = gridsize
+        self.offset = offset
 
     def set_glyphs(self, glyphs):
         self.glyphs = glyphs
-        self.glyphs.set_active_size(self.colsize, self.rowsize)
+        self.glyphs.set_active_size(*self.charsize)
 
     @timeit()
     def get_content(self):
         lines = []
-        for row in range(0, self.rows):
+        for row in range(0, self.gridsize[1]):
             line = []
-            for col in range(0, self.cols):
+            for col in range(0, self.gridsize[0]):
                 char = self.get_character(col, row)
                 glyph_id = char.as_int63s()
                 string = self.glyphs.get(glyph_id, as_string=char.as_string)
@@ -359,69 +305,68 @@ class ConsoleGrid(ImageMixin):
 
     def get_character(self, col, row):
         pixels = []
-        yoff = self.rowsize * row
-        xoff = self.colsize * col
-        for y in range(yoff, yoff + self.rowsize):
-            for x in range(xoff, xoff + self.colsize):
-                pixels.append(self._img.getpixel((x, y)))
-        return ConsoleChar.from_pixels(self.colsize, self.rowsize, pixels)
+        yoff = self.offset[1] + self.charsize[1] * row
+        xoff = self.offset[0] + self.charsize[0] * col
+        for y in range(yoff, yoff + self.charsize[1]):
+            for x in range(xoff, xoff + self.charsize[0]):
+                pixels.append(self.pixels[x, y])
+        return ConsoleChar.from_pixels(self.charsize, pixels)
 
 
 class ConsoleChar:
     """
     Holds a single glyph and does RLE encoding/decoding.
     """
+    RLE_BITS = 4
+    RLE_LTR = False
+    BITS_PER_INT = 63
+
+    # Don't touch.
+    RLE_MASK = ((1 << RLE_BITS) - 1)
+    BITS_PER_INT_MASK = ((1 << BITS_PER_INT) - 1)
+
     @classmethod
     def from_int63s(cls, colsize, rowsize, int63s):
-        "Decode a list of 64 bit integers (63 bit actually)"
-        total_length = colsize * rowsize
+        "Decode a list of 63 bit integers"
+        # Use Python's big number capabilities and merge the integers
+        bignumber = 0
+        for idx, number in enumerate(int63s):
+            assert number <= cls.BITS_PER_INT_MASK, number
+            bignumber |= (number << (cls.BITS_PER_INT * idx))
 
-        # Extract the 3-bit chunks
-        chunks = []
-        for val in int63s:
-            assert val <= 0x7fff_ffff_ffff_ffff, hex(val)
-            # We process 21 chunks of 3 bits (21 * 3 = 63)
-            for i in range(21):
-                chunk = (val >> (i * 3)) & 0x7
-                chunks.append(chunk)
-        while chunks and chunks[-1] == 0:
-            chunks.pop()
+        # Extract the N-bit chunks
+        rle_bits = cls.RLE_BITS
+        rle_mask = cls.RLE_MASK
 
-        # Reconstruct the RLE counts
-        counts = [0]
-        ptr = 0
-        for chunk in chunks:
-            if chunk == 0:
-                # Previous was probably 7, so we got a 0 and keep counting.
-                ptr -= 1
-                continue
+        counts = []
+        while bignumber:
+            count = chunk = (bignumber & rle_mask)
+            bignumber >>= rle_bits
 
-            counts[ptr] += chunk
-            ptr += 1
-            if ptr == len(counts):
-                counts.append(0)
-        counts.pop()
+            while chunk == rle_mask:
+                has_more = (bignumber & 0x1)
+                bignumber >>= 1
+                if not has_more:
+                    break
+                chunk = (bignumber & rle_mask)
+                assert chunk
+                count += chunk
+                bignumber >>= rle_bits
+            assert not counts or chunk  # first one can be 0
+            counts.append(count)
 
         # Turns counts into bool array
-        bwdata = []
-        state = False
-        for count in counts:
-            bwdata.extend([state] * count)
-            state = not state
-
-        # Fill the remaining length with the final state
-        bwdata.extend([state] * (total_length - len(bwdata)))
-
+        bwdata = cls._from_counts(colsize, rowsize, counts)
         return ConsoleChar(colsize, rowsize, bwdata)
 
     @classmethod
-    def from_pixels(cls, colsize, rowsize, pixels):
+    def from_pixels(cls, charsize, pixels):
         "Decode pixels into boolean on/off"
-        bwdata = []
+        colsize, rowsize = charsize
+        bindata = []
         for pixel in pixels:
-            # print(colsize, rowsize, bwdata)
-            bwdata.append(cls._is_on(pixel))
-        return cls(colsize, rowsize, bwdata)
+            bindata.append(bool(pixel))
+        return cls(colsize, rowsize, bindata)
 
     def __init__(self, colsize, rowsize, bwdata):
         self.colsize = colsize
@@ -429,54 +374,34 @@ class ConsoleChar:
         self._bwdata = bwdata
 
     def as_int63s(self):
-        """Encode as list of 64 bit integers (63 bit actually)
+        """Encode RLE counts as list of 63-bit integers, LSB-first.
+        Each count is variable-length encoded: 5 data bits + 1 optional
+        continuation bit, repeated as needed."""
+        rle_bits = self.RLE_BITS
+        rle_mask = self.RLE_MASK
 
-        Stored in LSB-first order (used to be MSB!)."""
-        ret = []
-        bitsum = bits = 0  # encode values per three bits
-        pos = 0
-        for number in self._as_array():
-            # Turn any number higher than 7 into 7+0.
-            while number > 7:
-                number -= 7
+        counts = self._to_counts(
+            self.colsize, self.rowsize, self._bwdata)
 
-                bitsum |= 7 << bits
-                bits += 3
-                if bits >= 63:
-                    ret.append(bitsum)
-                    bitsum = bits = 0
+        bitsum = bits = 0  # encode values per rle_bits bits
+        for count in counts:
+            assert not bits or count  # first one can be 0
+            while count:
+                chunk = min(count, rle_mask)
+                count -= chunk
+                bitsum |= (chunk << bits)
+                bits += rle_bits
+                if chunk == rle_mask:
+                    if count > 0:
+                        bitsum |= (0x1 << bits)
+                    bits += 1
 
-                # Adds zero.
-                bits += 3
-                if bits >= 63:
-                    ret.append(bitsum)
-                    bitsum = bits = 0
+        int63s = []
+        while bitsum:
+            int63s.append(bitsum & self.BITS_PER_INT_MASK)
+            bitsum >>= self.BITS_PER_INT
 
-            bitsum |= number << bits
-            bits += 3
-            if bits >= 63:
-                ret.append(bitsum)
-                bitsum = bits = 0
-
-        if bitsum:
-            ret.append(bitsum)
-
-        return tuple(ret)
-
-    def _as_array(self):
-        "Encode as counts of true/false, starting with false"
-        ret = []
-        last, count = False, 0
-        for cur in self._bwdata:
-            if cur == last:
-                count += 1
-            else:
-                ret.append(count)
-                last, count = cur, 1
-        # NOTE: We purposefully do NOT add the last count. We don't need
-        # it. (It follows from the previous values along with the
-        # character dimensions.)
-        return tuple(ret)
+        return tuple(int63s)
 
     def as_string(self):
         line = []
@@ -490,12 +415,93 @@ class ConsoleChar:
         assert line == [], line
         return '\n'.join(lines)
 
+    @classmethod
+    def _from_counts(cls, colsize, rowsize, counts):
+        "Decode counts to list of true/false values, first false"
+        if cls.RLE_LTR:
+            return cls._from_counts_horizontal(colsize, rowsize, counts)
+        return cls._from_counts_vertical(colsize, rowsize, counts)
+
     @staticmethod
-    def _is_on(pixel):
-        # If we're looking too much to the right/bottom, we might see
-        # some transparency. Ignore it for now.
-        # assert pixel[3] == 255, pixel
-        return (pixel[0] + pixel[1] + pixel[2]) >= 144 and pixel[3] == 255
+    def _from_counts_horizontal(colsize, rowsize, counts):
+        "Decode counts to list of true/false values, first false, LTR-TTB"
+        total_length = colsize * rowsize
+
+        bwdata = []
+        state = False
+        for count in counts:
+            bwdata.extend([state] * count)
+            state = not state
+
+        # Fill the remaining length with the final state
+        bwdata.extend([state] * (total_length - len(bwdata)))
+        return bwdata
+
+    @staticmethod
+    def _from_counts_vertical(colsize, rowsize, counts):
+        "Decode counts to list of true/false values, first false, TTB-LTR"
+        total_length = colsize * rowsize
+        bwdata = [False] * total_length
+        state = False
+        pos = 0
+        for count in counts:
+            if state:
+                for _ in range(count):
+                    col = pos // rowsize
+                    row = pos % rowsize
+                    bwdata[row * colsize + col] = True
+                    pos += 1
+            else:
+                pos += count
+            state = not state
+        if state:
+            while pos < total_length:
+                col = pos // rowsize
+                row = pos % rowsize
+                bwdata[row * colsize + col] = True
+                pos += 1
+        return bwdata
+
+    @classmethod
+    def _to_counts(cls, colsize, rowsize, bwdata):
+        "Encode as counts of true/false, starting with false"
+        if cls.RLE_LTR:
+            return cls._to_counts_horizontal(colsize, rowsize, bwdata)
+        return cls._to_counts_vertical(colsize, rowsize, bwdata)
+
+    @staticmethod
+    def _to_counts_horizontal(colsize, rowsize, bwdata):
+        "Encode as counts of true/false, starting with false, LTR-TTB."
+        ret = []
+        last, count = False, 0
+        for cur in bwdata:
+            if cur == last:
+                count += 1
+            else:
+                ret.append(count)
+                last, count = cur, 1
+        # NOTE: We purposefully do NOT add the last count. We don't need
+        # it. (It follows from the previous values along with the
+        # character dimensions.)
+        return ret
+
+    @staticmethod
+    def _to_counts_vertical(colsize, rowsize, bwdata):
+        "Encode as counts of true/false, starting with false, TTB-LTR."
+        ret = []
+        last, count = False, 0
+        for col in range(colsize):
+            for row in range(rowsize):
+                cur = bwdata[row * colsize + col]
+                if cur == last:
+                    count += 1
+                else:
+                    ret.append(count)
+                    last, count = cur, 1
+        # NOTE: We purposefully do NOT add the last count. We don't need
+        # it. (It follows from the previous values along with the
+        # character dimensions.)
+        return ret
 
 
 class ConsoleGlyphs:
@@ -548,12 +554,16 @@ class ConsoleGlyphs:
             print('UNKNOWN GLYPH_ID:', self._str_from_glyph_id(glyph_id))
             print('UNKNOWN GLYPH LAYOUT:')
             print(as_string())
-            ch = input('Specify which character: ')
-            if ch.startswith(' '):
-                ch = ' '
+            if os.environ.get('RUNTESTS', '') in ('', '0'):
+                ch = input('Specify which character: ')
+                if ch.startswith(' '):
+                    ch = ' '
+                else:
+                    ch = ch.strip()
+                assert ch != '', repr(ch)
             else:
-                ch = ch.strip()
-            assert ch != '', repr(ch)
+                # In test suite, use fail-char
+                ch = '\ufffd'  # Unicode fail question mark
             self.set(glyph_id, ch)
         return ch
 
@@ -588,12 +598,33 @@ class ConsoleGlyphs:
         return ret
 
 
+def truncate_screenshot(text):
+    lines = text.split('\n')
+
+    # Remove leading/trailing all-whitespace lines
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    if not lines:
+        return ''
+
+    # Find common indent from non-blank lines only.
+    indent = min(
+        (len(line) - len(line.lstrip(' ')))
+        for line in lines if line.strip())
+    outdent = max(len(line.rstrip(' ')) for line in lines if line.strip())
+
+    lines = [line[indent:outdent] for line in lines]
+    return '\n'.join(lines) + '\n'
+
+
 def read_screenshot(screenshot_filename, glyphs):
     with IKvmScreenshot.from_filename(screenshot_filename) as screenshot:
-        with screenshot.get_console_window() as consolewin:
-            with consolewin.get_console_grid() as consolegrid:
-                consolegrid.set_glyphs(glyphs)
-                return consolegrid.get_content()
+        consolegrid = screenshot.get_auto_console_grid()
+        consolegrid.set_glyphs(glyphs)
+        return truncate_screenshot(consolegrid.get_content())
 
 
 def read_screenshot_and_dump(screenshot_filename, glyphs):
