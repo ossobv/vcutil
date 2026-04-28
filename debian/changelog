@@ -1,3 +1,26 @@
+vcutil (1.59) stable; urgency=low
+
+  * Cleanup:
+    - psdiff: Remove psdiff.hash file from repo
+
+  * Improvements:
+    - hostsort: Change to Python, add missing features. It is now actually
+      usable.
+    - ikvmocr: Many fixes and changes so it works on different input images.
+      Added tests for this
+    - ipmikvm: Support login to newer SuperMicro 2025 BMC
+    - lldpscan: Ignore tap devices (local VMs?) by default
+    - rshall: A boatload of usability fixes
+    - wgrep: Add toml suffix
+
+  * Fixes:
+   - nbdig: Fix IP address display bug in listing
+   - pdns-sql-slave-prune: Assume that slaving works first after a week
+   - psdiff: Handle spaces in ss process names (--net)
+   - zabdig: Handle cases where a trigger concerns multiple hosts
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 28 Apr 2026 12:41:36 +0200
+
 vcutil (1.58) stable; urgency=low
 
   * Additions:
