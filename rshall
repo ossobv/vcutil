@@ -8,13 +8,11 @@
 #
 # Invocation:
 #
-#   rshall <project_name>
+#   rshall [-c] [-f] [-t alt_targets_name] script_name [alt_project_name]
 #
-# It will read <project_name>.targets for target hosts and
-# <project_name> for the script to execute. The author suggests using
-# .rsh as the project_name suffix (for "remote-shell-script").
-#
-# The ssh username can be adjusted using the USERNAME environment variable.
+# It will read "<script_name>.targets" for target hosts anda "<script_name>"
+# for the script to execute. The author suggests using ".rsh" as the
+# script_name suffix (for "remote-shell-script").
 #
 # Example: you want to confirm that the DNS is set the same everywhere.
 # rshall can collect the info using multiple ssh connections.
@@ -66,15 +64,31 @@
 # - The script must start with #!/bin/sh for now. Except if you're using
 #   "!#/usr/bin/rshall", in which case #!/bin/sh is silently assumed.
 #
+# Environment variables:
+#
+# - USERNAME sets the default ssh username. The host-entry can override this
+#   by using username@host.
+# - SUDO_COMMAND defaults to "sudo". You can set it to "pkexec" or
+#   "sudo -u someoneelse" to change the default sudo call.
+# - PRE_SUDO_COMMAND is a free-form shell command to run before becoming root
+#   using sudo. (Technically, it replaces SUDO_COMMAND with a complicated
+#   shell spaghetti. They cannot be combined at the moment. If you also want
+#   a different SUDO_COMMAND you'll have to create the SUDO_COMMAND spaghetti
+#   yourself.)
+# - For now, we enforce that PRE_SUDO_COMMAND is set. If you don't want to use
+#   it, set it to the empty string. This makes it harder to forget to set it.
+#
 import sys
 
+from argparse import ArgumentParser
 from collections import namedtuple
 from ipaddress import AddressValueError, IPv4Address
 from multiprocessing import Process, Pipe
-from os import environ, path, rename
-from shlex import quote as shell_escape
+from os import environ, path, rename, unlink
+from shlex import quote as shell_escape, split as shell_split
 from subprocess import CalledProcessError, PIPE, Popen, TimeoutExpired
 from time import sleep
+from warnings import warn
 
 
 Target = namedtuple('Target', 'hostname ip')
@@ -154,6 +168,10 @@ echo "I am a sample script on $(hostname)"
 
     def run(self):
         for target in self._targets:
+            # BUG: Some processes might have data in pipe, but we don't fetch
+            # it yet. That causes an infinite stall. The current workaround is
+            # to cap the output buffer to below 64KiB. We don't want such big
+            # output anyway.
             self._reap()  # try reaping reapable
             while len(self._procinfos) >= self.concurrency:
                 self._reap()
@@ -177,6 +195,42 @@ echo "I am a sample script on $(hostname)"
 
         if not VERBOSE:
             print('', file=sys.stderr)  # last _cycle
+
+
+def get_sudo_command(env):
+    if env.get('SUDO_COMMAND'):
+        # Prefer not to do this. This command could be ugly and error-prone.
+        # Unless you really just want to use a different sudo.
+        # SUDO_COMMAND=pkexec
+        if env.get('PRE_SUDO_COMMAND'):
+            warn('Both SUDO_COMMAND and PRE_SUDO_COMMAND set, using former')
+        sudo_cmd = tuple(shell_split(env['SUDO_COMMAND']))
+
+    elif env.get('PRE_SUDO_COMMAND'):
+        # This command runs _before_ the script. The only use for it right
+        # now is to call a here-I-am script.
+        # PRE_SUDO_COMMAND='osso-change write-log \#1234 june-test'
+        pre_sudo_str = env['PRE_SUDO_COMMAND']
+        sudo_cmd = (
+            'sh',
+            '-c',
+            # NOTE: Complicated shell-escape. Be careful what you put here
+            # and make it silent.
+            # We expect all targets to have the PRE_SUDO_COMMAND working.
+            shell_escape(f'{pre_sudo_str} && exec sudo "$@"'),
+            '--',
+        )
+
+    elif 'PRE_SUDO_COMMAND' not in env:
+        # Set this thing to empty to continue. For some systems we might need
+        # PRE_SUDO_COMMAND for bookkeeping. Force it to be set.
+        print('error: Did you forget PRE_SUDO_COMMAND?', file=sys.stderr)
+        exit(1)
+
+    else:
+        sudo_cmd = ('sudo',)
+
+    return sudo_cmd
 
 
 def run_remote(parent_conn, child_conn, target, script):
@@ -203,17 +257,22 @@ def run_remote(parent_conn, child_conn, target, script):
     if target.ip:
         ip = target.ip  # always prefer IP if available
 
+    ssh_command = (
+        'ssh', '-l', username,
+        '-oConnectTimeout={}'.format(CONNECT_TIMEOUT),
+        '-oLogLevel=error',  # suppress banners on stderr
+        '-oPasswordAuthentication=no',
+        '-oUpdateHostKeys=yes',
+        '-oStrictHostKeyChecking=accept-new',
+        ip, '--',
+    )
+    sudo_command = get_sudo_command(env)
+    shell_command = ('sh', '-c', quoted_script)
+    command = ssh_command + sudo_command + shell_command
+
     try:
         proc = Popen(
-            ['ssh', '-l', username,
-             '-oConnectTimeout={}'.format(CONNECT_TIMEOUT),
-             '-oLogLevel=error',  # suppress banners on stderr
-             '-oPasswordAuthentication=no',
-             '-oUpdateHostKeys=yes',
-             '-oStrictHostKeyChecking=accept-new',
-             ip, '--',
-             'sudo', 'sh', '-c', quoted_script],
-            stdin=None, stdout=PIPE, stderr=PIPE, text=True, env=env)
+            command, stdin=None, stdout=PIPE, stderr=PIPE, text=True, env=env)
         try:
             out, err = proc.communicate(timeout=SCRIPT_TIMEOUT)
         except TimeoutExpired:
@@ -234,25 +293,26 @@ def run_remote(parent_conn, child_conn, target, script):
     else:
         result = ProcResult(target=target, is_success=True, value=out)
 
+    # BUG: If we send too much data here, the pipe stalls. Default cap is about
+    # 64KiB. Half of it is already way too much though.
+    if len(result.value) > 32768:
+        result = ProcResult(
+            target=target, is_success=False, value=(
+                f'output exceeded (len={len(result.value)}, '
+                f'{result.is_success=}, '
+                f'value={repr(result.value[0:500]+"...")})'))
+
     parent.send(result)
     parent.close()
 
 
 class Project:
-    @classmethod
-    def _load_targets(cls, filename):
-        """
-        Load foobar.rsh.targets file, containing CSV "#hostname;#ip4"
-        """
-        targets = cls._lines_to_targets(cls._load_lines(filename))
-        if not targets:
-            raise ValueError(f'expected at least one target in {filename}')
-        return targets
-
-    def __init__(self, script_name, alt_project_name=None):
-        self.name = script_name
-        # We get the script name based off the project first.
-        self.script_name = self.get_script_name()
+    def __init__(
+            self, script_name, alt_project_name=None,
+            alt_targets_name=None, args=None):
+        # A bit convoluted how we set the parameters.
+        self.script_name = script_name      # foobar.rsh
+        self.project_name = script_name     # foobar.rsh
 
         # If alt_project_name is set, use that. If it included the ".targets"
         # suffix, drop that.
@@ -261,35 +321,48 @@ class Project:
                     and len(alt_project_name) > 8
                     and path.exists(alt_project_name)):
                 alt_project_name = alt_project_name[0:-8]
-            self.name = alt_project_name
+            self.project_name = alt_project_name
             # Check that user is not trying to run a different script after
             # all.
-            assert not path.exists(self.get_script_name())
+            if self.script_name != self.project_name and path.exists(
+                    self.script_name):
+                raise ValueError(
+                    'seeing two scripts; unsure which one you want to run')
+
+        # Target file is script.rsh.targets, or project.targets, or custom.
+        self.targets_name = (
+            alt_targets_name or f'{self.project_name}.targets')
 
         self.script = self._load_script(self.script_name)
-        self.targets = self._load_targets(self.get_targets_name())
+        self.targets = self._load_targets(self.targets_name)
         self.skipped = 0
 
+        # Process other args.
+        self.to_stdout = (args and args.stdout)
+        if args and args.force:
+            if not self.to_stdout:
+                self._unlink_or_ignore(self.get_successes_name())
+            self._unlink_or_ignore(self.get_failures_name())
+
         # Load earlier successes and drop from targets
-        successes = self._load_lines(self.get_successes_name())
-        self.successes_skip = self.prune_targets(
-            self._lines_to_targets(successes))
+        if self.to_stdout:
+            self.successes_skip = 0
+        else:
+            successes = self._load_lines(self.get_successes_name())
+            self.successes_skip = self.prune_targets(
+                self._lines_to_targets(successes))
         # Load earlier failures and drop from targets
         failures = self._load_lines(self.get_failures_name())
         self.failures_skip = self.prune_targets(
             self._lines_to_targets(failures))
 
-    def get_script_name(self):
-        return self.name  # "foobar.rsh"
-
-    def get_targets_name(self):
-        return f'{self.name}.targets'
-
     def get_successes_name(self):
-        return f'{self.name}.out'
+        if self.to_stdout:
+            return object()  # something that fails to open
+        return f'{self.project_name}.out'
 
     def get_failures_name(self):
-        return f'{self.name}.err'
+        return f'{self.project_name}.err'
 
     def prune_targets(self, remove_from_targets):
         new_targets = []
@@ -304,7 +377,11 @@ class Project:
         return skipped
 
     def update_successes(self, new_successes):
-        successes = self._load_lines(self.get_successes_name())
+        if not self.to_stdout:
+            successes = self._load_lines(self.get_successes_name())
+        else:
+            successes = []
+
         if not successes:
             successes.append('#hostname;#ip4;#result')
 
@@ -312,7 +389,10 @@ class Project:
             for line in result.rstrip('\n').split('\n'):
                 successes.append('{};{}'.format(';'.join(target), line))
 
-        self._save_lines(self.get_successes_name(), successes)
+        if self.to_stdout:
+            print('\n'.join(successes))
+        else:
+            self._save_lines(self.get_successes_name(), successes)
 
     def update_failures(self, new_failures):
         if new_failures:
@@ -325,6 +405,16 @@ class Project:
                     failures.append('{};{}'.format(';'.join(target), line))
 
             self._save_lines(self.get_failures_name(), failures)
+
+    @classmethod
+    def _load_targets(cls, filename):
+        """
+        Load foobar.rsh.targets file, containing CSV "#hostname;#ip4"
+        """
+        targets = cls._lines_to_targets(cls._load_lines(filename))
+        if not targets:
+            raise ValueError(f'expected at least one target in {filename}')
+        return targets
 
     @staticmethod
     def _load_script(filename):
@@ -408,9 +498,41 @@ class Project:
 
         return targets
 
+    @staticmethod
+    def _unlink_or_ignore(filename):
+        try:
+            unlink(filename)
+        except OSError as e:
+            if e.args[0] != 2:  # ENOFILE (FileNotFoundError)
+                raise
 
-def main(script_name, alt_project_name=None):
-    project = Project(script_name, alt_project_name)
+
+def main():
+    parser = ArgumentParser(
+        prog='rshall',
+        description='''
+            Run script on many hosts at once and collect output.
+            Used for one-off scripts that you don't want to build any
+            ansible/chef/puppet scripts for.
+        ''')
+    parser.add_argument(
+        '-c', '--stdout', action='store_true',
+        help='Use stdout instead of the .out file.')
+    parser.add_argument(
+        '-f', '--force', action='store_true',
+        help='Remove existing out/err files and then run.')
+    parser.add_argument(
+        '-t', '--targets', metavar='targets_name',
+        help='Use specified targets file.')
+    parser.add_argument(
+        'script_name', help='The rsh script to process.')
+    parser.add_argument(
+        'project_name', nargs='?', help=(
+            'Alternative file to operate on: project_name.{targets,out,err}.'))
+    args = parser.parse_args()
+
+    project = Project(
+        args.script_name, args.project_name, args.targets, args=args)
     runner = Runner()
 
     runner.add_targets(project.targets)
@@ -423,16 +545,26 @@ def main(script_name, alt_project_name=None):
         project.update_successes(runner.successes)
         project.update_failures(runner.failures)
 
-    print(
-        f'{len(runner.successes)} success, {len(runner.failures)} fails, '
-        f'{project.successes_skip} earlier success, '
-        f'{project.failures_skip} earlier fails')
-    if len(runner.successes) + project.successes_skip:
-        print(f'See {project.get_successes_name()} for output')
-    if len(runner.failures) + project.failures_skip:
-        print(f'See {project.get_failures_name()} for failures')
+    total_successes = (len(runner.successes) + project.successes_skip)
+    total_failures = (len(runner.failures) + project.failures_skip)
+
+    if not args.stdout:
+        print(
+            f'{len(runner.successes)} success, {len(runner.failures)} fails, '
+            f'{project.successes_skip} earlier success, '
+            f'{project.failures_skip} earlier fails',
+            file=sys.stderr)
+        if total_successes:
+            print(
+                (f'See {project.get_successes_name()} for '
+                 f'{total_successes} outputs'), file=sys.stderr)
+
+    if total_failures:
+        print(
+            (f'See {project.get_failures_name()} for '
+             f'{total_failures} errors'), file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':
-    # USERNAME=root rshall samplescript.rsh [ALT_NAME[.targets]]
-    main(*sys.argv[1:])
+    main()
