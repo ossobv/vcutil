@@ -493,8 +493,15 @@ def netstat():
     for line in lines:
         addr = '{}:{}'.format(line[0], line[4])
         if len(line) < 7:
-            # We need root to get the process info. Bail immediately.
-            raise OSError(1, 'Operation not permitted')  # EPERM
+            # Some are handled by the kernel (module). Pretend we saw it
+            # as kernel. (It will get appended to the INIT process.)
+            if addr in (
+                    'udp:0.0.0.0:8472', 'udp:[::]:8472',     # vxlan
+                    'udp:0.0.0.0:500', 'udp:0.0.0.0:4500'):  # ipsec
+                line.append('users:(("KERNEL",pid=1,fd=-1))')
+            else:
+                # We need root to get the process info. Bail immediately.
+                raise OSError(1, 'Operation not permitted')  # EPERM
         users = line[6]
         assert users.startswith('users:('), line
         assert users.endswith(')'), line
