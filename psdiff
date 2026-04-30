@@ -496,8 +496,10 @@ def netstat():
             # Some are handled by the kernel (module). Pretend we saw it
             # as kernel. (It will get appended to the INIT process.)
             if addr in (
-                    'udp:0.0.0.0:8472', 'udp:[::]:8472',     # vxlan
-                    'udp:0.0.0.0:500', 'udp:0.0.0.0:4500'):  # ipsec
+                    'udp:0.0.0.0:51871', 'udp:[::]:51871',    # cilium/wg
+                    'udp:0.0.0.0:6081', 'udp:[::]:6081',      # geneve/wg
+                    'udp:0.0.0.0:8472', 'udp:[::]:8472',      # vxlan
+                    'udp:0.0.0.0:500', 'udp:0.0.0.0:4500'):   # ipsec
                 line.append('users:(("KERNEL",pid=1,fd=-1))')
             else:
                 # We need root to get the process info. Bail immediately.
