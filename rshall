@@ -249,6 +249,14 @@ def run_remote(parent_conn, child_conn, target, script):
             del env[key]
     env['LC_ALL'] = 'C'
 
+    # The script doesn't have a controlling terminal. OpenSSH might
+    # fall back to ssh-askpass (which may not be installed) to prompt
+    # for passwords or Yubikey touch confirmation.
+    # Without, we still require touch, but we won't log missing ssh-askpass.
+    # #env.pop('DISPLAY', None)
+    # #env.pop('WAYLAND_DISPLAY', None)
+    env['SSH_ASKPASS'] = '/bin/true'
+
     # The hostname may be "hostname" or "user@hostname".
     if '@' in target.hostname:
         username, ip = target.hostname.split('@')
@@ -280,12 +288,20 @@ def run_remote(parent_conn, child_conn, target, script):
             out, err = proc.communicate(timeout=3)  # should be instant?
             err += '\n\nTIMEOUT'
         if proc.wait() != 0 or err:
-            # WARNING: Runs in nazi mode right now and fails if anything
-            # on stderr is seen.
-            raise CalledProcessError(
-                proc.returncode, ['ssh', target.ip, '<script>'], out, err)
+            if proc.returncode == 0 and all(
+                    # If you have multiple yubikeys, you might get:
+                    #   sign_and_send_pubkey: signing failed for ED25519-SK
+                    #     "/home/jdoe/.ssh/id_yubi1234t": device not found
+                    line.startswith('sign_and_send_pubkey: signing failed for')
+                    for line in err.rstrip().split('\n')):
+                # Don't fail on just the "sign_and_send_pubkey" stderr.
+                pass
+            else:
+                # Fail on ANYTHING seen on stderr.
+                raise CalledProcessError(
+                    proc.returncode, ['ssh', target.ip, '<script>'], out, err)
     except CalledProcessError as e:
-        err = f'{e}: err={e.stderr!r}'
+        err = f'{e}: err={e.stderr!r}; out={e.output!r}'
         result = ProcResult(target=target, is_success=False, value=err)
     except Exception as e:
         err = f'{target}: {e}'
