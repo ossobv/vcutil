@@ -172,7 +172,7 @@ class Process(object):
         # Sort the children and convert the set into a list.
         for child in self.children:
             child.sort()
-        self.children = list(sorted(self.children))
+        self.children = tuple(sorted(self.children))
 
     def add_listens(self, listens):
         self._listens |= set(listens)
@@ -183,24 +183,34 @@ class Process(object):
         return id(self)
 
     def __eq__(self, other):
-        # Only identity comparison yields same.
-        return (id(self) == id(other))
+        # Not only identity comparison yields same, otherwise
+        # we end up comparing children as unequal and then
+        # sorting of parents fails because non-id siblings
+        # aren't considered.
+        return (
+            self.include == other.include and
+            self.cmdline == other.cmdline and
+            self.user == other.user and
+            self._listens == other._listens and
+            self.children == other.children)
 
     def __lt__(self, other):
-        # Quick, check identity:
-        if id(self) == id(other):
-            return False
+        if self.include != other.include:
+            return (self.include > other.include)  # first True
 
         # Lazy comparison.
         if self.cmdline != other.cmdline:
             return (self.cmdline < other.cmdline)
         if self.user != other.user:
             return (self.user < other.user)
-        if len(self.children) != len(other.children):
-            return (len(self.children) < len(other.children))
-        assert isinstance(self.children, list), self.children
-        assert isinstance(other.children, list), other.children
+        if self._listens != other._listens:
+            return (self._listens < other._listens)
+        assert isinstance(self.children, tuple), self.children
+        assert isinstance(other.children, tuple), other.children
         return (self.children < other.children)
+
+    def __repr__(self):
+        return '<Process({}, user={}, id={}>'.format(self.cmdline, self.user, id(self))
 
     def __str__(self):
         return self.to_string()
