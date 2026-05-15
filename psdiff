@@ -210,7 +210,8 @@ class Process(object):
         return (self.children < other.children)
 
     def __repr__(self):
-        return '<Process({}, user={}, id={}>'.format(self.cmdline, self.user, id(self))
+        return '<Process({}, user={}, id={}>'.format(
+            self.cmdline, self.user, id(self))
 
     def __str__(self):
         return self.to_string()
@@ -311,14 +312,6 @@ class FilteredProcessFormatter(ProcessFormatter):
                 args[2] = args[2].rsplit('/', 1)[0] + '/<ID>'
 
             process.cmdline = ' '.join(args)
-
-        elif process.exe == 'haproxy':
-            # haproxy might listen to a random UDP port because of syslog:
-            # > log 10.20.30.40:514 format rfc5424 local0 notice
-            # Turn it into a single UDP socket.
-            process._listens = set(
-                ('udp:0.0.0.0:*' if lst.startswith('udp:0.0.0.0:') else lst)
-                for lst in process._listens)
 
     def include(self, process):
         # Ignore kernel threads.
@@ -474,6 +467,14 @@ def ps_faxu(with_network=False):
     return root
 
 
+def get_ephemeral_ports():
+    # '32768<TAB>60999<LF>'
+    with open('/proc/sys/net/ipv4/ip_local_port_range', 'r') as fp:
+        ports = [int(port) for port in fp.read().strip().split(None, 1)]
+    assert 0 <= ports[0] < ports[1] < 65536, ports
+    return ports
+
+
 def netstat():
     # -H no-header
     # -n numeric
@@ -496,24 +497,34 @@ def netstat():
         output = subprocess.check_output(cmd, bufsize=-1)
     output = output.decode('ascii', 'replace')
 
+    # Fetch local port range.
+    ephemeral_min, ephemeral_max = get_ephemeral_ports()
+
     output = output.strip().split('\n')
     lines = [line.rstrip().split(None, 6) for line in output]
+
     # Netid  State  Recv-Q  Send-Q  LocalAddr:Port  PeerAddr:Port  Proc
     proc_listens = collections.defaultdict(list)
     for line in lines:
-        addr = '{}:{}'.format(line[0], line[4])
+        transport = line[0]
+        addr, port = line[4].split(':', 1)
+        if transport == 'udp' and ephemeral_min <= int(port) <= ephemeral_max:
+            port = '*'
+
         if len(line) < 7:
             # Some are handled by the kernel (module). Pretend we saw it
             # as kernel. (It will get appended to the INIT process.)
-            if addr in (
-                    'udp:0.0.0.0:51871', 'udp:[::]:51871',    # cilium/wg
-                    'udp:0.0.0.0:6081', 'udp:[::]:6081',      # geneve/wg
-                    'udp:0.0.0.0:8472', 'udp:[::]:8472',      # vxlan
-                    'udp:0.0.0.0:500', 'udp:0.0.0.0:4500'):   # ipsec
+            if transport == 'udp' and addr in ('0.0.0.0', '[::]') and port in (
+                    '51871', '6081',    # cilium/wg + geneve/wg
+                    '8472',             # vxlan
+                    '500', '4500',      # ipsec
+                    ):
                 line.append('users:(("KERNEL",pid=1,fd=-1))')
             else:
                 # We need root to get the process info. Bail immediately.
                 raise OSError(1, 'Operation not permitted')  # EPERM
+
+        bindaddr = '{}:{}:{}'.format(transport, addr, port)
         users = line[6]
         assert users.startswith('users:('), line
         assert users.endswith(')'), line
@@ -536,7 +547,7 @@ def netstat():
                 pidinfo = users[idx + 1:nidx].split(',', 1)[0]
                 assert pidinfo.startswith('pid='), users
                 pid = int(pidinfo[4:])
-                proc_listens[pid].append(addr)
+                proc_listens[pid].append(bindaddr)
                 state = 4
                 idx = nidx
             elif state == 4:
