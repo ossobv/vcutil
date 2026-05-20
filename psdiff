@@ -524,6 +524,11 @@ def netstat():
                 # We need root to get the process info. Bail immediately.
                 raise OSError(1, 'Operation not permitted')  # EPERM
 
+        if transport == 'p_raw' and addr == '*' and port.startswith((
+                'enx', 'fwln', 'fwpr', 'lxc', 'tap')):
+            # Skip these.
+            continue
+
         bindaddr = '{}:{}:{}'.format(transport, addr, port)
         users = line[6]
         assert users.startswith('users:('), line
