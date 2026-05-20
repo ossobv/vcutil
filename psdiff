@@ -507,7 +507,7 @@ def netstat():
     proc_listens = collections.defaultdict(list)
     for line in lines:
         transport = line[0]
-        addr, port = line[4].split(':', 1)
+        addr, port = line[4].rsplit(':', 1)  # 0.0.0.0:12345 | [::]:12345
         if transport == 'udp' and ephemeral_min <= int(port) <= ephemeral_max:
             port = '*'
 
