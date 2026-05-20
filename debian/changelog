@@ -1,3 +1,18 @@
+vcutil (1.60) stable; urgency=low
+
+  * Improvements:
+    - psdiff: Skip various p_raw interfaces from net listing
+    - psdiff: Add a few more "known" kernel-handled ports
+    - psdiff: Translate ephemeral udp:0.0.0.0:$port to udp:0.0.0.0:*
+
+  * Fixes:
+    - psdiff: Do not err on IPv6 udp ports
+    - psdiff: Fix stable sorting
+    - psdiff: Cope with ss/netstat returning no-process for some specific ports
+    - rshall: Cope with minor ssh warnings instead of failing on stderr
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 20 May 2026 20:04:56 +0200
+
 vcutil (1.59) stable; urgency=low
 
   * Cleanup:
@@ -14,10 +29,10 @@ vcutil (1.59) stable; urgency=low
     - wgrep: Add toml suffix
 
   * Fixes:
-   - nbdig: Fix IP address display bug in listing
-   - pdns-sql-slave-prune: Assume that slaving works first after a week
-   - psdiff: Handle spaces in ss process names (--net)
-   - zabdig: Handle cases where a trigger concerns multiple hosts
+    - nbdig: Fix IP address display bug in listing
+    - pdns-sql-slave-prune: Assume that slaving works first after a week
+    - psdiff: Handle spaces in ss process names (--net)
+    - zabdig: Handle cases where a trigger concerns multiple hosts
 
  -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 28 Apr 2026 12:41:36 +0200
 
