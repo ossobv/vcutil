@@ -124,7 +124,7 @@ class Process(object):
                     break
                 assert not obj._listens, (self, obj)
             obj.add_listens(self._listens)
-            self._listens = None  # make it empty/unusable
+            self._listens = frozenset()  # make it empty/unusable
 
     def has_parent(self, include_self=False,
                    cmdline__startswith=None, pid=None):
@@ -156,12 +156,11 @@ class Process(object):
 
     def to_string(self, indent=0):
         if self._listens:
-            # FIXME: TODO: Version/human sorting of these listening addresses.
-            listens = list(sorted(self._listens))
-            if len(listens) > 1:
-                extra = ', listen=({})'.format(','.join(listens))
+            if len(self._listens) > 1:
+                # TODO: version/human sorting of these?
+                extra = ', listen=({})'.format(','.join(self._listens))
             else:
-                extra = ', listen={}'.format(listens[0])
+                extra = ', listen={}'.format(self._listens[0])
         else:
             extra = ''
         return DBLINE.format(
@@ -173,6 +172,7 @@ class Process(object):
         for child in self.children:
             child.sort()
         self.children = tuple(sorted(self.children))
+        self._listens = tuple(sorted(self._listens))
 
     def add_listens(self, listens):
         self._listens |= set(listens)
