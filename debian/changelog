@@ -1,3 +1,13 @@
+vcutil (1.61) stable; urgency=low
+
+  * Improvements:
+    - psdiff: Fix human sorting of listening addresses
+
+  * Fixes:
+    - psdiff: Fix comparison between None and set() in _listens
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 21 May 2026 11:39:01 +0200
+
 vcutil (1.60) stable; urgency=low
 
   * Improvements:
