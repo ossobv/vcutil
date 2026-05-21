@@ -78,6 +78,17 @@ def udiff(alines, blines):
             yield '{} {}'.format(line[0], line[1:])
 
 
+def human_key(s):
+    """Sort key that handles numbers naturally. Works for IPs, ports, etc."""
+    # On Python3, tuple([]) is slightly faster than [] or tuple() when passing
+    # the result to sort, which we do.
+    return tuple([
+        int(token) if token.isdigit() else token
+        for token in human_key.re.split(s)
+        if token])  # against leading and trailing empty separators
+human_key.re = re.compile(r'(\d+)')
+
+
 class Process(object):
     split = re.compile(r'\s+')
 
@@ -157,8 +168,8 @@ class Process(object):
     def to_string(self, indent=0):
         if self._listens:
             if len(self._listens) > 1:
-                # TODO: version/human sorting of these?
-                extra = ', listen=({})'.format(','.join(self._listens))
+                extra = ', listen=({})'.format(','.join(
+                    sorted(self._listens, key=human_key)))
             else:
                 extra = ', listen={}'.format(self._listens[0])
         else:
