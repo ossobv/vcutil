@@ -519,8 +519,6 @@ def netstat():
     for line in lines:
         transport = line[0]
         addr, port = line[4].rsplit(':', 1)  # 0.0.0.0:12345 | [::]:12345
-        if transport == 'udp' and ephemeral_min <= int(port) <= ephemeral_max:
-            port = '*'
 
         if len(line) < 7:
             # Some are handled by the kernel (module). Pretend we saw it
@@ -539,6 +537,9 @@ def netstat():
                 'enx', 'fwln', 'fwpr', 'lxc', 'tap')):
             # Skip these.
             continue
+
+        if transport == 'udp' and ephemeral_min <= int(port) <= ephemeral_max:
+            port = '*'
 
         bindaddr = '{}:{}:{}'.format(transport, addr, port)
         users = line[6]
