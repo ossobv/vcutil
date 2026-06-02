@@ -1,3 +1,10 @@
+vcutil (1.62) stable; urgency=low
+
+  * Improvements:
+    - psdiff: Fixes related to ephemeral ports.
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 02 Jun 2026 15:21:30 +0200
+
 vcutil (1.61) stable; urgency=low
 
   * Improvements:
