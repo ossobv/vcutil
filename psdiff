@@ -491,12 +491,7 @@ def netstat():
     # -n numeric
     # -l listen
     # -p with-process
-    # -t include-tcp
-    # -u include-udp
-    # -w include-raw
-    # -S include-sctp
-    # -0 include-packet
-    cmd = ['ss', '-HnlptuwS0']
+    cmd = ['ss', '-Hnlp']
     try:
         output = subprocess.check_output
     except AttributeError:
@@ -518,6 +513,11 @@ def netstat():
     proc_listens = collections.defaultdict(list)
     for line in lines:
         transport = line[0]
+
+        # Ignore/skip unix sockets and netlink.
+        if transport in ('u_dgr', 'u_seq', 'u_str', 'nl'):
+            continue
+
         addr, port = line[4].rsplit(':', 1)  # 0.0.0.0:12345 | [::]:12345
         is_emphemeral = None  # maybe
 
