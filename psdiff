@@ -289,6 +289,13 @@ class FilteredProcessFormatter(ProcessFormatter):
             # These processes have fluctuating arguments. Drop them.
             process.cmdline = process.cmdline.split(' ', 1)[0]
 
+        elif process.cmdline.startswith(
+                'sshd: /usr/sbin/sshd -D [listener] '):
+            parts = process.cmdline.split(' ', 6)
+            if len(parts) == 7 and parts[4].isdigit() and parts[5] == 'of':
+                parts[4] = '0'
+                process.cmdline = ' '.join(parts)
+
         elif process.cmdline.startswith((
                 '/usr/sbin/zabbix_proxy: ',
                 '/usr/sbin/zabbix_server: ')):
