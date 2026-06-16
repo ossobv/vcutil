@@ -85,6 +85,7 @@ SBINS = \
 	efibootmirrorsetup \
 	fwdiff \
 	fwsniff \
+	iperfplan \
 	linux-kernel-autoremove \
 	lldpscan \
 	multilb-sanity-check \

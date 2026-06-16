@@ -1,0 +1,174 @@
+#!/bin/sh
+# iperfplan (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
+#
+# Helper script to set up IP route settings (netplan) to test throughput on a
+# single NIC (iperf).
+#
+# The IP route settings let traffic to _my_ _own_ _IP_ go through the gateway.
+# This way we can look for packet loss and interface errors without using a
+# second server.
+#
+# Usage:
+#
+#   iperfplan auto show                 # show selected values
+#   iperfplan auto try                  # apply+revert
+#
+#   iperfplan auto apply                # apply
+#
+#   iperfplan auto iperfs               # iperf daemon in one window
+#   iperfplan auto iperfc -t 120 -i 5   # iperf client in another window
+#
+#   iperfplan auto revert
+#
+# Instead of 'auto' interface, you can choose one explicitly.
+#
+# For temporary IPs, you can just enable your interface with a single IP first:
+#
+#   ip link set up dev enp1s0f1np1
+#   ip addr add 169.254.101.1/31 dev enp1s0f1np1  # maybe add this to the gw
+#
+#   iperfplan enp1s0f1np1 apply
+#   ... etc ... including revert ...
+#
+#   ip link set down enp1s0f1np1
+#
+# Longer explanation here:
+# https://www.osso.nl/blog/2025/loopback-through-leaf-single-nic-iperf-test/
+#
+set -eu
+
+help() {
+    echo "usage: $0 <IFACE|auto> <show|apply|try|revert|iperfs|iperfc>" >&2
+    exit 1
+}
+
+fail() {
+    echo "$0: error: $*" >&2
+    exit 1
+}
+
+check_iface() {
+    ip -br link show dev $IFACE >/dev/null 2>&1
+}
+
+get_from_all_lookup_local_ruleno() {
+    local lookup_file
+    lookup_file=/tmp/$(basename $0).$(id -u).local_ruleno
+    if cat "$lookup_file" 2>/dev/null; then
+        return
+    fi
+    ip rule show |
+        awk '/from all lookup local$/{sub(":","",$1);print $1;exit}' \
+        >"$lookup_file"
+    if ! test -s "$lookup_file" || ! cat "$lookup_file" 2>/dev/null; then
+        fail "error storing prio rule in $lookup_file"
+    fi
+    echo "note: created $lookup_file for temp storage" >&2
+}
+
+get_my_ip() {
+    ip -br -4 -o addr show dev "$1" | awk '{sub("/.*","",$3);print $3}'
+}
+
+get_peer_ip() {
+    local res
+    res=$(ip -o route show match "$1" |
+        awk "/^default via [^ ]* dev $IFACE/"'{print $3;exit}')
+    test -z "$res" && res=$(echo "$1" |
+        awk -F. '{o4=$4;if(o4%2==0)o4+=1;else o4-=1;print $1"."$2"."$3"."o4}')
+    echo "$res"
+}
+
+show() {
+    echo '# settings'
+    echo "iface=$IFACE ip=$MY_IP gw=$GW_IP old_all_lookup_local=$RULENO"
+    echo
+
+    echo '# rules'
+    ip rule show
+    echo
+}
+
+apply() {
+    show
+
+    iptables -t filter -I INPUT -i "$IFACE" -s "$MY_IP" -d "$MY_IP" -j ACCEPT
+    iptables -t filter -I OUTPUT -o "$IFACE" -s "$MY_IP" -d "$MY_IP" -j ACCEPT
+    ip route add "$MY_IP/32" via "$GW_IP" dev "$IFACE" table 169
+    ip rule add prio 169 from "$MY_IP" iif "$IFACE" lookup local
+    ip rule add prio 170 from "$MY_IP" to "$MY_IP" lookup 169
+    ip rule add prio 171 from all lookup local
+    ip rule del prio "$RULENO" from all lookup local
+
+    echo '# rules after'
+    ip rule show
+    echo
+}
+
+revert() {
+    show
+
+    ip rule add prio "$RULENO" from all lookup local || true
+    ip rule del prio 171 from all lookup local || true
+    ip rule del prio 170 from "$MY_IP" to "$MY_IP" lookup 169 || true
+    ip rule del prio 169 from "$MY_IP" iif "$IFACE" lookup local || true
+    ip route del "$MY_IP/32" via "$GW_IP" dev "$IFACE" table 169 || true
+    iptables -t filter -D OUTPUT -o "$IFACE" -s "$MY_IP" -d "$MY_IP" \
+        -j ACCEPT || true
+    iptables -t filter -D INPUT -i "$IFACE" -s "$MY_IP" -d "$MY_IP" \
+        -j ACCEPT || true
+
+    echo '# rules after'
+    ip rule show
+    echo
+}
+
+if test -z "${1:-}" || test -z "${2:-}"; then
+    help
+fi
+
+IFACE=$1; shift
+COMMAND=$1; shift
+if test "$IFACE" = auto; then
+    IFACE=$(ip -o route get 1.2.3.4 | awk '$4=="dev"{print $5;exit}')
+fi
+
+check_iface || fail "interface $IFACE not found"
+MY_IP=$(get_my_ip "$IFACE")
+GW_IP=$(get_peer_ip "$MY_IP")
+test "$MY_IP" != "$GW_IP" || fail "ip lookup fail $MY_IP == $GW_IP"
+RULENO=$(get_from_all_lookup_local_ruleno)
+test "$RULENO" -lt 169 || fail "from all lookup local ruleno $RULENO too high"
+
+case $COMMAND in
+show)
+    show
+    ;;
+apply|on|enable)
+    apply
+    ;;
+revert|off|disable)
+    revert
+    ;;
+try)
+    apply
+
+    N=5
+    echo -n 'reverting in ...' >&2
+    for n in $(seq $N); do echo -n " $n/$N" >&2; sleep 1; done
+    echo >&2; echo >&2
+
+    revert
+    ;;
+iperfs)
+    set -x
+    iperf -B $MY_IP -s
+    ;;
+iperfc)
+    set -x
+    iperf -B $MY_IP -c $MY_IP "$@"
+    ;;
+*)
+    help >&2
+    ;;
+esac
