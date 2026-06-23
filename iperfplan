@@ -15,10 +15,9 @@
 #
 #   iperfplan auto apply                # apply
 #
-#   iperfplan auto iperfs               # iperf daemon in one window
-#   iperfplan auto iperfc -t 120 -i 5   # iperf client in another window
+#   iperfplan auto iperf -t 120 -i 5    # iperf server+client
 #
-#   iperfplan auto revert
+#   iperfplan auto revert               # undo apply when done
 #
 # Instead of 'auto' interface, you can choose one explicitly.
 #
@@ -30,6 +29,7 @@
 #   iperfplan enp1s0f1np1 apply
 #   ... etc ... including revert ...
 #
+#   ip addr flush dev enp1s0f1np1
 #   ip link set down enp1s0f1np1
 #
 # Longer explanation here:
@@ -123,6 +123,21 @@ revert() {
     echo
 }
 
+# Do "lscpu -p=MAXMHZ,CPU,CORE,NODE" using sysfs (not version-sorted).
+lscpu_p_MAXMHZ_CPU_CORE_NODE() {
+    local cpu_dir core_id node_dir node_id max_freq
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+        cpu_id=${cpu_dir##*/cpu}  # logical cpu (cpu12 -> 12)
+        read core_id < "$cpu_dir/topology/core_id"
+        node_dir="$cpu_dir"/node[0-9]*
+        # Get NUMA node (fallback to 0 if the system is non-NUMA)
+        test -d "$node_dir" && node_id=${node_dir##*/node} || node_id=0
+        read max_freq < "$cpu_dir/cpufreq/scaling_max_freq"
+        echo "$max_freq,$cpu_id,$core_id,$node_id"
+    done
+}
+
+
 if test -z "${1:-}" || test -z "${2:-}"; then
     help
 fi
@@ -160,13 +175,36 @@ try)
 
     revert
     ;;
-iperfs)
+iperf)
+    # Try getting two different physical cores (avoiding hyperthreaded twins
+    # on the same core). Prefer the same NUMA node ID for shared L3 cache,
+    # but that is optional.
+    # Reverse sort for speedy P-cores first.
+    CPUS=$(lscpu_p_MAXMHZ_CPU_CORE_NODE | sort -rV | awk -F, '
+        # Skip comments and core 0 (often used for kernel stuff)
+        /^#/ || $2==0 { next }
+        # Choose server core first
+        !s { s=$2; c=$3; n=$4; next }
+        # Look for perfect match (different core, same NUMA node)
+        $3!=c && $4==n { print s,$2; matched=1; exit }
+        # Track fallback (different core, different NUMA node)
+        $3!=c { f=$2 }
+        # If no perfect match found, use the fallback
+        END { if(!matched && f) print s,f }
+    ')
+    CLIENT_CPU=${CPUS% *}
+    SERVER_CPU=${CPUS#* }
+    # Ensure we actually got two cores
+    if [ -z "$CPUS" ] || [ "$CLIENT_CPU" = "$SERVER_CPU" ]; then
+        echo "$0: insufficient distinct CPU cores available" 2>&1
+        exit 1
+    fi
     set -x
-    iperf -B $MY_IP -s
-    ;;
-iperfc)
-    set -x
-    iperf -B $MY_IP -c $MY_IP "$@"
+    taskset -c $SERVER_CPU iperf -B $MY_IP -s &
+    sleep 1
+    taskset -c $CLIENT_CPU iperf -B $MY_IP -c $MY_IP "$@"
+    kill $!
+    wait $!
     ;;
 *)
     help >&2
