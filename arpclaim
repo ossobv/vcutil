@@ -30,8 +30,6 @@
 # arpclaim will auto-select many interfaces (`-A`), broadcasting your MAC
 # with the correct IP to all the connected devices.
 #
-# Bugs: doesn't work with IPv6.
-#
 from argparse import ArgumentParser
 from fcntl import ioctl
 from collections import defaultdict, namedtuple
@@ -51,10 +49,12 @@ class HwAddr(bytes):
         return repr(self)
 
 HwAddr.BROADCAST = HwAddr(b'\xff\xff\xff\xff\xff\xff')  # noqa
+HwAddr.IPV6_ALL = HwAddr(b'\x33\x33\x00\x00\x00\x01')   # noqa
 
 
 class IpAddr(bytes):
     SCOPE_GLOBAL = 0
+    IPV6_LL_ALL = socket.inet_pton(socket.AF_INET6, 'ff02::1')
 
     @classmethod
     def from_human(cls, ip):
@@ -93,9 +93,9 @@ NetIface = namedtuple(
     'NetIface', 'name hw_address ip_addresses')
 
 
-def enum_ip_addresses(family=socket.AF_INET):
+def enum_ip_addresses(family=socket.AF_UNSPEC):
     """
-    Use AF_NETLINK to get at IPv4 addresses of interfaces.
+    Use AF_NETLINK to get at IPv4/IPv6 addresses of interfaces.
 
     Return a dictionary of interface keys and list-of-IP-values.
 
@@ -224,7 +224,7 @@ version_key.re = re_compile(r'(\d+)')  # noqa
 
 def gratuitous_arp_reply(src_mac, ip):
     assert isinstance(src_mac, bytes), src_mac
-    assert isinstance(ip, bytes), ip
+    assert len(ip) == 4, ip
     broadcast = HwAddr.BROADCAST
     eth = broadcast + src_mac + b'\x08\x06'  # ETH_P_ARP
     arp = pack(
@@ -240,6 +240,57 @@ def gratuitous_arp_reply(src_mac, ip):
         ip,         # Target protocol address: my IPv4 (for broadcast)
     )
     return eth + arp
+
+
+def _inet_checksum(data):
+    if len(data) % 2:
+        data += b'\x00'
+    s = sum(unpack_from('!%dH' % (len(data) // 2), data))
+    s = (s >> 16) + (s & 0xffff)
+    s += s >> 16
+    return ~s & 0xffff
+
+
+def unsolicited_neighbor_advertisement(src_mac, ip):
+    assert isinstance(src_mac, bytes), src_mac
+    assert len(ip) == 16, ip
+    all_nodes = IpAddr.IPV6_LL_ALL
+    dst_mac = HwAddr.IPV6_ALL
+
+    eth = dst_mac + src_mac + b'\x86\xdd'  # ETH_P_IPV6
+    icmp = pack(
+        '!BBHI16s',
+        136,            # Type: Neighbor Advertisement
+        0,              # Code
+        0,              # Checksum (filled in below)
+        0x20000000,     # Flags: Override (see note on Router flag)
+        ip,             # Target address: my IPv6
+    ) + pack('!BB6s', 2, 1, src_mac)  # Option: Target Link-Layer Address
+
+    pseudo = (
+        ip + all_nodes + pack('!I', len(icmp)) +
+        b'\x00\x00\x00\x3a')  # nh=58
+    icmp = icmp[:2] + pack('!H', _inet_checksum(pseudo + icmp)) + icmp[4:]
+
+    ipv6 = pack(
+        '!IHBB16s16s',
+        0x60000000,     # Version 6, traffic class 0, flow label 0
+        len(icmp),      # Payload length
+        58,             # Next header: ICMPv6
+        255,            # Hop limit: 255, mandatory for NDP (RFC 4861)
+        ip,             # Source address: my IPv6
+        all_nodes,      # Destination address: ff02::1
+    )
+
+    return eth + ipv6 + icmp
+
+
+def gratuitous_announce(src_mac, ip):
+    if ip.fam == socket.AF_INET:
+        return gratuitous_arp_reply(src_mac, ip)
+    if ip.fam == socket.AF_INET6:
+        return unsolicited_neighbor_advertisement(src_mac, ip)
+    raise NotImplementedError(ip.fam)
 
 
 def raw_send(ifname, frame):
@@ -327,20 +378,20 @@ def main():
 
     # Show what we will/would do.
     is_noop = ('' if args.count != 0 else ' (dry-run)')
-    arp_packets = []
+    raw_packets = []
     for netiface in netifaces:
         for ip in netiface.ip_addresses:
             print('{iface}: {hwaddr} broadcast {ip}{is_noop}'.format(
                 iface=netiface.name, hwaddr=netiface.hw_address,
                 ip=ip, is_noop=is_noop))
-            garp = gratuitous_arp_reply(netiface.hw_address, ip)
-            arp_packets.append((netiface.name, garp))
+            packet = gratuitous_announce(netiface.hw_address, ip)
+            raw_packets.append((netiface.name, packet))
 
     # Actually do it.
     count = args.count
     isatty = stdout.isatty()
     while count:
-        for iface, packet in arp_packets:
+        for iface, packet in raw_packets:
             raw_send(iface, packet)
         if isatty:
             stdout.write('!')
