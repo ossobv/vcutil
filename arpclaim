@@ -8,7 +8,7 @@
 # The use case where this is useful:
 # - A machine is connected to multiple interfaces;
 # - with the same (virtual or real) gateway IP;
-# - there is no predence between the two;
+# - there is no precedence between the two;
 # - and now you decide that this switch/peer has precedence.
 #
 # arpclaim sends out an unsolicited/gratuitous ARP (GARP) on the
@@ -31,8 +31,8 @@
 # with the correct IP to all the connected devices.
 #
 from argparse import ArgumentParser
-from fcntl import ioctl
 from collections import defaultdict, namedtuple
+from fcntl import ioctl
 from re import compile as re_compile
 from struct import Struct, pack, unpack_from
 from sys import stdout
@@ -345,7 +345,8 @@ def keep_netifaces_by_ips(netifaces, valid_ips):
 
 def is_ipv6_forwarding(ifname):
     try:
-        with open('/proc/sys/net/ipv6/conf/%s/forwarding' % ifname) as fp:
+        with open(
+                '/proc/sys/net/ipv6/conf/{}/forwarding'.format(ifname)) as fp:
             return fp.read().strip() == '1'
     except OSError:
         return False
@@ -371,13 +372,13 @@ def main():
         help='select all interfaces/IPs')
     parser.add_argument(
         '-a', '--ip-address', action='append',
-        help='limit by IP addresses')
+        help='limit by IP address, allowed multiple times')
     parser.add_argument(
         '-I', '--interface', action='append',
-        help='limit by interface (with children)')
+        help='limit by interface (with children), allowed multiple times')
     parser.add_argument(
         '-c', '--count', type=int, default=0,
-        help='actually send N packets, instead of just pretending')
+        help='actually send COUNT packets, instead of just pretending')
     parser.add_argument(
         '-i', '--interval', type=float, default=0.2,
         help='wait interval seconds between sending each packet, default 0.2')
