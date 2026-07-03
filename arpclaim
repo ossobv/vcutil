@@ -252,6 +252,19 @@ def _inet_checksum(data):
 
 
 def unsolicited_neighbor_advertisement(src_mac, ip):
+    """
+    Send the IPv6 equivalent of the IPv4 unsolicited ARP.
+
+    Caveat:
+
+        Right now, we only set the Override flag (0x20000000) to
+        mean "update your cache". If we are the gateway for the
+        connected host, they may drop the Router entry (0x80000000),
+        the opposite of what we want.
+
+    We may want to change 0x20000000 to 0xA0000000, if our peers "forget"
+    that we are the router.
+    """
     assert isinstance(src_mac, bytes), src_mac
     assert len(ip) == 16, ip
     all_nodes = IpAddr.IPV6_LL_ALL
@@ -295,11 +308,6 @@ def gratuitous_announce(src_mac, ip):
 
 def raw_socket():
     return socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-
-
-def raw_send(s, ifname, frame):
-    s.bind((ifname, 0))
-    s.send(frame)
 
 
 def keep_netifaces_with_ip_addresses(netifaces):
@@ -392,27 +400,28 @@ def main():
 
     # Actually do it.
     count = args.count
-    isatty = stdout.isatty()
-    with raw_socket() as sock:
-        while count:
-            ts = time()
-            for iface, packet in raw_packets:
-                raw_send(sock, iface, packet)
+    if count:
+        isatty = stdout.isatty()
+        with raw_socket() as sock:
+            while count:
+                ts = time()
+                for ifname, packet in raw_packets:
+                    sock.sendto(packet, (ifname, 0))
+                if isatty:
+                    stdout.write('!')
+                    stdout.flush()
+
+                if count > 0:  # negative means infinite
+                    count -= 1
+                if count == 0:  # stop before sleep
+                    break
+
+                # Sleep for a while.
+                td = time() - ts
+                if td < args.interval:
+                    sleep(args.interval - td)
             if isatty:
-                stdout.write('!')
-                stdout.flush()
-
-            if count > 0:  # negative means infinite
-                count -= 1
-            if count == 0:  # stop before sleep
-                break
-
-            # Sleep for a while.
-            td = time() - ts
-            if td < args.interval:
-                sleep(args.interval - td)
-        if args.count and isatty:
-            print()
+                print()
 
 
 if __name__ == '__main__':
