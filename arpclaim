@@ -251,22 +251,16 @@ def _inet_checksum(data):
     return ~s & 0xffff
 
 
-def unsolicited_neighbor_advertisement(src_mac, ip):
+def unsolicited_neighbor_advertisement(src_mac, ip, router=False):
     """
     Send the IPv6 equivalent of the IPv4 unsolicited ARP.
-
-    Caveat:
-
-        Right now, we only set the Override flag (0x20000000) to
-        mean "update your cache". If we are the gateway for the
-        connected host, they may drop the Router entry (0x80000000),
-        the opposite of what we want.
-
-    We may want to change 0x20000000 to 0xA0000000, if our peers "forget"
-    that we are the router.
     """
     assert isinstance(src_mac, bytes), src_mac
     assert len(ip) == 16, ip
+
+    # If we are the (designated) router, send Router (0x80000000),
+    # otherwise send just Override ("update your host cache").
+    flags = 0xA0000000 if router else 0x20000000  # R+O / O
     all_nodes = IpAddr.IPV6_LL_ALL
     dst_mac = HwAddr.IPV6_ALL
 
@@ -276,7 +270,7 @@ def unsolicited_neighbor_advertisement(src_mac, ip):
         136,            # Type: Neighbor Advertisement
         0,              # Code
         0,              # Checksum (filled in below)
-        0x20000000,     # Flags: Override (see note on Router flag)
+        flags,          # Flags: Router+Override or just Override
         ip,             # Target address: my IPv6
     ) + pack('!BB6s', 2, 1, src_mac)  # Option: Target Link-Layer Address
 
@@ -298,11 +292,11 @@ def unsolicited_neighbor_advertisement(src_mac, ip):
     return eth + ipv6 + icmp
 
 
-def gratuitous_announce(src_mac, ip):
+def gratuitous_announce(src_mac, ip, router=False):
     if ip.fam == socket.AF_INET:
         return gratuitous_arp_reply(src_mac, ip)
     if ip.fam == socket.AF_INET6:
-        return unsolicited_neighbor_advertisement(src_mac, ip)
+        return unsolicited_neighbor_advertisement(src_mac, ip, router)
     raise NotImplementedError(ip.fam)
 
 
@@ -349,6 +343,22 @@ def keep_netifaces_by_ips(netifaces, valid_ips):
     return netifaces
 
 
+def is_ipv6_forwarding(ifname):
+    try:
+        with open('/proc/sys/net/ipv6/conf/%s/forwarding' % ifname) as fp:
+            return fp.read().strip() == '1'
+    except OSError:
+        return False
+
+
+def router_for(ifname, mode):
+    if mode == 'yes':
+        return True
+    if mode == 'no':
+        return False
+    return is_ipv6_forwarding(ifname)
+
+
 def main():
     parser = ArgumentParser(
         prog='arpclaim',
@@ -371,6 +381,11 @@ def main():
     parser.add_argument(
         '-i', '--interval', type=float, default=0.2,
         help='wait interval seconds between sending each packet, default 0.2')
+    parser.add_argument(
+        '--router', choices=('auto', 'yes', 'no'), default='auto',
+        help=(
+            'NDP Router flag on IPv6 announcements '
+            '(auto checks interface forwarding in proc)'))
     args = parser.parse_args()
 
     if not (args.interface or args.ip_address):
@@ -391,11 +406,15 @@ def main():
     is_noop = ('' if args.count != 0 else ' (dry-run)')
     raw_packets = []
     for netiface in netifaces:
+        router = router_for(netiface.name, args.router)
         for ip in netiface.ip_addresses:
-            print('{iface}: {hwaddr} broadcast {ip}{is_noop}'.format(
+            desc = (
+                'broadcast/router' if ip.fam == socket.AF_INET6 and router
+                else 'broadcast')
+            print('{iface}: {hwaddr} {desc} {ip}{is_noop}'.format(
                 iface=netiface.name, hwaddr=netiface.hw_address,
-                ip=ip, is_noop=is_noop))
-            packet = gratuitous_announce(netiface.hw_address, ip)
+                desc=desc, ip=ip, is_noop=is_noop))
+            packet = gratuitous_announce(netiface.hw_address, ip, router)
             raw_packets.append((netiface.name, packet))
 
     # Actually do it.
