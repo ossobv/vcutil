@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+# arpclaim (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
+#
+# Sometimes you need to shout (clamor) to your neighbors that you are the
+# rightful owner of certain IPs, claiming them if you will. arpclaim does
+# that.
+#
+# The use case where this is useful:
+# - A machine is connected to multiple interfaces;
+# - with the same (virtual or real) gateway IP;
+# - there is no predence between the two;
+# - and now you decide that this switch/peer has precedence.
+#
+# arpclaim sends out an unsolicited/gratuitous ARP (GARP) on the
+# interface, broadcasting its own IP to the peer.
+#
+# Usage (as root), show interface/IPs first:
+#
+#   # arpclaim -A
+#   eno0: 00:16:3e:84:a2:17 broadcast 12.34.56.78/31 (dry-run)
+#   eno1: 68:21:5f:8f:82:07 broadcast 10.0.0.1/24 (dry-run)
+#
+# Limit to one or more interfaces (or IPs) and then send:
+#
+#   # arpclaim -I eno0 -c 1
+#   eno0: 00:16:3e:84:a2:17 broadcast 12.34.56.78/31
+#   !
+#
+# The above is equal to `arping -i eno0 -P -U 12.34.56.78 -c 1`, except
+# arpclaim will auto-select many interfaces (`-A`), broadcasting your MAC
+# with the correct IP to all the connected devices.
+#
+# Bugs: doesn't work with IPv6.
+#
+from argparse import ArgumentParser
+from fcntl import ioctl
+from collections import defaultdict, namedtuple
+from re import compile as re_compile
+from struct import Struct, pack, unpack_from
+from sys import stdout
+from time import sleep
+import socket
+
+
+class HwAddr(bytes):
+    def __repr__(self):
+        assert len(self) == 6, bytes(self)
+        return '%02x:%02x:%02x:%02x:%02x:%02x' % tuple(self)
+
+    def __str__(self):
+        return repr(self)
+
+HwAddr.BROADCAST = HwAddr(b'\xff\xff\xff\xff\xff\xff')  # noqa
+
+
+class IpAddr(bytes):
+    SCOPE_GLOBAL = 0
+
+    @classmethod
+    def from_human(cls, ip):
+        if '/' not in ip:
+            ip, plen = ip, -1
+        else:
+            ip, plen = ip.split('/', 1)
+            plen = int(plen)
+        if ':' in ip:
+            fam = socket.AF_INET6
+            if plen == -1:
+                plen = 128
+        else:
+            fam = socket.AF_INET
+            if plen == -1:
+                plen = 32
+        addr = socket.inet_pton(fam, ip)
+        scope = cls.SCOPE_GLOBAL  # whatever for now..
+        return cls(fam, addr, plen, scope)
+
+    def __new__(cls, fam, addr, prefixlen, scope):
+        self = super().__new__(cls, addr)
+        self.fam = fam
+        self.prefixlen = prefixlen
+        self.scope = scope
+        return self
+
+    def __repr__(self):
+        return '{}/{}'.format(socket.inet_ntop(self.fam, self), self.prefixlen)
+
+    def __str__(self):
+        return repr(self)
+
+
+NetIface = namedtuple(
+    'NetIface', 'name hw_address ip_addresses')
+
+
+def enum_ip_addresses(family=socket.AF_INET):
+    """
+    Use AF_NETLINK to get at IPv4 addresses of interfaces.
+
+    Return a dictionary of interface keys and list-of-IP-values.
+
+    (For IPv6 we can read /proc/net/if_inet6, but for IPv4+6 we need netlink.)
+    """
+    NETLINK_ROUTE = 0
+    RTM_GETADDR = 22
+    NLM_F_REQUEST = 0x01
+    NLM_F_DUMP = 0x300
+    NLMSG_ERROR = 2
+    NLMSG_DONE = 3
+    IFA_ADDRESS = 1
+    IFA_LOCAL = 2
+
+    def _align(n):
+        return (n + 3) & ~3
+
+    _hdr = Struct('=IHHII')   # nlmsghdr
+    _ifa = Struct('=BBBBI')   # ifaddrmsg
+    _rta = Struct('=HH')      # rtattr
+
+    idx_name = {i: n for i, n in socket.if_nameindex()}
+    req = _ifa.pack(family, 0, 0, 0, 0)
+    msg = _hdr.pack(
+        _hdr.size + len(req), RTM_GETADDR,
+        NLM_F_REQUEST | NLM_F_DUMP, 1, 0) + req
+
+    with socket.socket(
+            socket.AF_NETLINK,
+            socket.SOCK_RAW,
+            NETLINK_ROUTE) as s:
+        s.send(msg)
+        out = defaultdict(list)
+
+        while True:
+            buf = s.recv(65536)  # more than enough for 100s of addresses
+            off = 0
+            while off < len(buf):
+                mlen, mtype, _, _, _ = _hdr.unpack_from(buf, off)
+                if mtype == NLMSG_DONE:
+                    return out
+                if mtype == NLMSG_ERROR:
+                    err = unpack_from('=i', buf, off + _hdr.size)[0]
+                    raise OSError(-err, 'RTM_GETADDR failed')
+
+                fam, plen, _, scope, ifindex = _ifa.unpack_from(
+                    buf, off + _hdr.size)
+                a, end = off + _hdr.size + _ifa.size, off + mlen
+                addr = local = None
+                while a < end:
+                    rlen, rtype = _rta.unpack_from(buf, a)
+                    payload = buf[a + _rta.size:a + rlen]
+                    if rtype == IFA_ADDRESS:
+                        addr = payload
+                    elif rtype == IFA_LOCAL:
+                        local = payload
+                    a += _align(rlen)
+
+                raw = local or addr
+                if raw:
+                    out[idx_name.get(ifindex, ifindex)].append(
+                        IpAddr(fam, raw, plen, scope))
+                off += _align(mlen)
+
+    raise NotImplementedError('expected NLMSG_DONE')
+
+
+def enum_hw_addresses():
+    SIOCGIFHWADDR = 0x8927
+
+    def _ifreq(sock, req, ifname):
+        return ioctl(
+            sock.fileno(), req,
+            pack('256s', ifname[:15].encode()))
+
+    out = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        for _, name in socket.if_nameindex():
+            hw = HwAddr(_ifreq(s, SIOCGIFHWADDR, name)[18:24])
+            out[name] = hw
+    return out
+
+
+def enum_netifaces():
+    hwaddrs = enum_hw_addresses()
+    ipaddrs = enum_ip_addresses()
+    ifaces = list(sorted(hwaddrs.keys(), key=version_key))
+    level0 = [iface for iface in ifaces if '.' not in iface]
+    level1 = [iface for iface in ifaces if '.' in iface]
+
+    parent_netifaces = []
+    for parent in level0:
+        children = [
+            iface for iface in level1
+            if iface.startswith(parent + '.')]
+
+        child_netifaces = []
+        for child in children:
+            ip_addresses = tuple([
+                addr for addr in ipaddrs[child]
+                if addr.scope == IpAddr.SCOPE_GLOBAL])
+            if ip_addresses:
+                child_netifaces.append(NetIface(
+                    name=child, hw_address=hwaddrs[child],
+                    ip_addresses=ip_addresses))
+
+        ip_addresses = tuple([
+            addr for addr in ipaddrs[parent]
+            if addr.scope == IpAddr.SCOPE_GLOBAL])
+        parent_netifaces.append(NetIface(
+            name=parent,
+            hw_address=hwaddrs[parent], ip_addresses=ip_addresses))
+
+        # Forget about parent/child relations for now. A flat list works
+        # better.
+        parent_netifaces.extend(child_netifaces)
+
+    return parent_netifaces
+
+
+def version_key(s):
+    """Split string into text/int chunks for natural version sort."""
+    return [int(c) if c.isdigit() else c for c in version_key.re.split(s)]
+version_key.re = re_compile(r'(\d+)')  # noqa
+
+
+def gratuitous_arp_reply(src_mac, ip):
+    assert isinstance(src_mac, bytes), src_mac
+    assert isinstance(ip, bytes), ip
+    broadcast = HwAddr.BROADCAST
+    eth = broadcast + src_mac + b'\x08\x06'  # ETH_P_ARP
+    arp = pack(
+        '!HHBBH6s4s6s4s',
+        1,          # Hardware type: Ethernet
+        0x0800,     # Protocol type: IPv4
+        6,          # Hardware length: 6 octets (MAC)
+        4,          # Protocol length: 4 octets (IPv4)
+        2,          # Operation: REPLY
+        src_mac,    # Source address: my MAC
+        ip,         # Protocol address: my IPv4
+        broadcast,  # Destination address: broadcast
+        ip,         # Target protocol address: my IPv4 (for broadcast)
+    )
+    return eth + arp
+
+
+def raw_send(ifname, frame):
+    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as s:
+        s.bind((ifname, 0))
+        s.send(frame)
+
+
+def keep_netifaces_with_ip_addresses(netifaces):
+    netifaces = [
+        netiface for netiface in netifaces
+        if netiface.ip_addresses]
+    return netifaces
+
+
+def keep_netifaces_by_names(netifaces, names):
+    def matches(netiface):
+        for name in names:
+            if '.' in name:
+                if netiface.name == name:
+                    return True
+            else:
+                if (netiface.name == name or
+                        netiface.name.startswith(name + '.')):
+                    return True
+        return False
+
+    netifaces = [
+        netiface for netiface in netifaces
+        if matches(netiface)]
+    return netifaces
+
+
+def keep_netifaces_by_ips(netifaces, valid_ips):
+    # Not only filter by IP, also restrict to said IPs.
+    netifaces = [
+        NetIface(
+            name=netiface.name,
+            hw_address=netiface.hw_address,
+            ip_addresses=tuple([
+                ip for ip in netiface.ip_addresses
+                if ip in valid_ips]))
+        for netiface in netifaces
+        if any(ip in netiface.ip_addresses for ip in valid_ips)]
+    return netifaces
+
+
+def main():
+    parser = ArgumentParser(
+        prog='arpclaim',
+        description=(
+            'Send gratuitous ARP (GARP) on multiple interfaces at once. '
+            'Useful to let all connected devices know that this is the '
+            'primary gateway.'))
+    parser.add_argument(
+        '-A', '--all', action='store_true',
+        help='select all interfaces/IPs')
+    parser.add_argument(
+        '-a', '--ip-address', action='append',
+        help='limit by IP addresses')
+    parser.add_argument(
+        '-I', '--interface', action='append',
+        help='limit by interface (with children)')
+    parser.add_argument(
+        '-c', '--count', type=int, default=0,
+        help='actually send N packets, instead of just pretending')
+    parser.add_argument(
+        '-i', '--interval', type=float, default=0.2,
+        help='wait interval seconds between sending each packet, default 0.2')
+    args = parser.parse_args()
+
+    if not (args.interface or args.ip_address):
+        if not args.all:
+            parser.error('must specify -A/--all to select all')
+    elif args.all:
+        parser.error('cannot combine -A/--all with filters')
+
+    # Select interfaces/IPs.
+    netifaces = keep_netifaces_with_ip_addresses(enum_netifaces())
+    if args.interface:
+        netifaces = keep_netifaces_by_names(netifaces, args.interface)
+    if args.ip_address:
+        netifaces = keep_netifaces_by_ips(
+            netifaces, [IpAddr.from_human(ip) for ip in args.ip_address])
+
+    # Show what we will/would do.
+    is_noop = ('' if args.count != 0 else ' (dry-run)')
+    arp_packets = []
+    for netiface in netifaces:
+        for ip in netiface.ip_addresses:
+            print('{iface}: {hwaddr} broadcast {ip}{is_noop}'.format(
+                iface=netiface.name, hwaddr=netiface.hw_address,
+                ip=ip, is_noop=is_noop))
+            garp = gratuitous_arp_reply(netiface.hw_address, ip)
+            arp_packets.append((netiface.name, garp))
+
+    # Actually do it.
+    count = args.count
+    isatty = stdout.isatty()
+    while count:
+        for iface, packet in arp_packets:
+            raw_send(iface, packet)
+        if isatty:
+            stdout.write('!')
+            stdout.flush()
+
+        if count > 0:  # negative means infinite
+            count -= 1
+        if count == 0:  # stop before sleep
+            break
+        sleep(args.interval)
+    if args.count and isatty:
+        print()
+
+
+if __name__ == '__main__':
+    main()

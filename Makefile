@@ -81,6 +81,7 @@ BINS = \
 	_multi2json \
 
 SBINS = \
+	arpclaim \
 	arpfix \
 	efibootmirrorsetup \
 	fwdiff \
