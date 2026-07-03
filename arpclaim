@@ -36,7 +36,7 @@ from collections import defaultdict, namedtuple
 from re import compile as re_compile
 from struct import Struct, pack, unpack_from
 from sys import stdout
-from time import sleep
+from time import sleep, time
 import socket
 
 
@@ -293,10 +293,13 @@ def gratuitous_announce(src_mac, ip):
     raise NotImplementedError(ip.fam)
 
 
-def raw_send(ifname, frame):
-    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as s:
-        s.bind((ifname, 0))
-        s.send(frame)
+def raw_socket():
+    return socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+
+
+def raw_send(s, ifname, frame):
+    s.bind((ifname, 0))
+    s.send(frame)
 
 
 def keep_netifaces_with_ip_addresses(netifaces):
@@ -390,20 +393,26 @@ def main():
     # Actually do it.
     count = args.count
     isatty = stdout.isatty()
-    while count:
-        for iface, packet in raw_packets:
-            raw_send(iface, packet)
-        if isatty:
-            stdout.write('!')
-            stdout.flush()
+    with raw_socket() as sock:
+        while count:
+            ts = time()
+            for iface, packet in raw_packets:
+                raw_send(sock, iface, packet)
+            if isatty:
+                stdout.write('!')
+                stdout.flush()
 
-        if count > 0:  # negative means infinite
-            count -= 1
-        if count == 0:  # stop before sleep
-            break
-        sleep(args.interval)
-    if args.count and isatty:
-        print()
+            if count > 0:  # negative means infinite
+                count -= 1
+            if count == 0:  # stop before sleep
+                break
+
+            # Sleep for a while.
+            td = time() - ts
+            if td < args.interval:
+                sleep(args.interval - td)
+        if args.count and isatty:
+            print()
 
 
 if __name__ == '__main__':
