@@ -45,16 +45,17 @@ _get_gateway() {
     local iproute="$(ip route show dev "$1" 2>/dev/null)"
     test $? -ne 0 && exit 1
     local gwip="$(
-        echo "$iproute" | sed -e '/ via /!d;s/.* via //' | sort -u)"
-    local protokernel="$(echo "$iproute" | sed '/ proto kernel /!d;s/ .*//')"
+        echo "$iproute" |
+        awk '/ via /{sub(".* via ","",$0);sub(" .*","");print $0;exit}')"
+    local protokernel="$(
+        echo "$iproute" | awk '/ proto kernel /{print $1;exit}')"
     if test -n "$gwip" && echo "$protokernel" | grep -q /; then
         echo $gwip
     elif echo "$iproute" | sed -e "/^${gwip%.*}.[0-9]* /!d;s/ .*//" |
             head -n1 | grep ''; then
         true
     elif test -n "$protokernel"; then
-        local net="$(echo "$protokernel" | head -n1)"
-        echo "${net%.*}.1"
+        echo "${protokernel%.*}.1"
     fi
 }
 
