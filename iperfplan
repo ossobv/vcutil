@@ -57,9 +57,9 @@ get_from_all_lookup_local_ruleno() {
     if cat "$lookup_file" 2>/dev/null; then
         return
     fi
-    ip rule show |
-        awk '/from all lookup local$/{sub(":","",$1);print $1;exit}' \
-        >"$lookup_file"
+    ip -d rule show |
+        awk '/from all lookup local proto kernel$/{
+            sub(":","",$1);print $1;exit}' >"$lookup_file"
     if ! test -s "$lookup_file" || ! cat "$lookup_file" 2>/dev/null; then
         fail "error storing prio rule in $lookup_file"
     fi
@@ -85,7 +85,7 @@ show() {
     echo
 
     echo '# rules'
-    ip rule show
+    ip -d rule show
     echo
 }
 
@@ -98,17 +98,17 @@ apply() {
     ip rule add prio 169 from "$MY_IP" iif "$IFACE" lookup local
     ip rule add prio 170 from "$MY_IP" to "$MY_IP" lookup 169
     ip rule add prio 171 from all lookup local
-    ip rule del prio "$RULENO" from all lookup local
+    ip rule del prio "$RULENO" from all lookup local # proto kernel
 
     echo '# rules after'
-    ip rule show
+    ip -d rule show
     echo
 }
 
 revert() {
     show
 
-    ip rule add prio "$RULENO" from all lookup local || true
+    ip rule add prio "$RULENO" from all lookup local proto kernel || true
     ip rule del prio 171 from all lookup local || true
     ip rule del prio 170 from "$MY_IP" to "$MY_IP" lookup 169 || true
     ip rule del prio 169 from "$MY_IP" iif "$IFACE" lookup local || true
@@ -119,7 +119,7 @@ revert() {
         -j ACCEPT || true
 
     echo '# rules after'
-    ip rule show
+    ip -d rule show
     echo
 }
 
