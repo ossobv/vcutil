@@ -38,7 +38,7 @@
 set -eu
 
 help() {
-    echo "usage: $0 <IFACE|auto> <show|apply|try|revert|iperfs|iperfc>" >&2
+    echo "usage: $0 <IFACE|auto> <show|apply|try|revert|iperf>" >&2
     exit 1
 }
 
