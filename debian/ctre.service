@@ -17,4 +17,6 @@ RestartSec=5s
 SyslogIdentifier=ctre
 
 [Install]
-WantedBy=multi-user.target
+# ctre should not run independent of containerd and therefore it is
+# not wanted by multi-user.target.
+WantedBy=containerd.service
