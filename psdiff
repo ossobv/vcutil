@@ -7,6 +7,7 @@
 #
 import argparse
 import collections
+import difflib
 import os
 import re
 import subprocess
@@ -18,64 +19,6 @@ import warnings
 
 DBNAME = '/var/lib/psdiff.db'
 DBLINE = u'{indent}{cmdline}  {{user={user}{extra}}}'
-
-
-def udiff(alines, blines):
-    """
-    Replacement for difflib.ndiff that doesn't take exponential time.
-
-    The fancy ndiff is nice, but on some machines it takes almost a
-    minute for psdiff dumps of 200 lines. That's not acceptable. We'll
-    have to settle for something less pretty but faster.
-
-    See: https://bugs.python.org/issue6931
-
-    We'd prefer the vcutils::udiff tool over difflib.unified_diff
-    because it syncs on the next line that matches instead of grouping
-    removals and additions together.
-
-    vcutil::udiff::
-
-         begin
-        +4
-        -1
-        +5
-        -2
-        +6
-         end
-
-    difflib.unified_diff::
-
-         begin
-        -1
-        -2
-        +4
-        +5
-        +6
-         end
-
-    However, loading udiff optionally makes the output differ based on
-    the (non)existence of said tool, and loading it from python is
-    rather ugly. We'll settle for ugly-diff for now.
-    """
-    # # py2/py3 (importlib.util refused to load non-.py files)
-    # import imp
-    # try:
-    #     udifflib = imp.load_source('udiff', './udiff')
-    #     udifflib.filediff  # test existence
-    # except (AttributeError, IOError, ImportError):
-    import difflib
-
-    def diff_func(a, b):
-        return difflib.unified_diff(a, b, lineterm='')
-
-    iter_ = iter(diff_func(alines, blines))
-    for line in iter_:
-        if line.startswith('@@ '):
-            break  # skip +++/---
-    for line in iter_:
-        if not line.startswith('@@ '):
-            yield '{} {}'.format(line[0], line[1:])
 
 
 def human_key(s):
@@ -412,21 +355,125 @@ class FilteredProcessFormatter(ProcessFormatter):
         return super(FilteredProcessFormatter, self).include(process)
 
 
-def diff(a, b):
-    a = a.rstrip().split('\n')  # drop trailing LF
-    b = b.rstrip().split('\n')  # drop trailing LF
-    if len(a) == 1 and not a[0]:
-        a = []
-    if len(b) == 1 and not b[0]:
-        b = []
+def diff_lines(alines, blines):
+    """
+    Diff two lists of lines.
 
+    Returns a list of (which, line) tuples where which is -1 (removed),
+    0 (unchanged/context) or 1 (added):
+
+        # alines: ['aa','bb','cc']
+        # blines: ['bb','dd','ff']
+        [(-1, 'aa'), (0, 'bb'), (-1, 'cc'), (1, 'dd'), (1, 'ff')]
+
+    We use SequenceMatcher.get_opcodes() directly (the same primitive
+    difflib.unified_diff and difflib.ndiff build on) rather than ndiff
+    itself: ndiff takes exponential time on some machines for psdiff
+    dumps of ~200 lines, which isn't acceptable.
+    See: https://bugs.python.org/issue6931
+
+    Unlike unified_diff, we don't truncate to N lines of context around
+    each change: callers that don't care (the top-level whole-process
+    diff) drop the context lines themselves, and callers that diff a
+    process' listen=(...) entries need every entry as context, not just
+    the ones close to a change.
+    """
     changes = []
-    remap = {' ': 0, '-': -1, '+': 1}
-    for change in udiff(a, b):
-        if change[0] != '?':
-            changes.append((remap[change[0]], change[1:]))
-
+    for tag, i1, i2, j1, j2 in (
+            difflib.SequenceMatcher(None, alines, blines).get_opcodes()):
+        if tag == 'equal':
+            changes.extend((0, line) for line in alines[i1:i2])
+        else:
+            if tag in ('delete', 'replace'):
+                changes.extend((-1, line) for line in alines[i1:i2])
+            if tag in ('insert', 'replace'):
+                changes.extend((1, line) for line in blines[j1:j2])
     return changes
+
+
+def split_processline(line):
+    """
+    Split a formatted process db-line into (indent, header, items,
+    closing).
+
+    header is everything up to and including the '(' that opens
+    listen=(...); items is the ordered list of raw listen entries
+    (without their separating commas); closing is ')}' if there were
+    items, or '' otherwise. A line without listen=(...) is returned as
+    (indent, line_no_indent, [], '').
+    """
+    line_no_indent = line.lstrip()
+    indent = line[0:len(line) - len(line_no_indent)]
+    info_idx = line_no_indent.rindex('{')
+    paren_idx = line_no_indent.find('(', info_idx)
+    if paren_idx == -1:
+        return indent, line_no_indent, [], ''
+    header = line_no_indent[0:(paren_idx + 1)]
+    rest = line_no_indent[(paren_idx + 1):]
+    assert rest.endswith(')}'), line
+    return indent, header, rest[:-2].split(','), ')}'
+
+
+def only_process_from_processline(line):
+    """
+    Identify a process by everything up to its listen=(...) entries.
+
+    This is kind of an anti-pattern. We've built the processline as a
+    string ourselves before we got here. We should just do
+    ProcessLine.only_process or something instead of relying on string
+    parsing. (Obviously, we'd need to parse the strings from the DB first,
+    but that is the better pattern.)
+    """
+    indent, header, items, closing = split_processline(line)
+    return (indent, header) if items else None
+
+
+def group_process_changes(changes):
+    """
+    Post-process diff() output: pair up adjacent removed/added lines that
+    are the same process (only their listen=(...) entries differ) so
+    they can be diffed by listen entry instead of as whole lines.
+
+    Yields ('line', which, line) for changes shown as a whole line, or
+    ('pair', old_line, new_line) for a same-process pair.
+    """
+    i, n = 0, len(changes)
+    while i < n:
+        which, line = changes[i]
+        if which >= 0:
+            yield ('line', which, line)
+            i += 1
+            continue
+
+        removed = []
+        while i < n and changes[i][0] < 0:
+            removed.append(changes[i][1])
+            i += 1
+        added = []
+        while i < n and changes[i][0] > 0:
+            added.append(changes[i][1])
+            i += 1
+
+        unmatched_added = list(added)
+        for old_line in removed:
+            old_key = only_process_from_processline(old_line)
+            match = None
+            if old_key is not None:
+                match = next(
+                    (new_line for new_line in unmatched_added
+                     if only_process_from_processline(new_line) == old_key),
+                    None)
+            if match is None:
+                yield ('line', -1, old_line)
+            else:
+                unmatched_added.remove(match)
+                yield ('pair', old_line, match)
+        for new_line in unmatched_added:
+            yield ('line', 1, new_line)
+
+
+def diff(a, b):
+    return diff_lines(a.splitlines(), b.splitlines())
 
 
 def ps_faxu(with_network=False):
@@ -677,15 +724,21 @@ def get_new_output(formatter_class, with_network=False):
 
 def show_diff(changes, missing=True, extra=True):
     has_diff = False
-    for which, line in changes:
-        if which and isinstance('', bytes):  # py2
-            line = line.encode('utf-8', 'replace')
-        if which < 0 and missing:
-            show_diff_line('-', line)
-            has_diff = True
-        elif which > 0 and extra:
-            show_diff_line('+', line)
-            has_diff = True
+    for item in group_process_changes(changes):
+        if item[0] == 'line':
+            _, which, line = item
+            if which and isinstance('', bytes):  # py2
+                line = line.encode('utf-8', 'replace')
+            if which < 0 and missing:
+                show_diff_line('-', line)
+                has_diff = True
+            elif which > 0 and extra:
+                show_diff_line('+', line)
+                has_diff = True
+        else:
+            _, old_line, new_line = item
+            if show_diff_multiline(old_line, new_line, missing, extra):
+                has_diff = True
     return has_diff
 
 
@@ -693,7 +746,7 @@ def show_diff_line(prefix, line):
     """
     This is a temporary fix. Instead of parsing the line and
     reformatting, we should parse it earlier and do a diff on the parsed
-    line instead.
+    ProcessLine line instead.
 
     Line looks like:
 
@@ -706,26 +759,45 @@ def show_diff_line(prefix, line):
 
     Or maybe with additional properties just before the trailing '}'.
 
-    If it looks like listen=() we list those entries on separate lines.
+    If it looks like listen=() we list those entries on separate lines,
+    with the closing ')}' dedented onto its own line, see
+    show_diff_multiline().
     """
-    line_no_indent = line.lstrip()
-    indent = line[0:len(line) - len(line_no_indent)]
+    indent, header, items, closing = split_processline(line)
+    print('{}{}{}'.format(prefix, indent, header))
+    for item in items:
+        print('{}{}    {},'.format(prefix, indent, item))
+    if items:
+        print('{}{}{}'.format(prefix, indent, closing))
 
-    info_idx = line_no_indent.rindex('{')
-    paren_idx = line_no_indent.find('(', info_idx)
-    if paren_idx != -1:
-        lines = [line_no_indent[0:(paren_idx + 1)]]
-        lines.extend(
-            '{},'.format(line)
-            for line in line_no_indent[paren_idx + 1:].split(','))
-        lines[-1] = lines[-1][:-1]  # remove excess ','
-    else:
-        lines = [line_no_indent]
 
-    # Print first line as is, print the rest with extra indentation.
-    print('{}{}{}'.format(prefix, indent, lines[0]))
-    for line in lines[1:]:
-        print('{}{}    {}'.format(prefix, indent, line))
+def show_diff_multiline(old_line, new_line, missing, extra):
+    """
+    Diff two same-process lines (same cmdline/user, different listen=(...)
+    entries) by listen entry.
+
+    The process header and the closing ')}' are shown as context on their own
+    (dedented) lines; only the changed listen entries get a +/- prefix.
+    """
+    if isinstance('', bytes):  # py2
+        old_line = old_line.encode('utf-8', 'replace')
+        new_line = new_line.encode('utf-8', 'replace')
+
+    indent, header, old_items, closing = split_processline(old_line)
+    _, _, new_items, _ = split_processline(new_line)
+
+    shown = [
+        (which, item) for which, item in diff_lines(old_items, new_items)
+        if which == 0 or (which < 0 and missing) or (which > 0 and extra)]
+    if not any(which for which, _ in shown):
+        return False
+
+    print(' {}{}'.format(indent, header))
+    prefixes = {0: ' ', -1: '-', 1: '+'}
+    for which, item in shown:
+        print('{}{}    {},'.format(prefixes[which], indent, item))
+    print(' {}{}'.format(indent, closing))
+    return True
 
 
 def db_has_network(db):
@@ -755,7 +827,9 @@ def write(output, has_old=False):
 
 
 def get_argv():
-    "Fix up argv"
+    """
+    Fix up argv.
+    """
     argv = sys.argv[:]
 
     # show-missing or show-extra: convert to show --missing|--extra
