@@ -32,6 +32,190 @@ def human_key(s):
 human_key.re = re.compile(r'(\d+)')  # noqa
 
 
+class Process(object):
+    """
+    A single process as found in the psdiff.db: an indented cmdline with
+    properties.
+
+    The line:
+
+        '  INIT  {user=root, listen=(tcp:0.0.0.0:22,tcp:[::]:22)}'
+
+    is parsed by from_line() into:
+
+        Process(indent=1, cmdline='INIT', user='root',
+                listen=('tcp:0.0.0.0:22', 'tcp:[::]:22'))
+
+    and to_line() turns it back into the exact same line. Properties we
+    do not know about are kept -- in order -- so a db written by a newer
+    psdiff does not lose information when it is read by an older one.
+    """
+    # 'cmdline  {user=root, listen=(a,b)}': the cmdline is greedy, so we
+    # split on the last '  {', not on one that is part of the cmdline.
+    re_line = re.compile(r'^( *)(.*)  \{(.*)\}$')
+    # ', ' separates properties, but only when a 'key=' follows: values
+    # (like a listen list) may contain a comma too.
+    re_prop = re.compile(r', (?=[a-z_]+=)')
+    # Properties that hold zero or more values instead of exactly one.
+    tuple_props = ('listen',)
+
+    @classmethod
+    def from_line(cls, line):
+        match = cls.re_line.match(line)
+        if not match:
+            raise ValueError('unparsable psdiff.db line: {!r}'.format(line))
+        indent, cmdline, propstr = match.groups()
+
+        props = collections.OrderedDict(
+            cls.parse_prop(prop) for prop in cls.re_prop.split(propstr))
+        try:
+            user = props.pop('user')
+        except KeyError:
+            raise ValueError(
+                'psdiff.db line without user: {!r}'.format(line))
+
+        return cls(len(indent) // 2, cmdline, user, props=props)
+
+    @classmethod
+    def parse_prop(cls, prop):
+        "Parse 'user=root' or 'listen=(a,b)' into a (key, value) tuple."
+        key, sep, value = prop.partition('=')
+        if not sep:
+            raise ValueError('unparsable psdiff.db property: {!r}'.format(
+                prop))
+        if value.startswith('(') and value.endswith(')'):
+            value = tuple(i for i in value[1:-1].split(',') if i)
+        elif key in cls.tuple_props:
+            value = (value,)
+        return key, value
+
+    @staticmethod
+    def format_value(value):
+        "The inverse of parse_prop() value handling."
+        if not isinstance(value, tuple):
+            return value
+        if len(value) == 1:
+            return value[0]  # a single value is written without parens
+        return '({})'.format(','.join(value))
+
+    def __init__(self, indent, cmdline, user, listen=(), props=None):
+        self.indent = indent
+        self.cmdline = cmdline
+        self.user = user
+        # Everything after 'user=', in the order we found it. Storing
+        # listen in here -- instead of next to it -- keeps the order of
+        # any unknown properties intact when we write the line back.
+        self.props = collections.OrderedDict(props or ())
+        if listen:
+            self.listen = listen
+
+    @property
+    def listen(self):
+        return self.props.get('listen', ())
+
+    @listen.setter
+    def listen(self, value):
+        if value:
+            self.props['listen'] = tuple(value)
+        else:
+            self.props.pop('listen', None)
+
+    def without_listen(self):
+        "Return a copy without listen info, for --no-net on a --net db."
+        return type(self)(
+            self.indent, self.cmdline, self.user, props=[
+                (key, value) for key, value in self.props.items()
+                if key != 'listen'])
+
+    def same_process(self, other):
+        "Whether this is the same process, listen info excluded."
+        if (self.indent != other.indent or self.cmdline != other.cmdline or
+                self.user != other.user):
+            return False
+        keys = set(self.props) | set(other.props)
+        keys.discard('listen')
+        return all(
+            self.props.get(key) == other.props.get(key) for key in keys)
+
+    def to_line(self):
+        "Return the single db line for this process."
+        return self.render(expand_listen=False)[0]
+
+    def to_diff_lines(self):
+        """
+        Return (indent, head, items, tail) for multiline diff output.
+
+        Without listen info, items and tail are empty and head holds the
+        entire line (sans indent). With listen info, every address gets
+        its own line, so that a diff between two of these shows only the
+        addresses that actually changed:
+
+            /usr/sbin/named  {user=bind, listen=(
+                tcp:0.0.0.0:53,
+                udp:0.0.0.0:53,
+            )}
+        """
+        indent = self.indent * u'  '
+        head, items, tail = self.render(expand_listen=True)
+        return indent, head[len(indent):], items, tail
+
+    def render(self, expand_listen=False):
+        """
+        Return (head, items, tail); the single source of db line layout.
+
+        Unless expand_listen is set -- and there is listen info -- items
+        and tail are empty and head is the complete line.
+        """
+        expand_listen = bool(expand_listen and self.listen)
+        head = [self.indent * u'  ', self.cmdline, u'  {user=', self.user]
+        items = ()
+        tail = []
+
+        current = head
+        for key, value in self.props.items():
+            if key == 'listen' and expand_listen:
+                current.append(u', listen=(')
+                items = self.listen
+                current = tail  # any next properties go after the ')'
+                current.append(u')')
+            else:
+                current.append(u', {}={}'.format(key, self.format_value(
+                    value)))
+        current.append(u'}')
+
+        return u''.join(head), items, u''.join(tail)
+
+    def sort_key(self):
+        return (self.indent, self.cmdline, self.user,
+                tuple(self.props.items()))
+
+    def __hash__(self):
+        return hash(self.sort_key())
+
+    def __eq__(self, other):
+        return (
+            self.indent == other.indent and
+            self.cmdline == other.cmdline and
+            self.user == other.user and
+            self.props == other.props)
+
+    def __ne__(self, other):  # py2
+        return not self.__eq__(other)
+
+    def __lt__(self, other):
+        return self.sort_key() < other.sort_key()
+
+    def __repr__(self):
+        extra = ''.join(
+            ', {}={!r}'.format(key, value)
+            for key, value in self.props.items())
+        return 'Process(indent={!r}, cmdline={!r}, user={!r}{})'.format(
+            self.indent, self.cmdline, self.user, extra)
+
+    def __str__(self):
+        return self.to_line()
+
+
 class LiveProcess(object):
     """
     A process as found in the ps(1) output: part of a pid/ppid tree.
@@ -111,25 +295,22 @@ class LiveProcess(object):
             return None
         return self.root.process_map[pid]
 
+    def to_process(self, indent=0):
+        "Return the db representation (a Process) of this process."
+        return Process(
+            indent, self.cmdline.rstrip(), self.user, listen=self._listens)
+
     def to_string(self, indent=0):
-        if self._listens:
-            if len(self._listens) > 1:
-                extra = ', listen=({})'.format(','.join(
-                    sorted(self._listens, key=human_key)))
-            else:
-                extra = ', listen={}'.format(self._listens[0])
-        else:
-            extra = ''
-        return DBLINE.format(
-            indent=(indent * u'  '), cmdline=self.cmdline.rstrip(),
-            user=self.user, extra=extra)
+        return self.to_process(indent).to_line()
 
     def sort(self):
         # Sort the children and convert the set into a list.
         for child in self.children:
             child.sort()
         self.children = tuple(sorted(self.children))
-        self._listens = tuple(sorted(self._listens))
+        # Sort the listen addresses the same way we write them out, so
+        # that comparison and output agree on the order.
+        self._listens = tuple(sorted(self._listens, key=human_key))
 
     def add_listens(self, listens):
         self._listens |= set(listens)
@@ -1159,6 +1340,133 @@ def process(args, old_output, formatter_class):
         sys.exit(status)  # possibly non-zero exit
 
 
+if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
+    from unittest import TestCase, main as unittest_main
+
+    class ProcessTestCase(TestCase):
+        def test_parse_plain(self):
+            process = Process.from_line('root  {user=root}')
+            self.assertEqual(process.indent, 0)
+            self.assertEqual(process.cmdline, 'root')
+            self.assertEqual(process.user, 'root')
+            self.assertEqual(process.listen, ())
+
+        def test_parse_indent(self):
+            process = Process.from_line('      /usr/bin/x  {user=nobody}')
+            self.assertEqual(process.indent, 3)
+            self.assertEqual(process.cmdline, '/usr/bin/x')
+
+        def test_parse_single_listen(self):
+            process = Process.from_line(
+                '  x  {user=root, listen=tcp:127.0.0.1:34189}')
+            self.assertEqual(process.listen, ('tcp:127.0.0.1:34189',))
+
+        def test_parse_multiple_listen(self):
+            process = Process.from_line(
+                '  INIT  {user=root, listen=(tcp:0.0.0.0:22,tcp:[::]:22)}')
+            self.assertEqual(
+                process.listen, ('tcp:0.0.0.0:22', 'tcp:[::]:22'))
+
+        def test_parse_unknown_property(self):
+            # We don't know 'cgroup', but we don't lose it either.
+            line = 'x  {user=root, listen=(a,b), cgroup=/system.slice}'
+            process = Process.from_line(line)
+            self.assertEqual(process.props['cgroup'], '/system.slice')
+            self.assertEqual(process.to_line(), line)
+
+        def test_parse_cmdline_with_braces(self):
+            # The cmdline may contain anything, including our separators.
+            line = "    awk '{print $1}  {user=x}'  {user=nobody}"
+            process = Process.from_line(line)
+            self.assertEqual(process.cmdline, "awk '{print $1}  {user=x}'")
+            self.assertEqual(process.user, 'nobody')
+            self.assertEqual(process.to_line(), line)
+
+        def test_parse_bad_line(self):
+            self.assertRaises(ValueError, Process.from_line, 'x')
+            self.assertRaises(ValueError, Process.from_line, 'x  {pid=1}')
+
+        def test_roundtrip(self):
+            for line in (
+                    'root  {user=root}',
+                    '  INIT  {user=root, listen=(tcp:0.0.0.0:22,tcp:[::]:22)}',
+                    '    /usr/bin/containerd  '
+                    '{user=root, listen=tcp:1.2.3.4:5}',
+                    '    /usr/lib/systemd/systemd-networkd  '
+                    '{user=systemd+, listen=(p_raw:[35020]:eno0,'
+                    'udp:217.21.199.20%eno0:68)}',
+                    '      x  {user=u, listen=(a,b), zz=1}'):
+                process = Process.from_line(line)
+                self.assertEqual(process.to_line(), line)
+                self.assertEqual(Process.from_line(process.to_line()), process)
+
+        def test_equality(self):
+            a = Process.from_line('x  {user=root, listen=(a,b)}')
+            b = Process.from_line('x  {user=root, listen=(a,b)}')
+            c = Process.from_line('x  {user=root, listen=a}')
+            self.assertEqual(a, b)
+            self.assertEqual(hash(a), hash(b))
+            self.assertNotEqual(a, c)
+            self.assertNotEqual(hash(a), hash(c))
+
+        def test_same_process(self):
+            a = Process.from_line('x  {user=root, listen=(a,b)}')
+            b = Process.from_line('x  {user=root, listen=a}')
+            c = Process.from_line('x  {user=nobody, listen=(a,b)}')
+            d = Process.from_line('  x  {user=root, listen=(a,b)}')
+            e = Process.from_line('x  {user=root}')
+            self.assertTrue(a.same_process(b))   # only listen differs
+            self.assertFalse(a.same_process(c))  # user differs
+            self.assertFalse(a.same_process(d))  # indent differs
+            self.assertTrue(a.same_process(e))   # listen gone
+
+        def test_same_process_unknown_property(self):
+            a = Process.from_line('x  {user=root, listen=a, zz=1}')
+            b = Process.from_line('x  {user=root, listen=b, zz=1}')
+            c = Process.from_line('x  {user=root, listen=a, zz=2}')
+            d = Process.from_line('x  {user=root, listen=a}')
+            self.assertTrue(a.same_process(b))
+            self.assertFalse(a.same_process(c))
+            self.assertFalse(a.same_process(d))
+
+        def test_without_listen(self):
+            process = Process.from_line('  x  {user=root, listen=(a,b), z=1}')
+            self.assertEqual(
+                process.without_listen().to_line(), '  x  {user=root, z=1}')
+            self.assertEqual(  # unchanged
+                process.to_line(), '  x  {user=root, listen=(a,b), z=1}')
+
+        def test_listen_setter(self):
+            process = Process.from_line('x  {user=root}')
+            process.listen = ['b', 'a']
+            self.assertEqual(process.to_line(), 'x  {user=root, listen=(b,a)}')
+            process.listen = ()
+            self.assertEqual(process.to_line(), 'x  {user=root}')
+
+        def test_to_diff_lines(self):
+            self.assertEqual(
+                Process.from_line('  x  {user=root}').to_diff_lines(),
+                ('  ', 'x  {user=root}', (), ''))
+            self.assertEqual(
+                Process.from_line('  x  {user=root, listen=a}')
+                .to_diff_lines(),
+                ('  ', 'x  {user=root, listen=(', ('a',), ')}'))
+            self.assertEqual(
+                Process.from_line('x  {user=root, listen=(a,b), z=1}')
+                .to_diff_lines(),
+                ('', 'x  {user=root, listen=(', ('a', 'b'), '), z=1}'))
+
+        def test_sorting(self):
+            lines = [
+                'b  {user=root}', 'a  {user=zabbix}', 'a  {user=root}',
+                '  a  {user=root}']
+            self.assertEqual(
+                [i.to_line() for i in sorted(
+                    Process.from_line(line) for line in lines)],
+                ['a  {user=root}', 'a  {user=zabbix}', 'b  {user=root}',
+                 '  a  {user=root}'])
+
+
 def formatwarning(message, category, filename, lineno, line=None):
     """
     Override default Warning layout, from:
@@ -1179,6 +1487,10 @@ warnings.formatwarning = formatwarning  # noqa
 
 
 if __name__ == '__main__':
+    if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
+        unittest_main(argv=sys.argv[0:1])
+        raise RuntimeError('(unreachable code)')
+
     if not sys.stderr.isatty():
         warnings.filterwarnings(
             'ignore', 'Not listing --net info without root powers')
