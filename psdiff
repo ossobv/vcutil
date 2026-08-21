@@ -18,7 +18,6 @@ import warnings
 
 
 DBNAME = '/var/lib/psdiff.db'
-DBLINE = u'{indent}{cmdline}  {{user={user}{extra}}}'
 
 
 def human_key(s):
@@ -987,6 +986,75 @@ def show_diff_processes(old, new, missing, extra):
     return True
 
 
+def manual_parent(processes, parent_cmdline):
+    """
+    Return the (index, process) that manual add/remove works below.
+    """
+    for index, process in enumerate(processes):
+        if process.cmdline == parent_cmdline:
+            return index, process
+    raise ValueError('cannot find {!r} in the db'.format(parent_cmdline))
+
+
+def manual_subtree(processes, parent_index):
+    """
+    Return the indexes of the direct children of processes[parent_index]
+    and the index right after its last (grand)child.
+    """
+    parent_indent = processes[parent_index].indent
+    children = []
+    end = len(processes)
+    for index in range(parent_index + 1, len(processes)):
+        indent = processes[index].indent
+        if indent <= parent_indent:
+            end = index
+            break
+        if indent == parent_indent + 1:
+            children.append(index)
+    return children, end
+
+
+def manual_add(processes, cmdline, user, parent_cmdline='INIT'):
+    """
+    Return a copy of processes with a process added as a child of
+    parent_cmdline, in the right sort position.
+    """
+    parent_index, parent = manual_parent(processes, parent_cmdline)
+    new_process = Process(parent.indent + 1, cmdline, user)
+    children, end = manual_subtree(processes, parent_index)
+
+    position = end  # after the last (grand)child, unless we find a spot
+    for index in children:
+        if processes[index].same_process(new_process):
+            raise ValueError('already in the db: {}'.format(new_process))
+        if position == end and new_process < processes[index]:
+            position = index  # before this sibling, and its children
+
+    return processes[0:position] + [new_process] + processes[position:]
+
+
+def manual_remove(processes, cmdline, user, parent_cmdline='INIT'):
+    """
+    Return a copy of processes without the child of parent_cmdline that
+    has this cmdline and user -- and without its children.
+
+    Listen info is ignored, so a process that started listening after it
+    was added can be removed as well.
+    """
+    parent_index, parent = manual_parent(processes, parent_cmdline)
+    old_process = Process(parent.indent + 1, cmdline, user)
+    children = manual_subtree(processes, parent_index)[0]
+
+    removed = set()
+    for index in children:
+        if processes[index].same_process(old_process):
+            removed.update(range(index, manual_subtree(processes, index)[1]))
+
+    return [
+        process for index, process in enumerate(processes)
+        if index not in removed]
+
+
 def db_has_network(processes):
     """
     Whether the db was written with network info in it.
@@ -1248,35 +1316,23 @@ def process(args, old_output, formatter_class):
             print('No changes to {}'.format(DBNAME))
 
     elif args.action == 'manual':
-        if not old_output:
+        if not old_processes:
             raise ValueError('add/remove only works for existing db')
 
-        # For now, only accept children of init (i.e. depth 4)
-        indent = u'    '  # root -> INIT -> (process)
-        diff_line = DBLINE.format(
-            indent=indent, cmdline=args.cmdline, user=args.user)
-
+        # For now, only accept children of init.
         if args.manual == 'add':
-            new_lines = []
-            for line in old_output.split(u'\n'):
-                if (diff_line and (line == '' or (
-                        line.startswith(indent)
-                        and line[len(indent)] != ' '
-                        and diff_line < line))):
-                    new_lines.append(diff_line)
-                    diff_line = None
-                new_lines.append(line)
-            new_output = u'\n'.join(new_lines)
-        else:  # args.manual == 'remove'
+            new_processes = manual_add(
+                old_processes, args.cmdline, args.user)
+        else:
             assert args.manual == 'remove', args
-            new_output = u'\n'.join(
-                i for i in old_output.split(u'\n') if i != diff_line)
+            new_processes = manual_remove(
+                old_processes, args.cmdline, args.user)
 
-        if old_output == new_output:
+        if old_processes == new_processes:
             raise ValueError('no change!')
-        write(new_output, has_old=True)
+        write(format_db(new_processes), has_old=True)
         print('Wrote to {}'.format(DBNAME))
-        show_diff(diff_items(old_processes, parse_db(new_output)))
+        show_diff(diff_items(old_processes, new_processes))
 
     else:
         assert args.action.startswith('show'), args
@@ -1484,6 +1540,80 @@ if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
 
         def test_parse_db_bad_line(self):
             self.assertRaises(ValueError, parse_db, 'root  {user=root}\nx\n')
+
+        def test_manual_add(self):
+            processes = self.parse(
+                'root  {user=root}',
+                '  INIT  {user=root}',
+                '    a  {user=root}',
+                '      a-child  {user=root}',
+                '    c  {user=root}',
+                '  other  {user=root}',
+                '    b  {user=root}')
+            self.assertEqual(
+                [i.to_line() for i in manual_add(processes, 'b', 'root')],
+                ['root  {user=root}',
+                 '  INIT  {user=root}',
+                 '    a  {user=root}',
+                 '      a-child  {user=root}',
+                 '    b  {user=root}',   # between a (+child) and c
+                 '    c  {user=root}',
+                 '  other  {user=root}',
+                 '    b  {user=root}'])  # not a sibling, not our business
+
+        def test_manual_add_last(self):
+            processes = self.parse(
+                'root  {user=root}',
+                '  INIT  {user=root}',
+                '    a  {user=root}',
+                '  other  {user=root}')
+            self.assertEqual(
+                [i.to_line() for i in manual_add(processes, 'z', 'nobody')],
+                ['root  {user=root}',
+                 '  INIT  {user=root}',
+                 '    a  {user=root}',
+                 '    z  {user=nobody}',   # last child of INIT
+                 '  other  {user=root}'])
+
+        def test_manual_add_without_children(self):
+            processes = self.parse('root  {user=root}', '  INIT  {user=root}')
+            self.assertEqual(
+                [i.to_line() for i in manual_add(processes, 'z', 'root')],
+                ['root  {user=root}',
+                 '  INIT  {user=root}',
+                 '    z  {user=root}'])
+
+        def test_manual_add_twice(self):
+            processes = self.parse(
+                'root  {user=root}',
+                '  INIT  {user=root}',
+                '    a  {user=root}')
+            self.assertRaises(ValueError, manual_add, processes, 'a', 'root')
+
+        def test_manual_add_no_parent(self):
+            self.assertRaises(
+                ValueError, manual_add, self.parse('root  {user=root}'),
+                'z', 'root')
+
+        def test_manual_remove(self):
+            processes = self.parse(
+                'root  {user=root}',
+                '  INIT  {user=root}',
+                '    a  {user=root, listen=x}',  # listen is ignored
+                '      a-child  {user=root}',    # goes along with a
+                '    b  {user=root}',
+                '  other  {user=root}',
+                '    a  {user=root}')            # not a sibling
+            self.assertEqual(
+                [i.to_line() for i in manual_remove(processes, 'a', 'root')],
+                ['root  {user=root}',
+                 '  INIT  {user=root}',
+                 '    b  {user=root}',
+                 '  other  {user=root}',
+                 '    a  {user=root}'])
+            self.assertEqual(  # wrong user, no match
+                [i.to_line() for i in manual_remove(processes, 'a', 'x')],
+                [i.to_line() for i in processes])
 
         def test_db_has_network(self):
             self.assertTrue(db_has_network(self.parse(
