@@ -381,6 +381,25 @@ class ProcessFormatter(object):
             ret.extend(self.to_strings(child, indent + 1))
         return ret
 
+    def to_processes(self):
+        """
+        Return the listing as a list of Process items.
+
+        This goes through to_strings() -- and thus through the
+        to_string() hook that psdiff.conf files may override -- so that
+        what we compare can never drift from what we write to the db.
+        """
+        processes = []
+        for line in self.to_strings(self.root):
+            try:
+                processes.append(Process.from_line(line))
+            except ValueError as e:
+                raise ValueError(
+                    '{} (from {}.to_string(); a psdiff.conf hook must '
+                    'return a valid db line)'.format(
+                        e, type(self).__name__))
+        return processes
+
     def __str__(self):
         return u'\n'.join(self.to_strings(self.root)) + '\n'
 
@@ -539,12 +558,13 @@ class FilteredProcessFormatter(ProcessFormatter):
         return super(FilteredProcessFormatter, self).include(process)
 
 
-def diff_lines(alines, blines):
+def diff_items(alines, blines):
     """
-    Diff two lists of lines.
+    Diff two sequences of hashable items (Process items, or the listen
+    addresses of a single Process).
 
-    Returns a list of (which, line) tuples where which is -1 (removed),
-    0 (unchanged/context) or 1 (added):
+    Returns a list of (direction, item) tuples where direction is
+    -1 (removed), 0 (unchanged/context) or 1 (added):
 
         # alines: ['aa','bb','cc']
         # blines: ['bb','dd','ff']
@@ -558,74 +578,62 @@ def diff_lines(alines, blines):
 
     Unlike unified_diff, we don't truncate to N lines of context around
     each change: callers that don't care (the top-level whole-process
-    diff) drop the context lines themselves, and callers that diff a
-    process' listen=(...) entries need every entry as context, not just
-    the ones close to a change.
+    diff) drop the context items themselves, and callers that diff the
+    listen addresses of a process need every address as context, not
+    just the ones close to a change.
     """
     changes = []
     for tag, i1, i2, j1, j2 in (
             difflib.SequenceMatcher(None, alines, blines).get_opcodes()):
         if tag == 'equal':
-            changes.extend((0, line) for line in alines[i1:i2])
+            changes.extend((0, item) for item in alines[i1:i2])
         else:
             if tag in ('delete', 'replace'):
-                changes.extend((-1, line) for line in alines[i1:i2])
+                changes.extend((-1, item) for item in alines[i1:i2])
             if tag in ('insert', 'replace'):
-                changes.extend((1, line) for line in blines[j1:j2])
+                changes.extend((1, item) for item in blines[j1:j2])
     return changes
 
 
-def split_processline(line):
+def parse_db(data):
     """
-    Split a formatted process db-line into (indent, header, items,
-    closing).
-
-    header is everything up to and including the '(' that opens
-    listen=(...); items is the ordered list of raw listen entries
-    (without their separating commas); closing is ')}' if there were
-    items, or '' otherwise. A line without listen=(...) is returned as
-    (indent, line_no_indent, [], '').
+    Parse psdiff.db contents into a list of Process items.
     """
-    line_no_indent = line.lstrip()
-    indent = line[0:len(line) - len(line_no_indent)]
-    info_idx = line_no_indent.rindex('{')
-    paren_idx = line_no_indent.find('(', info_idx)
-    if paren_idx == -1:
-        return indent, line_no_indent, [], ''
-    header = line_no_indent[0:(paren_idx + 1)]
-    rest = line_no_indent[(paren_idx + 1):]
-    assert rest.endswith(')}'), line
-    return indent, header, rest[:-2].split(','), ')}'
+    processes = []
+    for lineno, line in enumerate(data.split(u'\n'), 1):
+        if not line:
+            continue  # the trailing LF, mostly
+        try:
+            processes.append(Process.from_line(line))
+        except ValueError as e:
+            raise ValueError('{} (line {})'.format(e, lineno))
+    return processes
 
 
-def only_process_from_processline(line):
+def format_db(processes):
     """
-    Identify a process by everything up to its listen=(...) entries.
-
-    This is kind of an anti-pattern. We've built the processline as a
-    string ourselves before we got here. We should just do
-    ProcessLine.only_process or something instead of relying on string
-    parsing. (Obviously, we'd need to parse the strings from the DB first,
-    but that is the better pattern.)
+    The inverse of parse_db(): the psdiff.db contents for these
+    Process items.
     """
-    indent, header, items, closing = split_processline(line)
-    return (indent, header) if items else None
+    return u''.join(
+        u'{}\n'.format(process.to_line()) for process in processes)
 
 
 def group_process_changes(changes):
     """
-    Post-process diff() output: pair up adjacent removed/added lines that
-    are the same process (only their listen=(...) entries differ) so
-    they can be diffed by listen entry instead of as whole lines.
+    Post-process diff_items() output: pair up adjacent removed/added
+    processes that are the same process -- only their listen addresses
+    differ -- so they can be diffed by listen address instead of as two
+    unrelated processes.
 
-    Yields ('line', which, line) for changes shown as a whole line, or
-    ('pair', old_line, new_line) for a same-process pair.
+    Yields ('single', direction, process) for a process shown on its
+    own, or ('pair', old_process, new_process) for a same-process pair.
     """
     i, n = 0, len(changes)
     while i < n:
-        which, line = changes[i]
-        if which >= 0:
-            yield ('line', which, line)
+        direction, process = changes[i]
+        if direction >= 0:
+            yield ('single', direction, process)
             i += 1
             continue
 
@@ -639,25 +647,20 @@ def group_process_changes(changes):
             i += 1
 
         unmatched_added = list(added)
-        for old_line in removed:
-            old_key = only_process_from_processline(old_line)
-            match = None
-            if old_key is not None:
-                match = next(
-                    (new_line for new_line in unmatched_added
-                     if only_process_from_processline(new_line) == old_key),
-                    None)
+        for old in removed:
+            # Only pair when there is listen info to diff; without it
+            # the pair would have nothing to show.
+            match = next(
+                (new for new in unmatched_added
+                 if (old.listen or new.listen) and old.same_process(new)),
+                None)
             if match is None:
-                yield ('line', -1, old_line)
+                yield ('single', -1, old)
             else:
                 unmatched_added.remove(match)
-                yield ('pair', old_line, match)
-        for new_line in unmatched_added:
-            yield ('line', 1, new_line)
-
-
-def diff(a, b):
-    return diff_lines(a.splitlines(), b.splitlines())
+                yield ('pair', old, match)
+        for new in unmatched_added:
+            yield ('single', 1, new)
 
 
 def ps_faxu(with_network=False):
@@ -900,101 +903,98 @@ def get_formatter_class():
     return FilteredProcessFormatter
 
 
-def get_new_output(formatter_class, with_network=False):
+def get_new_processes(formatter_class, with_network=False):
     root = ps_faxu(with_network=with_network)
     formatter = formatter_class(root)
-    return formatter.__str__()  # returns unicode(!) on py2
+    return formatter.to_processes()
 
 
 def show_diff(changes, missing=True, extra=True):
     has_diff = False
     for item in group_process_changes(changes):
-        if item[0] == 'line':
-            _, which, line = item
-            if which and isinstance('', bytes):  # py2
-                line = line.encode('utf-8', 'replace')
-            if which < 0 and missing:
-                show_diff_line('-', line)
+        if item[0] == 'single':
+            _, direction, process = item
+            if direction < 0 and missing:
+                show_diff_process('-', process)
                 has_diff = True
-            elif which > 0 and extra:
-                show_diff_line('+', line)
+            elif direction > 0 and extra:
+                show_diff_process('+', process)
                 has_diff = True
         else:
-            _, old_line, new_line = item
-            if show_diff_multiline(old_line, new_line, missing, extra):
+            _, old, new = item
+            if show_diff_processes(old, new, missing, extra):
                 has_diff = True
     return has_diff
 
 
-def show_diff_line(prefix, line):
-    """
-    This is a temporary fix. Instead of parsing the line and
-    reformatting, we should parse it earlier and do a diff on the parsed
-    ProcessLine line instead.
-
-    Line looks like:
-
-        /usr/sbin/zabbix_agentd --foreground  {user=zabbix}
-
-    Or maybe:
-
-        /usr/sbin/zabbix_agentd --foreground  {user=zabbix, listen=(
-            tcp:0.0.0.0:10051)}
-
-    Or maybe with additional properties just before the trailing '}'.
-
-    If it looks like listen=() we list those entries on separate lines,
-    with the closing ')}' dedented onto its own line, see
-    show_diff_multiline().
-    """
-    indent, header, items, closing = split_processline(line)
-    print('{}{}{}'.format(prefix, indent, header))
-    for item in items:
-        print('{}{}    {},'.format(prefix, indent, item))
-    if items:
-        print('{}{}{}'.format(prefix, indent, closing))
-
-
-def show_diff_multiline(old_line, new_line, missing, extra):
-    """
-    Diff two same-process lines (same cmdline/user, different listen=(...)
-    entries) by listen entry.
-
-    The process header and the closing ')}' are shown as context on their own
-    (dedented) lines; only the changed listen entries get a +/- prefix.
-    """
+def print_line(line):
+    # NOTE: We never print() with u'' below, because in py2 it would
+    # "guess" the encoding of the recipient (tty) instead of choosing
+    # utf-8.
     if isinstance('', bytes):  # py2
-        old_line = old_line.encode('utf-8', 'replace')
-        new_line = new_line.encode('utf-8', 'replace')
+        line = line.encode('utf-8', 'replace')
+    print(line)
 
-    indent, header, old_items, closing = split_processline(old_line)
-    _, _, new_items, _ = split_processline(new_line)
 
+def show_diff_process(prefix, process):
+    """
+    Print a process, prefixed with '-', '+' or ' '.
+
+    A process with listen info gets a line per listen address:
+
+        -/usr/sbin/named  {user=bind, listen=(
+        -    tcp:0.0.0.0:53,
+        -    udp:0.0.0.0:53,
+        -)}
+
+    so that show_diff_processes() can mark only the addresses that
+    changed.
+    """
+    indent, head, items, tail = process.to_diff_lines()
+    print_line(u'{}{}{}'.format(prefix, indent, head))
+    for item in items:
+        print_line(u'{}{}    {},'.format(prefix, indent, item))
+    if items:
+        print_line(u'{}{}{}'.format(prefix, indent, tail))
+
+
+def show_diff_processes(old, new, missing, extra):
+    """
+    Diff two same-process items -- same cmdline/user, different listen
+    addresses -- by listen address.
+
+    The process itself and the closing ')}' are shown as context; only
+    the changed addresses get a '-' or '+' prefix.
+    """
     shown = [
-        (which, item) for which, item in diff_lines(old_items, new_items)
-        if which == 0 or (which < 0 and missing) or (which > 0 and extra)]
-    if not any(which for which, _ in shown):
+        (direction, item)
+        for direction, item in diff_items(old.listen, new.listen) if (
+            direction == 0
+            or (direction < 0 and missing)
+            or (direction > 0 and extra))]
+    if not any(direction for direction, item in shown):
         return False
 
-    print(' {}{}'.format(indent, header))
+    # One of the two may have no listen info at all; take the framing
+    # from the one that has (they are the same process otherwise).
+    indent, head, _, tail = (old if old.listen else new).to_diff_lines()
+
+    print_line(u' {}{}'.format(indent, head))
     prefixes = {0: ' ', -1: '-', 1: '+'}
-    for which, item in shown:
-        print('{}{}    {},'.format(prefixes[which], indent, item))
-    print(' {}{}'.format(indent, closing))
+    for direction, item in shown:
+        print_line(u'{}{}    {},'.format(prefixes[direction], indent, item))
+    print_line(u' {}{}'.format(indent, tail))
     return True
 
 
-def db_has_network(db):
+def db_has_network(processes):
     """
-    Whether the DB file has with_network output in it.
+    Whether the db was written with network info in it.
 
     Useful for backwards compatibility: only show with_network output if
-    the DB had it.
+    the db had it.
     """
-    # This is a very cheap/shady check for the newer DB format. It
-    # should generally work though. I don't expect that string in normal
-    # arguments.
-    return bool(', listen=' in db)
+    return any(process.listen for process in processes)
 
 
 def write(output, has_old=False):
@@ -1217,36 +1217,33 @@ def main():
 
 
 def process(args, old_output, formatter_class):
-    # NOTE: We never print() with u'' below, because in py2 it would "guess"
-    # the encoding of the recipient (tty) instead of choosing utf-8.
+    old_processes = parse_db(old_output)
 
     if args.action == 'dump':
-        if args.with_network is None and db_has_network(old_output):
+        if args.with_network is None and db_has_network(old_processes):
             args.with_network = True
 
-        new_output = get_new_output(
+        new_processes = get_new_processes(
             formatter_class, with_network=args.with_network)
-        if isinstance('', bytes):  # py2
-            new_output = new_output.encode('utf-8', 'replace')
         if args.verbose:
-            for line in new_output.rstrip().split('\n'):
-                show_diff_line('', line)
+            for new_process in new_processes:
+                show_diff_process('', new_process)
         else:
-            print(new_output[0:-1])  # without trailing LF
+            print_line(format_db(new_processes)[0:-1])  # without trailing LF
 
     elif args.action == 'write':
-        if args.with_network is None and db_has_network(old_output):
+        if args.with_network is None and db_has_network(old_processes):
             args.with_network = True
 
-        new_output = get_new_output(
+        new_processes = get_new_processes(
             formatter_class, with_network=args.with_network)
+        new_output = format_db(new_processes)
 
         if old_output != new_output:
             write(new_output, has_old=bool(old_output))
             print('Wrote to {}'.format(DBNAME))
             if args.verbose:
-                changes = diff(old_output, new_output)
-                show_diff(changes)
+                show_diff(diff_items(old_processes, new_processes))
         else:
             print('No changes to {}'.format(DBNAME))
 
@@ -1279,14 +1276,13 @@ def process(args, old_output, formatter_class):
             raise ValueError('no change!')
         write(new_output, has_old=True)
         print('Wrote to {}'.format(DBNAME))
-        changes = diff(old_output, new_output)
-        show_diff(changes)
+        show_diff(diff_items(old_processes, parse_db(new_output)))
 
     else:
         assert args.action.startswith('show'), args
 
-        # Check old output format.
-        if db_has_network(old_output):
+        # Check old db format.
+        if db_has_network(old_processes):
             if args.with_network is None:
                 if os.getuid() == 0:
                     # DB format has network, use it.
@@ -1297,8 +1293,10 @@ def process(args, old_output, formatter_class):
                         'Not listing --net info without root powers')
 
             if not args.with_network:
-                # Look at the output without the network info.
-                old_output = re.sub(r', listen=[^}]*}', '}', old_output)
+                # Look at the db without the network info.
+                old_processes = [
+                    old_process.without_listen()
+                    for old_process in old_processes]
 
         # If neither missing nor extra is set, then we want to see both.
         if not args.missing and not args.extra:
@@ -1307,15 +1305,15 @@ def process(args, old_output, formatter_class):
         # If args.retry, then try fetching a changeset for 5 times
         # before concluding that something really has changed.
         for sleeptime in (0.1, 0.3, 0.6, 1.0, 0):
-            new_output = get_new_output(
+            new_processes = get_new_processes(
                 formatter_class, with_network=args.with_network)
 
             # Quick optimization.
-            if old_output == new_output:
+            if old_processes == new_processes:
                 changes = ()
                 break
 
-            changes = diff(old_output, new_output)
+            changes = diff_items(old_processes, new_processes)
 
             # There are changes. If we're not retrying, start showing
             # the results.
@@ -1324,10 +1322,10 @@ def process(args, old_output, formatter_class):
 
             # Do the changes apply to us?
             if args.missing and not any(
-                    which < 0 for which, line in changes):
+                    direction < 0 for direction, item in changes):
                 break
             if args.extra and not any(
-                    which > 0 for which, line in changes):
+                    direction > 0 for direction, item in changes):
                 break
 
             # Sleep a while.
@@ -1465,6 +1463,99 @@ if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
                     Process.from_line(line) for line in lines)],
                 ['a  {user=root}', 'a  {user=zabbix}', 'b  {user=root}',
                  '  a  {user=root}'])
+
+
+    class DiffTestCase(TestCase):
+        def parse(self, *lines):
+            return parse_db(u''.join('{}\n'.format(i) for i in lines))
+
+        def group(self, old, new):
+            return list(group_process_changes(diff_items(old, new)))
+
+        def test_parse_db(self):
+            data = (
+                'root  {user=root}\n'
+                '  INIT  {user=root, listen=(tcp:0.0.0.0:22,tcp:[::]:22)}\n'
+                '    x  {user=nobody}\n')
+            processes = parse_db(data)
+            self.assertEqual(len(processes), 3)
+            self.assertEqual([i.indent for i in processes], [0, 1, 2])
+            self.assertEqual(format_db(processes), data)
+
+        def test_parse_db_bad_line(self):
+            self.assertRaises(ValueError, parse_db, 'root  {user=root}\nx\n')
+
+        def test_db_has_network(self):
+            self.assertTrue(db_has_network(self.parse(
+                'x  {user=root}', 'y  {user=root, listen=a}')))
+            self.assertFalse(db_has_network(self.parse(
+                'x  {user=root}', 'y  {user=root}')))
+            self.assertFalse(db_has_network([]))
+            # Not fooled by a cmdline that mentions listen.
+            self.assertFalse(db_has_network(self.parse(
+                'x --opt=", listen=(a,b)}"  {user=root}')))
+
+        def test_diff_items(self):
+            self.assertEqual(
+                diff_items(['aa', 'bb', 'cc'], ['bb', 'dd', 'ff']),
+                [(-1, 'aa'), (0, 'bb'), (-1, 'cc'), (1, 'dd'), (1, 'ff')])
+
+        def test_no_changes(self):
+            old = self.parse('x  {user=root}')
+            self.assertEqual(
+                [i[0:2] for i in self.group(old, old)], [('single', 0)])
+
+        def test_pair_listen_change(self):
+            old = self.parse('x  {user=root, listen=(a,b)}')
+            new = self.parse('x  {user=root, listen=(a,c)}')
+            grouped = self.group(old, new)
+            self.assertEqual(len(grouped), 1)
+            self.assertEqual(grouped[0][0], 'pair')
+            self.assertEqual(grouped[0][1], old[0])
+            self.assertEqual(grouped[0][2], new[0])
+
+        def test_pair_single_to_multiple_listen(self):
+            # A process going from one to two listen addresses is the
+            # same process; the db writes one address without parens,
+            # which used to keep these two from being paired up.
+            old = self.parse('x  {user=root, listen=a}')
+            new = self.parse('x  {user=root, listen=(a,b)}')
+            self.assertEqual(
+                [i[0] for i in self.group(old, new)], ['pair'])
+
+        def test_pair_none_to_listen(self):
+            old = self.parse('x  {user=root}')
+            new = self.parse('x  {user=root, listen=a}')
+            self.assertEqual(
+                [i[0] for i in self.group(old, new)], ['pair'])
+
+        def test_no_pair_for_other_process(self):
+            old = self.parse('x  {user=root, listen=a}')
+            new = self.parse('x  {user=nobody, listen=a}')
+            self.assertEqual(
+                [i[0:2] for i in self.group(old, new)],
+                [('single', -1), ('single', 1)])
+
+        def test_no_pair_without_listen(self):
+            # Nothing to diff by address; show them as separate lines.
+            old = self.parse('x  {user=root}')
+            new = self.parse('y  {user=root}')
+            self.assertEqual(
+                [i[0:2] for i in self.group(old, new)],
+                [('single', -1), ('single', 1)])
+
+        def test_pairs_the_right_processes(self):
+            old = self.parse(
+                'a  {user=root, listen=(1,2)}',
+                'b  {user=root, listen=(3,4)}')
+            new = self.parse(
+                'a  {user=root, listen=(1,9)}',
+                'b  {user=root, listen=(3,8)}')
+            grouped = self.group(old, new)
+            self.assertEqual([i[0] for i in grouped], ['pair', 'pair'])
+            self.assertEqual(
+                [(i[1].cmdline, i[2].cmdline) for i in grouped],
+                [('a', 'a'), ('b', 'b')])
 
 
 def formatwarning(message, category, filename, lineno, line=None):
