@@ -32,7 +32,10 @@ def human_key(s):
 human_key.re = re.compile(r'(\d+)')  # noqa
 
 
-class Process(object):
+class LiveProcess(object):
+    """
+    A process as found in the ps(1) output: part of a pid/ppid tree.
+    """
     split = re.compile(r'\s+')
 
     @classmethod
@@ -164,7 +167,7 @@ class Process(object):
         return (self.children < other.children)
 
     def __repr__(self):
-        return '<Process({}, user={}, id={}>'.format(
+        return '<LiveProcess({}, user={}, id={})>'.format(
             self.cmdline, self.user, id(self))
 
     def __str__(self):
@@ -506,12 +509,12 @@ def ps_faxu(with_network=False):
 
     output = output.decode('ascii', 'replace')
 
-    root = Process(None, 0, 'root', 'root', 'root')
+    root = LiveProcess(None, 0, 'root', 'root', 'root')
     for i, line in enumerate(output.split('\n')):
         if i == 0 or not line:
             pass
         else:
-            Process.from_line(line, root)
+            LiveProcess.from_line(line, root)
 
     # Update processes with proper links. This must be done last because
     # the process output is unordered and we may not have the parent
