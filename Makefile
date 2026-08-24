@@ -127,6 +127,7 @@ test:
 	RUNTESTS=1 ./ip2net && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./llssh && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./mysqldumpdissect && printf '\342\234\205\n\n'
+	RUNTESTS=1 ./psdiff && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./renum && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./pwhashck && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./sshglob && printf '\342\234\205\n\n'
