@@ -509,8 +509,9 @@ class FilteredProcessFormatter(ProcessFormatter):
                 '/lib/systemd/systemd-udevd',
                 '/usr/lib/postfix/master',          # debian/ubuntu
                 '/usr/lib/postfix/sbin/master',     # ubuntu16.04+
-                '/usr/libexec/postfix/master',      # redhat
                 '/usr/lib/postgresql/',
+                '/usr/lib/systemd/systemd-udevd',
+                '/usr/libexec/postfix/master',      # redhat
                 '/usr/sbin/dovecot',
                 '/usr/sbin/gocollect',              # sysv/systemd
                 '/usr/sbin/sshd ',
