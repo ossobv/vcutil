@@ -1,3 +1,26 @@
+vcutil (1.63) stable; urgency=low
+
+  * Additions:
+    - arpclaim: Tool to broadcast our (gateway) presence on many interfaces;
+      useful on L3 switches that share/switch IPs
+    - iperfplan: Tool to make testing NICs performance easier
+
+  * Improvements:
+    - psdiff: Refactor so the diff with --net works properly and is future
+      proof
+
+  * Fixes:
+    - ctre: Start when containerd is started
+    - iperfplan: Fix usage line and add "proto kernel" rule against
+      systemd-networkd interference
+    - psdiff: Backwards compatible ss(8) call for older Cumulus switches
+    - psdiff: Correct (udev-worker) excludes after usrmerge
+    - psdiff: Ignore fluctuating sshd arguments
+    - wvpn: Fix so wvpn works when "metric x" is added to the route on newer
+      Debian/Ubuntu
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 08 Sep 2026 09:53:52 +0200
+
 vcutil (1.62) stable; urgency=low
 
   * Improvements:
