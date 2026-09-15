@@ -633,9 +633,11 @@ def show_name_addr_iface_vrf(hosts, interface_match=None):
 def do_interface_lookup(
         nb, hostfragment, interface_match, load_properties, verbose=False):
 
-    if load_properties:
-        raise NotImplementedError('not sure what to do with properties here')
-    load_properties = ()
+    for prop in (load_properties or ()):
+        if '=' not in prop:
+            # Expected 'status=offline', but not 'status'.
+            raise NotImplementedError(
+                'not sure what to do with show-properties here')
 
     hosts = nb.find_hostname(
         hostfragment, load_interfaces=True, load_properties=load_properties)
