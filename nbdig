@@ -224,15 +224,18 @@ class ThinNetboxWrapper:
     def __init__(self, config):
         self._config = config
 
-    def _get_query(self, path, filters):
-        url = f'{self._config.api_url}{path}'
+    def _get(self, url, **requests_kwargs):
         headers = {
             'Authorization': f'Token {self._config.api_token}',
             'User-Agent': USER_AGENT,
         }
-        resp = requests.get(url, params=filters, headers=headers)
+        resp = requests.get(url, headers=headers, **requests_kwargs)
         resp.raise_for_status()
         return resp
+
+    def _get_query(self, path, filters):
+        url = f'{self._config.api_url}{path}'
+        return self._get(url, params=filters)
 
     def find_hostname(self, hostfragment, load_interfaces, load_properties):
         if '*' in hostfragment or '?' in hostfragment:
@@ -307,15 +310,21 @@ class ThinNetboxWrapper:
         for pth, lookup_key, ids in (
                 (self.NB_DEVS, 'device_id', dev_ids),
                 (self.NB_VMS, 'virtual_machine_id', vm_ids)):
-            if ids:
+            # We must batch the requests to avoid hitting Request Header
+            # Fields Too Large.
+            CHUNK_SIZE = 100  # 1000 could easily take up to 16KB of URI
+            for ids_chunk in [
+                    ids[i:i + CHUNK_SIZE]
+                    for i in range(0, len(ids), CHUNK_SIZE)]:
                 # Get interface infos.
                 if load_interfaces:
-                    interfaces_by_id = self._find_interfaces(lookup_key, ids)
+                    interfaces_by_id = self._find_interfaces(
+                        lookup_key, ids_chunk)
                 else:
                     interfaces_by_id = {}
 
                 # Get host infos.
-                params = [('id', id_) for id_ in ids]
+                params = [('id', id_) for id_ in ids_chunk]
                 params.extend([('limit', 1000), ('exclude', 'config_context')])
                 ret = self._get_query(pth, params)
                 pages = ret.json()
@@ -379,25 +388,31 @@ class ThinNetboxWrapper:
         params = [(lookup_key, id_) for id_ in ids]
         params.append(('limit', 1000))
         ret = self._get_query(self.NB_IPADDR, params)
-        pages = ret.json()
-        assert pages['next'] is None, NotImplemented  # pagination
 
         interfaces_by_id = {}
-        for interface in pages['results']:
-            assert is_known_family(interface), (
-                interface['id'], interface['address'], interface['family'])
-            assigned_address = data_netstr2ip(interface['address'])
-            assigned_vrf = (interface.get('vrf') or {}).get('rd', None)
-            assigned_to_id = interface['assigned_object'][lookup_short]['id']
-            assigned_iface = interface['assigned_object']['name']
+        while True:
+            pages = ret.json()
 
-            if assigned_to_id not in interfaces_by_id:
-                interfaces_by_id[assigned_to_id] = []
-            assigned_name = (interface['dns_name'] or interface['description'])
-            interfaces_by_id[assigned_to_id].append(
-                IpAddress(
-                    address=assigned_address, name=assigned_name,
-                    iface=assigned_iface, vrf=assigned_vrf))
+            for interface in pages['results']:
+                assert is_known_family(interface), (
+                    interface['id'], interface['address'], interface['family'])
+                assigned_address = data_netstr2ip(interface['address'])
+                assigned_vrf = (interface.get('vrf') or {}).get('rd', None)
+                assigned_to_id = interface['assigned_object'][lookup_short]['id']
+                assigned_iface = interface['assigned_object']['name']
+
+                if assigned_to_id not in interfaces_by_id:
+                    interfaces_by_id[assigned_to_id] = []
+                assigned_name = (
+                    interface['dns_name'] or interface['description'])
+                interfaces_by_id[assigned_to_id].append(
+                    IpAddress(
+                        address=assigned_address, name=assigned_name,
+                        iface=assigned_iface, vrf=assigned_vrf))
+
+            if pages['next'] is None:
+                break
+            ret = self._get(pages['next'])
 
         return interfaces_by_id
 
@@ -436,14 +451,23 @@ class ThinNetboxWrapper:
         exact_match = exact_match.lower()
 
         ret = self._get_query(path, filters)
-        pages = ret.json()
-        assert pages['next'] is None, NotImplemented  # pagination
-        ids_exact = [
-            res['id'] for res in pages['results']
-            if (res.get('name') or '').lower() == exact_match]
-        ids = [
-            res['id'] for res in pages['results']
-            if regex_match.match(res.get('name') or '')]
+
+        ids = []
+        ids_exact = []
+
+        while True:
+            pages = ret.json()
+            ids_exact.extend([
+                res['id'] for res in pages['results']
+                if (res.get('name') or '').lower() == exact_match])
+            ids.extend([
+                res['id'] for res in pages['results']
+                if regex_match.match(res.get('name') or '')])
+
+            if pages['next'] is None:
+                break
+
+            ret = self._get(pages['next'])
 
         return ids, ids_exact
 
