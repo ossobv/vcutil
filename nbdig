@@ -44,6 +44,7 @@ import warnings
 
 
 CONF_FILE = f'{environ.get("XDG_CONFIG_HOME", "~/.config")}/nbdig.ini'
+USER_AGENT = 'nbdig/1.64 vcutil/1.64'  # vcutil based version
 
 
 class StartupError(ValueError):
@@ -222,7 +223,10 @@ class ThinNetboxWrapper:
 
     def _get_query(self, path, filters):
         url = f'{self._config.api_url}{path}'
-        headers = {'Authorization': f'Token {self._config.api_token}'}
+        headers = {
+            'Authorization': f'Token {self._config.api_token}',
+            'User-Agent': USER_AGENT,
+        }
         resp = requests.get(url, params=filters, headers=headers)
         resp.raise_for_status()
         return resp
