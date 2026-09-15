@@ -178,6 +178,8 @@ class IpAddress(namedtuple('IpAddress', 'address name iface vrf is_primary')):
 
 
 class Host(namedtuple('Host', 'name ip_addresses details')):
+    WS_RE = re_compile(r'\s+')
+
     def __new__(cls, *args, **kwargs):
         if 'details' not in kwargs:
             kwargs['details'] = None
@@ -192,7 +194,8 @@ class Host(namedtuple('Host', 'name ip_addresses details')):
 
     @property
     def safename(self):
-        return self.name or '<null>'  # or '-'?
+        name = self.name or '-'             # was: '<null>'
+        return self.WS_RE.sub(' ', name)    # for: awk -F '  +' '{print $2}'
 
 
 class Network(namedtuple('Network', 'prefix description children')):
