@@ -293,11 +293,19 @@ class ThinNetboxWrapper:
         # we want to trim them by globbing name first.
         params.extend([('brief', 1), ('limit', 1000)])
 
+        # Rename status=inventory to status=paused for VMs and vice versa.
+        dev_params = [
+            ('status', 'inventory') if kv == ('status', 'paused') else kv
+            for kv in params]
+        vm_params = [
+            ('status', 'paused') if kv == ('status', 'inventory') else kv
+            for kv in params]
+
         # Get device/VM ids.
         dev_ids, dev_ids_x = self._search_for_ids(
-            self.NB_DEVS, params, hostfragment, re_match)
+            self.NB_DEVS, dev_params, hostfragment, re_match)
         vm_ids, vm_ids_x = self._search_for_ids(
-            self.NB_VMS, params, hostfragment, re_match)
+            self.NB_VMS, vm_params, hostfragment, re_match)
 
         # Are there any exact matches?
         if dev_ids_x or vm_ids_x:
