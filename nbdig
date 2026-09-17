@@ -369,7 +369,7 @@ class ThinNetboxWrapper:
                         break
         elif primary_ip is not None:
             ip_addresses.append(primary_ip)
-        else:
+        elif info['status']['value'] in ('active',):
             warn(f'{name}: no primary IP set')
 
         def kv(k, v):
