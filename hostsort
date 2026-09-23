@@ -374,13 +374,12 @@ def main():
         ap.error('field number must be >= 1')
 
     zone_re = _zone_re(args.zone)
-    data = sys.stdin.read()
-    if data and data[-1] == '\n':
-        data = data[:-1]
-    lines = data.split('\n')
-    lines.sort(key=(
-        lambda l: line_sort_key(l, args.delimiter, args.key, zone_re=zone_re)))
-    print('\n'.join(lines))
+    lines = sorted(
+        (line.rstrip('\n') for line in sys.stdin),
+        key=(lambda l: line_sort_key(
+            l, args.delimiter, args.key, zone_re=zone_re)))
+    for line in lines:
+        print(line)
 
 
 if __name__ == '__main__':
