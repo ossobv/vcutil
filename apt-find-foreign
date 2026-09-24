@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018,2020,2022-2023
+# apt-find-foreign (part of ossobv/vcutil) // wdoekes/2018,2020,2022-2023,2026
 #   // Public Domain
 """
 Script to find Debian/Ubuntu packages from "foreign" archives.
@@ -56,6 +56,11 @@ CAT_NON_URL = (
     CAT_DOWNGRADES_AVAILABLE, CAT_UPDATES_AVAILABLE)
 
 
+def urlsplit(s):
+    "Prefer ubuntu/ before ubuntu-security/ in listings"
+    return s.split('/')
+
+
 def check_english_output(command, **kwargs):
     assert 'env' not in kwargs, kwargs
     # Wipe all of LANG, LC_ALL, LC_MESSAGES to get C locale.
@@ -66,7 +71,7 @@ class VersionState(object):
     def __init__(self, version, list_urls, version_in_list=None,
                  version_direction=0):
         self.version = version
-        self.list_urls = tuple(sorted(list_urls))
+        self.list_urls = tuple(sorted(list_urls, key=urlsplit))
         self.version_direction = version_direction
         self.version_in_list = version_in_list
 
@@ -269,7 +274,7 @@ def show():
 
     print('Lists with corresponding package counts:')
     show_details = False
-    for key in sorted(lists.keys()):
+    for key in sorted(lists.keys(), key=urlsplit):
         print('  {}\t{}'.format(len(lists[key]), key))
         show_details = (
             show_details or
@@ -279,7 +284,7 @@ def show():
     if show_details:
         print('')
         print('Lists with very few packages (or with remarks):')
-        for key in sorted(lists.keys()):
+        for key in sorted(lists.keys(), key=urlsplit):
             if len(lists[key]) <= VERY_FEW_PACKAGES_LTE or key in CAT_NON_URL:
                 print('  {}'.format(key))
                 for package in lists[key]:
