@@ -781,11 +781,11 @@ def netstat():
             # Skip these.
             continue
 
-        if (is_ephemeral is None and transport in ('tcp', 'udp')
+        if (is_ephemeral is None and transport in ('mptcp', 'tcp', 'udp')
                 and ephemeral_min <= int(port) <= ephemeral_max):
             is_ephemeral = True
 
-        if is_ephemeral and transport == 'udp':
+        if is_ephemeral and transport in ('mptcp', 'udp'):
             port = '0'  # likely the port was assigned this way using bind()
 
         bindaddr = '{}:{}:{}'.format(transport, addr, port)
