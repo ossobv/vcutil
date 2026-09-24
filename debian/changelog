@@ -1,3 +1,15 @@
+vcutil (1.64) stable; urgency=low
+
+  * Improvements:
+    - apt-find-foreign: Small sorting improvement
+    - nbdig: Various usability improvements
+
+  * Fixes:
+    - hostsort: Fix stray LF output when there was 0 input
+    - sadfscheck: Fix mawk/gawk int() diff for nvme id-ns check
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 24 Sep 2026 15:39:13 +0200
+
 vcutil (1.63) stable; urgency=low
 
   * Additions:
