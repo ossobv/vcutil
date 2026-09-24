@@ -1,3 +1,11 @@
+vcutil (1.65) stable; urgency=low
+
+  * Improvements:
+    - psdiff: mptcp sockets show unconnected ephemeral ports; replace them
+      with 0, like for UDP
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Thu, 24 Sep 2026 16:31:41 +0200
+
 vcutil (1.64) stable; urgency=low
 
   * Improvements:
