@@ -733,15 +733,21 @@ def netstat():
     # -l listen
     # -p with-process
     cmd = ['ss', '-Hnlp']
-    try:
-        output = subprocess.check_output
-    except AttributeError:
-        # Blegh. Python 2.6. (You did already `pip install argparse`, yes?)
-        proc = subprocess.Popen(cmd, bufsize=-1, stdout=subprocess.PIPE)
-        output = proc.communicate()[0]
-        proc.wait()
-    else:
-        output = subprocess.check_output(cmd, bufsize=-1)
+    proc = subprocess.Popen(
+        cmd, bufsize=-1, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={'LC_ALL': 'C'})
+    output, error = proc.communicate()
+    if proc.wait() != 0:
+        raise ValueError('{cmd} returned {ret}: {err}'.format(
+            cmd=cmd, ret=proc.returncode, err=error))
+
+    error = error.decode('ascii', 'replace')
+    # On Ubuntu/Noble with kernel 7.0, we get EINVAL on netlink query of --dccp
+    # sockets. Since we're not specifying the exact list, we cannot exclude
+    # it either. Silence the error instead.
+    if set(error.splitlines()) != set(['RTNETLINK answers: Invalid argument']):
+        print(error, end='', file=sys.stderr)
+
     output = output.decode('ascii', 'replace')
 
     # Fetch local port range.
