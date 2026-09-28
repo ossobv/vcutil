@@ -2,7 +2,7 @@
 # zabdig (part of ossobv/vcutil) // wdoekes/2017-2023,2025 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
-# Zabbix JSON API.
+# Zabbix JSON API. It can also show current alerts and item data.
 #
 # Usage examples:
 #
@@ -30,6 +30,13 @@
 #
 # If you have zabbix-proxies that identify as 127.0.0.1, you can add a
 # DNS name (while keeping use-IP), and the DNS will be shown instead.
+#
+# Other modes are selected with an option, so that the first argument is
+# always a (partial) hostname. Mode names can be abbreviated (--ale), and
+# each mode has its own --help:
+#
+#     $ zabdig --alerts -S 3
+#     $ zabdig --data -i 'vfs.fs.size[/,pfree]' 'web*'
 #
 # See zabdig --help for more info.
 #
@@ -793,52 +800,200 @@ def show_latest_data(hosts, items):
                 value_len=value_len))
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
+# Modes other than the default host lookup, in order of use. Each is picked
+# with an option of the same name (--alerts) or an abbreviation of it.
+MODES = ('alerts', 'data')
+
+
+class UsageError(ValueError):
+    pass
+
+
+def split_mode(argv):
+    """
+    Find the mode option in argv. Return (mode, remaining_argv).
+
+    We cannot use argparse subcommands for this: the first positional
+    argument is a (partial) hostname, and any word could be one.
+    So the mode is an option instead. Any non-empty prefix of a mode name
+    will do: --a, --al and --ale all select --alerts.
+    """
+    modes = set()
+    remaining = []
+    for i, arg in enumerate(argv):
+        if arg == '--':
+            remaining.extend(argv[i:])
+            break
+        if arg.startswith('--') and len(arg) > 2 and '=' not in arg:
+            matches = [mode for mode in MODES if mode.startswith(arg[2:])]
+            if len(matches) == 1:
+                modes.add(matches[0])
+                continue
+        remaining.append(arg)
+
+    if len(modes) > 1:
+        raise UsageError('only one of {} may be given'.format(
+            ', '.join('--' + mode for mode in MODES)))
+    return (modes.pop() if modes else None), remaining
+
+
+def build_parser(mode):
+    "Build the argument parser for host lookups (mode=None) or a mode."
+    connection = argparse.ArgumentParser(add_help=False)
+    connection.add_argument(
         '-g', '--section', dest='section', help=(
             f'Use SECTION from {CONF_FILE} for defaults'))
-    parser.add_argument(
+    connection.add_argument(
         '-A', '--api', dest='api', help=(
             'Zabbix json_rpc API URL, for example: '
             'https://zabbix.example.nl/api_jsonrpc.php'))
-    parser.add_argument(
+    connection.add_argument(
         '-u', '--user', dest='user', help=(
             'API username'))
-    parser.add_argument(
+    connection.add_argument(
         '-p', '--password', dest='password', help=(
             'API password'))
-    parser.add_argument(
-        '-a', '--all', action='store_true', help=(
-            'List all hosts even if there are exact matches'))
-    parser.add_argument(
-        '-S', '--alert-severity', action='store', default=3, type=int,
-        help=(
-            'Show info about current alerts, use bitmask: 0=all, '
-            '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
-    parser.add_argument(
-        '--show', choices=('host', 'alerts', 'data'), help=(
-            'Show info about host, alerts, item data'))
-    parser.add_argument(
-        '--items', dest='items', action='append', default=[], help=(
-            'Which items to show in --show=data mode; '
-            'the * is a supported wildcard'))
-    parser.add_argument(
-        '-x', '--with-ip', help=(
-            'Filter by IP-address'))  # compare 'dig -x'
-    parser.add_argument(
-        'search', nargs='?', type=Needle, help=(
-            'Hostname to search for (* and ? are allowed)'))
 
-    args = parser.parse_args(argv)
+    if mode is None:
+        parser = argparse.ArgumentParser(
+            prog='zabdig', parents=[connection],
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=(
+                'Look up hosts by (part of) their name. If there is one '
+                'exact match, only its address is printed (unless -l).'),
+            epilog=(
+                'Instead of a host lookup, one of these modes can be '
+                'selected:\n'
+                '  --alerts    show current alerts\n'
+                '  --data      show latest item data\n'
+                '\n'
+                'Mode names may be abbreviated (--ale). '
+                'Use zabdig --MODE --help for details.'))
+        parser.add_argument(
+            '-l', '--list', action='store_true', help=(
+                'Always list matching hosts, also if there is only one '
+                'exact match'))
+        parser.add_argument(
+            '-x', '--with-ip', help=(
+                'Filter by IP-address'))  # compare 'dig -x'
+        parser.add_argument(
+            '-v', '--verbose', action='store_true', help=(
+                'Show details about every host'))
+        parser.add_argument(
+            'search', nargs='?', type=Needle, help=(
+                'Hostname to search for (* and ? are allowed)'))
+        parser.set_defaults(func=cmd_host)
 
-    # For --items we require --show=data.
-    if args.items:
-        if not args.show:
-            args.show = 'data'
-        elif args.show != 'data':
-            print('--items requires --show=data', file=sys.stderr)
-            return 1
+    elif mode == 'alerts':
+        parser = argparse.ArgumentParser(
+            prog='zabdig --alerts', parents=[connection],
+            description='Show current alerts.')
+        parser.add_argument(
+            '-S', '--alert-severity', default=3, type=int, help=(
+                'Which severities to show, use bitmask: 0=all, '
+                '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass '
+                '(default: 3)'))
+        parser.set_defaults(func=cmd_alerts)
+
+    elif mode == 'data':
+        parser = argparse.ArgumentParser(
+            prog='zabdig --data', parents=[connection],
+            description='Show the latest values of items on hosts.',
+            epilog=(
+                'Try --items=\'*\' on a single host to see available keys.'))
+        parser.add_argument(
+            '-i', '--items', action='append', required=True, help=(
+                'Which items to show; the * is a supported wildcard. '
+                'Can be used multiple times'))
+        parser.add_argument(
+            'search', nargs='?', type=Needle, help=(
+                'Hostname to search for (* and ? are allowed)'))
+        parser.set_defaults(func=cmd_data)
+
+    else:
+        raise NotImplementedError(mode)
+
+    return parser
+
+
+def find_hosts(zint, search, with_ip=None, always_list=False):
+    """
+    Return the list of hosts matching the search, and whether that
+    was narrowed down to a single exact match.
+    """
+    hosts = list(zint.get_hosts(search))
+    if not hosts:
+        print('nothing found', file=sys.stderr)
+        return hosts, False
+
+    # Limit hosts by IP address.
+    # FIXME: perhaps do server-side search if possible here?
+    if with_ip:
+        hosts = [host for host in hosts if host.has_ip(with_ip)]
+
+    # Unless the user asked for a list, if there is a single match, use that.
+    if search and not always_list and not with_ip:
+        exact_hosts = [host for host in hosts if search.is_exactly(host.name)]
+        if len(exact_hosts) == 1:
+            return exact_hosts, True
+
+    return hosts, False
+
+
+def cmd_host(zint, args):
+    hosts, exact_match = find_hosts(
+        zint, args.search, with_ip=args.with_ip, always_list=args.list)
+    if not hosts:
+        return 1
+
+    # One match, show the IP.
+    if exact_match and not args.verbose:
+        print(hosts[0].get_zabbix_addr_first())
+        return 0
+
+    for host in sorted(hosts):
+        if args.verbose:
+            show_host(host)
+        else:
+            print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
+                name=host,
+                addr=host.get_zabbix_addr(),
+                optional_proxy=(
+                    host.proxy and ' ({!s})'.format(host.proxy) or '')))
+    return 0
+
+
+def cmd_alerts(zint, args):
+    alerts = zint.get_alerts(args.alert_severity)
+    for alert in alerts:
+        print(alert)
+    print(len(alerts))
+    return 0
+
+
+def cmd_data(zint, args):
+    hosts, exact_match = find_hosts(zint, args.search)
+    if not hosts:
+        return 1
+    if len(hosts) > 100:
+        print('too many hosts selected', file=sys.stderr)
+        return 1
+
+    items = zint.get_latest_data(hosts, args.items)
+    show_latest_data(hosts, items)
+    return 0
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    try:
+        mode, argv = split_mode(argv)
+    except UsageError as e:
+        print('zabdig: error: {}'.format(e), file=sys.stderr)
+        return 2
+    args = build_parser(mode).parse_args(argv)
 
     lconf = LocalConfig()
     if args.section:
@@ -866,73 +1021,11 @@ def main(argv=None):
             file=sys.stderr)
         return 1
 
-    if args.show == 'alerts':
-        if args.search:
-            raise NotImplementedError()  # not yet
-        alerts = zint.get_alerts(args.alert_severity)
-        for alert in alerts:
-            print(alert)
-        print(len(alerts))
-        return 0
-
     try:
-        hosts = list(zint.get_hosts(args.search))
+        return args.func(zint, args)
     except ZInterfaceError as e:
         print('fetch failed: {}'.format(e), file=sys.stderr)
         return 1
-
-    if not hosts:
-        print('nothing found', file=sys.stderr)
-        return 1
-
-    # Limit hosts by IP address.
-    # FIXME: perhaps do server-side search if possible here?
-    if args.with_ip:
-        hosts = [host for host in hosts if host.has_ip(args.with_ip)]
-
-    # Unless the user supplied --all, if there is a single match, use that.
-    exact_match = False
-    if args.search and not args.all and not args.with_ip:
-        exact_hosts = [
-            host for host in hosts if args.search.is_exactly(host.name)]
-        if len(exact_hosts) == 1:
-            exact_match = True
-            hosts = exact_hosts
-
-    # One match, show the IP.
-    if not args.show and exact_match:
-        print(hosts[0].get_zabbix_addr_first())
-        return 0
-
-    # Data listing?
-    if args.show == 'data':
-        if not hosts:
-            print('hosts needed for search', file=sys.stderr)
-            return 1
-        if len(hosts) > 100:
-            print('too many hosts selected', file=sys.stderr)
-            return 1
-        if not args.items:
-            print('items required for search', file=sys.stderr)
-            return 1
-
-        items = zint.get_latest_data(hosts, args.items)
-        show_latest_data(hosts, items)
-        return 0
-
-    # Regular args.show.
-    for host in sorted(hosts):
-        if args.show == 'host':
-            show_host(host)
-        elif args.show:
-            raise NotImplementedError()  # unexpected?
-        else:
-            print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
-                name=host,
-                addr=host.get_zabbix_addr(),
-                optional_proxy=(
-                    host.proxy and ' ({!s})'.format(host.proxy) or '')))
-    return 0
 
 
 if __name__ == '__main__':

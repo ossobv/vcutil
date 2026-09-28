@@ -149,14 +149,32 @@ class HostLookupTest(ZabdigTestCase):
             '{:30}  192.0.2.9\n'
         ).format('walter.internal.lan', 'walterdev.example.com'))
 
-    def test_all_flag_lists_matches_despite_exact_match(self):
+    def test_list_flag_lists_matches_despite_exact_match(self):
         ret, out, err = self.zabdig('pve1')
         self.assertEqual(out, '10.0.0.1\n')
-        ret, out, err = self.zabdig('-a', 'pve1')
-        self.assertEqual(out, (
-            '{:30}  10.0.0.1\n'
-            '{:30}  10.0.1.1\n'
-        ).format('pve1', 'pve1.dr'))
+        for flag in ('-l', '--list', '--li'):
+            ret, out, err = self.zabdig(flag, 'pve1')
+            self.assertEqual(out, (
+                '{:30}  10.0.0.1\n'
+                '{:30}  10.0.1.1\n'
+            ).format('pve1', 'pve1.dr'), flag)
+
+    def test_list_flag_lists_a_single_match_too(self):
+        ret, out, err = self.zabdig('-l', 'walter.internal.lan')
+        self.assertEqual(
+            out, '{:30}  10.32.1.5 (zabbix-proxy-lan)\n'.format(
+                'walter.internal.lan'))
+
+    def test_wildcard_matching_one_host_prints_only_the_address(self):
+        # This is how 'zssh hostx*' completes a hostname.
+        ret, out, err = self.zabdig('walter.internal.la?')
+        self.assertEqual((ret, out, err), (0, '10.32.1.5\n', ''))
+
+    def test_old_all_flag_is_an_error(self):
+        for flag in ('-a', '--all'):
+            with self.assertRaises(SystemExit) as cm:
+                self.zabdig(flag, 'pve1')
+            self.assertEqual(cm.exception.code, 2, flag)
 
     def test_filter_by_ip(self):
         ret, out, err = self.zabdig('-x', '10.0.1.1', 'pve')
@@ -186,8 +204,8 @@ class HostLookupTest(ZabdigTestCase):
         self.assertEqual((ret, out), (1, ''))
         self.assertEqual(err, 'nothing found\n')
 
-    def test_show_host(self):
-        ret, out, err = self.zabdig('--show=host', 'walter.internal.lan')
+    def test_verbose_shows_host_details(self):
+        ret, out, err = self.zabdig('-v', 'walter.internal.lan')
         self.assertEqual(ret, 0)
         self.assertEqual(out, (
             '[walter.internal.lan]\n'
@@ -220,7 +238,7 @@ class AlertsTest(ZabdigTestCase):
 
     def test_current_alerts(self):
         ret, out, err = self.zabdig(
-            '--show=alerts', **{
+            '--alerts', **{
                 'problem.get': [dict(self.PROBLEM)],
                 'trigger.get': [dict(self.TRIGGER)]})
         self.assertEqual(ret, 0)
@@ -230,7 +248,7 @@ class AlertsTest(ZabdigTestCase):
 
     def test_default_severity_is_disaster_and_high(self):
         self.zabdig(
-            '--show=alerts', **{'problem.get': [], 'trigger.get': []})
+            '--alerts', **{'problem.get': [], 'trigger.get': []})
         self.assertEqual(
             self.fake.params_of('problem.get')[0]['severities'], [5, 4])
 
@@ -239,7 +257,7 @@ class AlertsTest(ZabdigTestCase):
         trigger['hosts'] = [
             {'hostid': '101', 'host': 'web1', 'status': '1'}]
         ret, out, err = self.zabdig(
-            '--show=alerts', **{
+            '--alerts', **{
                 'problem.get': [dict(self.PROBLEM)],
                 'trigger.get': [trigger]})
         self.assertEqual(out, '0\n')
@@ -253,7 +271,7 @@ class AlertsTest(ZabdigTestCase):
             {'hostid': '101', 'status': '0'},
             {'hostid': '102', 'status': '0'}]
         ret, out, err = self.zabdig(
-            '--show=alerts', **{
+            '--alerts', **{
                 'problem.get': [dict(self.PROBLEM)],
                 'trigger.get': [trigger]})
         self.assertEqual(out.splitlines()[-3:], [
@@ -268,9 +286,9 @@ class DataTest(ZabdigTestCase):
         'key_': 'vfs.fs.size[/,pfree]', 'units': '%', 'lastclock': '0',
         'lastvalue': '42', 'prevvalue': '41'}
 
-    def test_items_imply_data_mode(self):
+    def test_data_for_item(self):
         ret, out, err = self.zabdig(
-            '--items', 'vfs.fs.size[/,pfree]', 'web1', **{
+            '--data', '-i', 'vfs.fs.size[/,pfree]', 'web1', **{
                 'host.get': [make_host('1', 'web1', '10.0.0.1')],
                 'item.get': [self.ITEM]})
         self.assertEqual(ret, 0)
@@ -279,7 +297,97 @@ class DataTest(ZabdigTestCase):
             self.fake.params_of('item.get')[0]['search'],
             {'key_': 'vfs.fs.size[/,pfree]'})
 
-    def test_items_conflict_with_other_show_modes(self):
-        ret, out, err = self.zabdig('--show=alerts', '--items', 'x')
-        self.assertEqual(ret, 1)
-        self.assertIn('--items requires --show=data', err)
+    def test_items_are_required(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.zabdig('--data', 'web1')
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_multiple_items_can_be_given(self):
+        ret, out, err = self.zabdig(
+            '--data', '-i', 'a', '--items', 'b', 'web1', **{
+                'host.get': [make_host('1', 'web1', '10.0.0.1')],
+                'item.get': []})
+        self.assertEqual(ret, 0)
+        self.assertEqual(
+            [p['search'] for p in self.fake.params_of('item.get')],
+            [{'key_': 'a'}, {'key_': 'b'}])
+
+
+class SplitModeTest(TestCase):
+    def test_no_mode_is_host_lookup(self):
+        self.assertEqual(
+            zabdig.split_mode(['-l', 'walter']), (None, ['-l', 'walter']))
+        self.assertEqual(zabdig.split_mode([]), (None, []))
+
+    def test_mode_is_removed_from_argv(self):
+        self.assertEqual(
+            zabdig.split_mode(['-g', 'x', '--alerts', '-S', '1']),
+            ('alerts', ['-g', 'x', '-S', '1']))
+        self.assertEqual(
+            zabdig.split_mode(['-i', 'a', 'web1', '--data']),
+            ('data', ['-i', 'a', 'web1']))
+
+    def test_mode_can_be_abbreviated(self):
+        for arg in ('--a', '--al', '--ale', '--alert', '--alerts'):
+            self.assertEqual(zabdig.split_mode([arg]), ('alerts', []), arg)
+        for arg in ('--d', '--da', '--data'):
+            self.assertEqual(zabdig.split_mode([arg]), ('data', []), arg)
+
+    def test_other_options_are_left_alone(self):
+        # --all is not a prefix of --alerts; the others are ordinary options.
+        for arg in ('--all', '--api', '--alert-severity', '--help', '-l',
+                    '--list',
+                    '--data=x', '--alerts=x', '--dat-a', '--', '-'):
+            self.assertEqual(zabdig.split_mode([arg]), (None, [arg]), arg)
+
+    def test_hostnames_are_never_modes(self):
+        # A host called "alerts" or "data" is found as any other host.
+        self.assertEqual(
+            zabdig.split_mode(['alerts']), (None, ['alerts']))
+        self.assertEqual(
+            zabdig.split_mode(['data']), (None, ['data']))
+
+    def test_double_dash_ends_mode_detection(self):
+        self.assertEqual(
+            zabdig.split_mode(['--', '--alerts']), (None, ['--', '--alerts']))
+
+    def test_only_one_mode(self):
+        with self.assertRaises(zabdig.UsageError):
+            zabdig.split_mode(['--alerts', '--data'])
+        # The same mode, twice, is fine.
+        self.assertEqual(
+            zabdig.split_mode(['--al', '--alerts']), ('alerts', []))
+
+
+class CliTest(ZabdigTestCase):
+    def test_host_named_like_a_mode_is_looked_up(self):
+        hosts = [make_host('1', 'data', '10.0.0.1'),
+                 make_host('2', 'data2', '10.0.0.2')]
+        ret, out, err = self.zabdig('data', **{'host.get': hosts})
+        self.assertEqual((ret, out), (0, '10.0.0.1\n'))
+
+    def test_contains_search_still_finds_hosts_named_host(self):
+        hosts = [make_host('1', 'host1', '10.0.0.1'),
+                 make_host('2', 'host2', '10.0.0.2')]
+        ret, out, err = self.zabdig('host', **{'host.get': hosts})
+        self.assertEqual(out, (
+            '{:30}  10.0.0.1\n'
+            '{:30}  10.0.0.2\n').format('host1', 'host2'))
+
+    def test_options_are_scoped_to_their_mode(self):
+        for args in (['--alerts', '-l'], ['--alerts', '-x', '1.2.3.4'],
+                     ['-S', '1'], ['--data', '-i', 'x', '-S', '1'],
+                     ['--data', '-i', 'x', '-l'], ['-i', 'x']):
+            with self.assertRaises(SystemExit) as cm:
+                self.zabdig(*args)
+            self.assertEqual(cm.exception.code, 2, args)
+
+    def test_two_modes_is_an_error(self):
+        ret, out, err = self.zabdig('--alerts', '--data')
+        self.assertEqual(ret, 2)
+        self.assertIn('only one of', err)
+
+    def test_abbreviated_mode_runs_the_mode(self):
+        ret, out, err = self.zabdig(
+            '--ale', **{'problem.get': [], 'trigger.get': []})
+        self.assertEqual((ret, out), (0, '0\n'))
