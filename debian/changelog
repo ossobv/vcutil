@@ -1,3 +1,14 @@
+vcutil (1.66) stable; urgency=low
+
+  * Improvements:
+    - psdiff: Silence RTNETLINK EINVAL errors for --dccp
+    - zabdig: Add --maint to manage maintenance windows. FINALLY!
+    - zabdig: Refactored CLI interface. BEWARE. Some calls take a different
+      format
+    - zabdig: Remove broken --show=ahist, as nobody was using it
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Mon, 28 Sep 2026 15:13:28 +0200
+
 vcutil (1.65) stable; urgency=low
 
   * Improvements:
