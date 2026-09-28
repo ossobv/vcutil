@@ -60,7 +60,6 @@ import argparse
 import configparser
 import json
 import os
-import requests
 import sys
 
 from datetime import datetime, timezone
@@ -445,6 +444,9 @@ class ZInterface(object):
         return self._zabbix_post(self.url, data)
 
     def _zabbix_post(self, url, data):
+        # Imported here, so --help and the tests work without python3-requests.
+        import requests
+
         res = requests.post(
             url, data=json.dumps(data),
             headers={'Content-Type': 'application/json-rpc'})
@@ -791,147 +793,149 @@ def show_latest_data(hosts, items):
                 value_len=value_len))
 
 
-if __name__ == '__main__':
-    def main():
-        parser = argparse.ArgumentParser()
-        parser.add_argument(
-            '-g', '--section', dest='section', help=(
-                f'Use SECTION from {CONF_FILE} for defaults'))
-        parser.add_argument(
-            '-A', '--api', dest='api', help=(
-                'Zabbix json_rpc API URL, for example: '
-                'https://zabbix.example.nl/api_jsonrpc.php'))
-        parser.add_argument(
-            '-u', '--user', dest='user', help=(
-                'API username'))
-        parser.add_argument(
-            '-p', '--password', dest='password', help=(
-                'API password'))
-        parser.add_argument(
-            '-a', '--all', action='store_true', help=(
-                'List all hosts even if there are exact matches'))
-        parser.add_argument(
-            '-S', '--alert-severity', action='store', default=3, type=int,
-            help=(
-                'Show info about current alerts, use bitmask: 0=all, '
-                '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
-        parser.add_argument(
-            '--show', choices=('host', 'alerts', 'data'), help=(
-                'Show info about host, alerts, item data'))
-        parser.add_argument(
-            '--items', dest='items', action='append', default=[], help=(
-                'Which items to show in --show=data mode; '
-                'the * is a supported wildcard'))
-        parser.add_argument(
-            '-x', '--with-ip', help=(
-                'Filter by IP-address'))  # compare 'dig -x'
-        parser.add_argument(
-            'search', nargs='?', type=Needle, help=(
-                'Hostname to search for (* and ? are allowed)'))
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-g', '--section', dest='section', help=(
+            f'Use SECTION from {CONF_FILE} for defaults'))
+    parser.add_argument(
+        '-A', '--api', dest='api', help=(
+            'Zabbix json_rpc API URL, for example: '
+            'https://zabbix.example.nl/api_jsonrpc.php'))
+    parser.add_argument(
+        '-u', '--user', dest='user', help=(
+            'API username'))
+    parser.add_argument(
+        '-p', '--password', dest='password', help=(
+            'API password'))
+    parser.add_argument(
+        '-a', '--all', action='store_true', help=(
+            'List all hosts even if there are exact matches'))
+    parser.add_argument(
+        '-S', '--alert-severity', action='store', default=3, type=int,
+        help=(
+            'Show info about current alerts, use bitmask: 0=all, '
+            '1=disaster, 2=high, 4=avg, 8=warn, 16=info, 32=unclass'))
+    parser.add_argument(
+        '--show', choices=('host', 'alerts', 'data'), help=(
+            'Show info about host, alerts, item data'))
+    parser.add_argument(
+        '--items', dest='items', action='append', default=[], help=(
+            'Which items to show in --show=data mode; '
+            'the * is a supported wildcard'))
+    parser.add_argument(
+        '-x', '--with-ip', help=(
+            'Filter by IP-address'))  # compare 'dig -x'
+    parser.add_argument(
+        'search', nargs='?', type=Needle, help=(
+            'Hostname to search for (* and ? are allowed)'))
 
-        args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-        # For --items we require --show=data.
-        if args.items:
-            if not args.show:
-                args.show = 'data'
-            elif args.show != 'data':
-                print('--items requires --show=data', file=sys.stderr)
-                sys.exit(1)
+    # For --items we require --show=data.
+    if args.items:
+        if not args.show:
+            args.show = 'data'
+        elif args.show != 'data':
+            print('--items requires --show=data', file=sys.stderr)
+            return 1
 
-        lconf = LocalConfig()
-        if args.section:
-            try:
-                lconf.select_section(args.section)
-            except ZConfigError:
-                print('no such section found in config file', file=sys.stderr)
-                sys.exit(1)
-        else:
-            args.section = lconf.section
-
-        api = args.api or lconf.get('api')
-        user = args.user or lconf.get('user')
-        password = args.password or lconf.get('password')
-
-        # Ooh.. quick hacks!
-        if not user or not password:
-            (user, password) = get_from_secret_storage(args.section)
-
+    lconf = LocalConfig()
+    if args.section:
         try:
-            zint = ZInterface(api, user, password)
-        except ZConfigError as e:
-            print(
-                'login failed: {}; see zabdig --help'.format(e),
-                file=sys.stderr)
-            sys.exit(1)
+            lconf.select_section(args.section)
+        except ZConfigError:
+            print('no such section found in config file', file=sys.stderr)
+            return 1
+    else:
+        args.section = lconf.section
 
-        if args.show == 'alerts':
-            if args.search:
-                raise NotImplementedError()  # not yet
-            alerts = zint.get_alerts(args.alert_severity)
-            for alert in alerts:
-                print(alert)
-            print(len(alerts))
-            exit(0)
+    api = args.api or lconf.get('api')
+    user = args.user or lconf.get('user')
+    password = args.password or lconf.get('password')
 
-        try:
-            hosts = list(zint.get_hosts(args.search))
-        except ZInterfaceError as e:
-            print('fetch failed: {}'.format(e), file=sys.stderr)
-            sys.exit(1)
+    # Ooh.. quick hacks!
+    if not user or not password:
+        (user, password) = get_from_secret_storage(args.section)
 
+    try:
+        zint = ZInterface(api, user, password)
+    except ZConfigError as e:
+        print(
+            'login failed: {}; see zabdig --help'.format(e),
+            file=sys.stderr)
+        return 1
+
+    if args.show == 'alerts':
+        if args.search:
+            raise NotImplementedError()  # not yet
+        alerts = zint.get_alerts(args.alert_severity)
+        for alert in alerts:
+            print(alert)
+        print(len(alerts))
+        return 0
+
+    try:
+        hosts = list(zint.get_hosts(args.search))
+    except ZInterfaceError as e:
+        print('fetch failed: {}'.format(e), file=sys.stderr)
+        return 1
+
+    if not hosts:
+        print('nothing found', file=sys.stderr)
+        return 1
+
+    # Limit hosts by IP address.
+    # FIXME: perhaps do server-side search if possible here?
+    if args.with_ip:
+        hosts = [host for host in hosts if host.has_ip(args.with_ip)]
+
+    # Unless the user supplied --all, if there is a single match, use that.
+    exact_match = False
+    if args.search and not args.all and not args.with_ip:
+        exact_hosts = [
+            host for host in hosts if args.search.is_exactly(host.name)]
+        if len(exact_hosts) == 1:
+            exact_match = True
+            hosts = exact_hosts
+
+    # One match, show the IP.
+    if not args.show and exact_match:
+        print(hosts[0].get_zabbix_addr_first())
+        return 0
+
+    # Data listing?
+    if args.show == 'data':
         if not hosts:
-            print('nothing found', file=sys.stderr)
-            sys.exit(1)
+            print('hosts needed for search', file=sys.stderr)
+            return 1
+        if len(hosts) > 100:
+            print('too many hosts selected', file=sys.stderr)
+            return 1
+        if not args.items:
+            print('items required for search', file=sys.stderr)
+            return 1
 
-        # Limit hosts by IP address.
-        # FIXME: perhaps do server-side search if possible here?
-        if args.with_ip:
-            hosts = [host for host in hosts if host.has_ip(args.with_ip)]
+        items = zint.get_latest_data(hosts, args.items)
+        show_latest_data(hosts, items)
+        return 0
 
-        # Unless the user supplied --all, if there is a single match, use that.
-        exact_match = False
-        if args.search and not args.all and not args.with_ip:
-            exact_hosts = [
-                host for host in hosts if args.search.is_exactly(host.name)]
-            if len(exact_hosts) == 1:
-                exact_match = True
-                hosts = exact_hosts
+    # Regular args.show.
+    for host in sorted(hosts):
+        if args.show == 'host':
+            show_host(host)
+        elif args.show:
+            raise NotImplementedError()  # unexpected?
+        else:
+            print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
+                name=host,
+                addr=host.get_zabbix_addr(),
+                optional_proxy=(
+                    host.proxy and ' ({!s})'.format(host.proxy) or '')))
+    return 0
 
-        # One match, show the IP.
-        if not args.show and exact_match:
-            print(hosts[0].get_zabbix_addr_first())
-            sys.exit(0)
 
-        # Data listing?
-        if args.show == 'data':
-            if not hosts:
-                print('hosts needed for search', file=sys.stderr)
-                exit(1)
-            if len(hosts) > 100:
-                print('too many hosts selected', file=sys.stderr)
-                exit(1)
-            if not args.items:
-                print('items required for search', file=sys.stderr)
-                exit(1)
-
-            items = zint.get_latest_data(hosts, args.items)
-            show_latest_data(hosts, items)
-            exit(0)
-
-        # Regular args.show.
-        for host in sorted(hosts):
-            if args.show == 'host':
-                show_host(host)
-            elif args.show:
-                raise NotImplementedError()  # unexpected?
-            else:
-                print('{name!s:30}  {addr!s}{optional_proxy!s}'.format(
-                    name=host,
-                    addr=host.get_zabbix_addr(),
-                    optional_proxy=(
-                        host.proxy and ' ({!s})'.format(host.proxy) or '')))
-
-    main()
+if __name__ == '__main__':
+    sys.exit(main())
 
 # vim: set ts=8 sw=4 sts=4 et ai:
