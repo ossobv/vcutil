@@ -2,7 +2,8 @@
 # zabdig (part of ossobv/vcutil) // wdoekes/2017-2023,2025 // Public Domain
 #
 # Quickly query the zabbix server for hosts and hostnames/IPs, using the
-# Zabbix JSON API. It can also show current alerts and item data.
+# Zabbix JSON API. It can also show current alerts and item data, and manage
+# maintenance windows.
 #
 # Usage examples:
 #
@@ -37,6 +38,7 @@
 #
 #     $ zabdig --alerts -S 3
 #     $ zabdig --data -i 'vfs.fs.size[/,pfree]' 'web*'
+#     $ zabdig --maint create --start 22:00 "kernel upgrade" 2h pve1 'db*'
 #
 # See zabdig --help for more info.
 #
@@ -67,10 +69,11 @@ import argparse
 import configparser
 import json
 import os
+import re
 import sys
 
-from datetime import datetime, timezone
-from fnmatch import fnmatch
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from warnings import warn
 
 CONF_FILE = f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/.zabbixrc'
@@ -94,11 +97,30 @@ class ZDataError(ZInterfaceError):
     pass
 
 
+class ZMaintError(Exception):
+    "Something is wrong with a maintenance request; the message says what."
+    pass
+
+
+def glob_to_regex(pattern):
+    """
+    Turn a glob pattern into a regex, where only * and ? are magic.
+
+    Simpler version of fnmatch. Hardly anyone is expected to use
+    glob-style character classes. And when we're matching titles, they
+    can become confusing.
+    """
+    return re.compile(''.join(
+        '.*' if char == '*' else '.' if char == '?' else re.escape(char)
+        for char in pattern), re.DOTALL)
+
+
 class Needle(object):
     "Needle is used for hostname searches"
     def __init__(self, glob_pattern):
         self._exact_glob_pattern = glob_pattern
-        self._contains_glob_pattern = '*{}*'.format(glob_pattern)
+        self._exact_regex = glob_to_regex(glob_pattern)
+        self._contains_regex = glob_to_regex('*{}*'.format(glob_pattern))
 
     def as_string(self):
         "Return the longest part that can be used in a 'contains' search"
@@ -110,11 +132,11 @@ class Needle(object):
 
     def is_exactly(self, string):
         "Return True if needle matches string exactly"
-        return fnmatch(string, self._exact_glob_pattern)
+        return self._exact_regex.fullmatch(string) is not None
 
     def is_found_in(self, string):
         "Return True if needle is found somewhere in string"
-        return fnmatch(string, self._contains_glob_pattern)
+        return self._contains_regex.fullmatch(string) is not None
 
 
 class ZAlert(object):
@@ -660,6 +682,100 @@ class ZInterface(object):
 
         return [ZItem(res) for res in results]
 
+    def get_maintenances(self, states=None):
+        """
+        Return the maintenances with their hosts, host groups and time
+        periods.
+
+        If the states (see maintenance_state) that are wanted are given and
+        do not include EXPIRED, we skip the details of the windows whose
+        active period has ended. There can be hundreds of those. We do not
+        skip all expired ones: a window can be over while its active period
+        is not. So the caller still needs to look at the state.
+        """
+        self._login()
+
+        params = {
+            'output': ['maintenanceid', 'name', 'active_since',
+                       'active_till'],
+            'selectHosts': ['hostid', 'name'],
+            'selectHostGroups': ['groupid', 'name'],
+            'selectTimeperiods': ['timeperiod_type', 'start_date',
+                                  'period']}
+
+        if states is not None and 'EXPIRED' not in states:
+            now_ts = int(get_now().timestamp())
+            brief = self._zabbix_call(
+                'maintenance.get',
+                {'output': ['maintenanceid', 'active_till']})
+            params['maintenanceids'] = [
+                m['maintenanceid'] for m in brief
+                if int(m['active_till']) > now_ts]
+            if not params['maintenanceids']:
+                return []
+
+        return self._zabbix_call('maintenance.get', params)
+
+    def get_hostgroups(self, name_needle):
+        self._login()
+
+        return self._zabbix_call(
+            'hostgroup.get',
+            {'output': ['groupid', 'name'],
+             'search': {'name': name_needle.as_string()}})
+
+    def create_maintenance(self, name, hostids, groupids, active_since,
+                           active_till, start_date, period):
+        """
+        Create a maintenance for hosts and/or host groups, with one single
+        period. The active_since and active_till bound the entire
+        maintenance; start_date and period (seconds) define the one time
+        window inside it. Return its id.
+        """
+        self._login()
+
+        params = {
+            'name': name,
+            'active_since': active_since,
+            'active_till': active_till,
+            'timeperiods': [{
+                'timeperiod_type': 0,  # 0=one time only
+                'start_date': start_date,
+                'period': period}]}
+        if hostids:
+            params['hosts'] = [{'hostid': hostid} for hostid in hostids]
+        if groupids:
+            params['groups'] = [{'groupid': groupid} for groupid in groupids]
+
+        try:
+            res = self._zabbix_call('maintenance.create', params)
+        except ZInterfaceError as e:
+            if (isinstance(e.args[0], dict) and
+                    'already exists' in e.args[0].get('data', '')):
+                raise ZMaintError(
+                    'a maintenance named {!r} already exists'.format(name))
+            raise
+        return res['maintenanceids'][0]
+
+    def update_maintenance(self, maintenanceid, hostids=None, groupids=None):
+        """
+        Replace the hosts and/or host groups of a maintenance, whichever are
+        not None. The rest of the maintenance is left alone.
+        """
+        self._login()
+
+        params = {'maintenanceid': maintenanceid}
+        if hostids is not None:
+            params['hosts'] = [{'hostid': hostid} for hostid in hostids]
+        if groupids is not None:
+            params['groups'] = [{'groupid': groupid} for groupid in groupids]
+        self._zabbix_call('maintenance.update', params)
+
+    def delete_maintenances(self, maintenanceids):
+        self._login()
+
+        self._zabbix_call('maintenance.delete', list(maintenanceids))
+
     def get_proxies(self):
         if not hasattr(self, '_get_proxies'):
             self._login()
@@ -800,9 +916,208 @@ def show_latest_data(hosts, items):
                 value_len=value_len))
 
 
+DURATION_RE = re.compile(r'(?:[0-9]+[smhdw])+')
+DURATION_PART_RE = re.compile(r'([0-9]+)([smhdw])')
+DURATION_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+
+
+def parse_duration(text):
+    """
+    Turn a duration like 90m, 2h or 1h30m into (whole minutes of) seconds.
+
+    A unit is mandatory, because 90 is too easily mistaken for either
+    minutes or seconds.
+    """
+    if not DURATION_RE.fullmatch(text.lower()):
+        raise argparse.ArgumentTypeError(
+            'invalid duration {!r}, use for example 90m, 2h or 1h30m'.format(
+                text))
+    seconds = sum(
+        int(num) * DURATION_UNITS[unit]
+        for num, unit in DURATION_PART_RE.findall(text.lower()))
+    seconds = (seconds + 59) // 60 * 60  # round up to whole minutes
+    if seconds == 0:
+        raise argparse.ArgumentTypeError('duration must not be zero')
+    return seconds
+
+
+def parse_start(text):
+    "Turn HH:MM into a time."
+    try:
+        return datetime.strptime(text, '%H:%M').time()
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            'invalid time {!r}, use HH:MM'.format(text))
+
+
+class MaintenanceWindow(object):
+    """
+    The times (unix timestamps, and the duration in seconds) that go into a
+    maintenance. The window itself is start..end. The active period around
+    it runs from midnight today to midnight after the day the window ends.
+    """
+    def __init__(self, start, duration, active_since, active_till):
+        self.start = start
+        self.duration = duration
+        self.active_since = active_since
+        self.active_till = active_till
+
+    @property
+    def end(self):
+        return self.start + self.duration
+
+    @classmethod
+    def plan(cls, now, duration, start_time=None):
+        """
+        Plan a window of duration seconds; now is a naive local datetime.
+        It starts now, or at start_time (a time of day) today.
+        """
+        start = now.replace(second=0, microsecond=0)
+        if start_time is not None:
+            start = start.replace(
+                hour=start_time.hour, minute=start_time.minute)
+        start_ts = int(start.timestamp())
+        end_ts = start_ts + duration
+        if end_ts <= int(now.timestamp()):
+            raise ZMaintError(
+                'a window from {} lasting {}s is already over'.format(
+                    format_ts(start_ts), duration))
+
+        # Use calendar arithmetic; a day is not always 86400s long.
+        today = now.date()
+        end_day = datetime.fromtimestamp(end_ts).date()
+        return cls(
+            start_ts, duration,
+            int(datetime.combine(today, dtime.min).timestamp()),
+            int(datetime.combine(
+                end_day + timedelta(days=1), dtime.min).timestamp()))
+
+
+def format_ts(timestamp):
+    return datetime.fromtimestamp(int(timestamp)).strftime('%Y-%m-%d %H:%M')
+
+
+def maintenance_state(maintenance, now_ts):
+    """
+    Return (state, until_timestamp) for a maintenance as fetched by
+    get_maintenances().
+
+    The state is EXPIRED, ACTIVE or PENDING. This looks at the actual
+    periods if all are one time only. For recurring periods, we cannot
+    tell without more effort: those get RECURRING inside the active range.
+    """
+    since = int(maintenance['active_since'])
+    till = int(maintenance['active_till'])
+    periods = maintenance['timeperiods']
+
+    if now_ts >= till:
+        return 'EXPIRED', till
+    if now_ts < since:
+        return 'PENDING', till
+    if all(int(p['timeperiod_type']) == 0 for p in periods):
+        spans = [
+            (int(p['start_date']), int(p['start_date']) + int(p['period']))
+            for p in periods]
+        for start, end in spans:
+            if start <= now_ts < end:
+                return 'ACTIVE', end
+        last_end = max(end for start, end in spans)
+        if now_ts < last_end:
+            return 'PENDING', last_end
+        return 'EXPIRED', last_end
+    return 'RECURRING', till
+
+
+MAINTENANCE_STATES = ('ACTIVE', 'PENDING', 'RECURRING', 'EXPIRED')
+
+
+def parse_states(text):
+    """
+    Turn a comma separated list of states, or "any", into a set of the
+    states as returned by maintenance_state().
+    """
+    states = set()
+    for word in text.upper().split(','):
+        if word == 'ANY':
+            states.update(MAINTENANCE_STATES)
+        elif word in MAINTENANCE_STATES:
+            states.add(word)
+        else:
+            raise argparse.ArgumentTypeError(
+                'invalid state {!r}, use any or a list of: {}'.format(
+                    word.lower(), ', '.join(
+                        state.lower() for state in MAINTENANCE_STATES)))
+    return states
+
+
+def format_states(states):
+    return ','.join(
+        state.lower() for state in MAINTENANCE_STATES if state in states)
+
+
+def resolve_maintenance_targets(zint, patterns):
+    """
+    Find the hosts and host groups (written as @GROUP) for the patterns;
+    fail if any matches nothing. Return (hosts, groups); the groups are
+    dicts with groupid and name.
+
+    This is stricter than a host lookup, because these hosts get their
+    alerts silenced. A name without wildcards must match exactly one host
+    (a lookup for "web" also finds "webmail"; here it does not). A pattern
+    with wildcards must match the entire name and may match many.
+    """
+    hosts = []
+    groups = []
+    for pattern in patterns:
+        if pattern.startswith('@'):
+            if len(pattern) == 1:
+                raise ZMaintError('an empty host group name after @')
+            needle = Needle(pattern[1:])
+            found = zint.get_hostgroups(needle)
+            matches = [
+                group for group in found
+                if needle.is_exactly(group['name'])]
+            if not matches:
+                raise ZMaintError('no host group matches {!r}{}'.format(
+                    pattern[1:], suggestions([g['name'] for g in found])))
+            for group in matches:
+                if group not in groups:
+                    groups.append(group)
+            continue
+
+        needle = Needle(pattern)
+        found = list(zint.get_hosts(needle))
+        matches = [host for host in found if needle.is_exactly(host.name)]
+
+        if not matches:
+            raise ZMaintError('no host matches {!r}{}'.format(
+                pattern, suggestions([host.name for host in found])))
+        if len(matches) > 1 and not ('*' in pattern or '?' in pattern):
+            raise ZMaintError(
+                '{!r} matches {} hosts with that name (ids: {})'.format(
+                    pattern, len(matches),
+                    ', '.join(host._hostinfo['hostid'] for host in matches)))
+
+        for host in matches:
+            if host not in hosts:
+                hosts.append(host)
+    return hosts, groups
+
+
+def suggestions(names):
+    "Text for an error message: what was found instead."
+    if not names:
+        return ''
+    return ' (did you mean: {}?)'.format(', '.join(sorted(names)))
+
+
+def get_now():
+    return datetime.now()
+
+
 # Modes other than the default host lookup, in order of use. Each is picked
 # with an option of the same name (--alerts) or an abbreviation of it.
-MODES = ('alerts', 'data')
+MODES = ('alerts', 'data', 'maint')
 
 
 class UsageError(ValueError):
@@ -837,22 +1152,33 @@ def split_mode(argv):
     return (modes.pop() if modes else None), remaining
 
 
-def build_parser(mode):
-    "Build the argument parser for host lookups (mode=None) or a mode."
+def connection_options(default=None):
+    """
+    Return a parser with the options for connecting, to be used as parent.
+
+    For a parser with subparsers, give the subparsers default=SUPPRESS:
+    otherwise their defaults overwrite what the parent already parsed.
+    """
     connection = argparse.ArgumentParser(add_help=False)
     connection.add_argument(
-        '-g', '--section', dest='section', help=(
+        '-g', '--section', dest='section', default=default, help=(
             f'Use SECTION from {CONF_FILE} for defaults'))
     connection.add_argument(
-        '-A', '--api', dest='api', help=(
+        '-A', '--api', dest='api', default=default, help=(
             'Zabbix json_rpc API URL, for example: '
             'https://zabbix.example.nl/api_jsonrpc.php'))
     connection.add_argument(
-        '-u', '--user', dest='user', help=(
+        '-u', '--user', dest='user', default=default, help=(
             'API username'))
     connection.add_argument(
-        '-p', '--password', dest='password', help=(
+        '-p', '--password', dest='password', default=default, help=(
             'API password'))
+    return connection
+
+
+def build_parser(mode):
+    "Build the argument parser for host lookups (mode=None) or a mode."
+    connection = connection_options()
 
     if mode is None:
         parser = argparse.ArgumentParser(
@@ -866,6 +1192,7 @@ def build_parser(mode):
                 'selected:\n'
                 '  --alerts    show current alerts\n'
                 '  --data      show latest item data\n'
+                '  --maint     manage maintenance windows\n'
                 '\n'
                 'Mode names may be abbreviated (--ale). '
                 'Use zabdig --MODE --help for details.'))
@@ -909,6 +1236,89 @@ def build_parser(mode):
             'search', nargs='?', type=Needle, help=(
                 'Hostname to search for (* and ? are allowed)'))
         parser.set_defaults(func=cmd_data)
+
+    elif mode == 'maint':
+        sub_connection = connection_options(default=argparse.SUPPRESS)
+        parser = argparse.ArgumentParser(
+            prog='zabdig --maint', parents=[connection],
+            description='Manage maintenance windows.')
+        actions = parser.add_subparsers(
+            dest='action', required=True, metavar='ACTION')
+
+        list_action = actions.add_parser(
+            'list', parents=[sub_connection],
+            help='list maintenance windows',
+            description='List unexpired maintenance windows.',
+            epilog=(
+                'Each line has the id, state, end, title, and the hosts '
+                'and @hostgroups. The state is ACTIVE (in a time period), '
+                'PENDING (starts later), RECURRING (has a recurring period '
+                'and is not expired) or EXPIRED. Expired windows are only '
+                'listed if selected with --state, for example: '
+                '--state=any or --state=expired.'))
+        list_action.add_argument(
+            '--state', type=parse_states, default='active,pending,recurring',
+            help=(
+                'Only list windows in these states: any, or a comma '
+                'separated list of active, pending, recurring, expired '
+                '(default: %(default)s)'))
+
+        create_action = actions.add_parser(
+            'create', parents=[sub_connection],
+            help='create a maintenance window',
+            description=(
+                'Create a one time maintenance window for one or more '
+                'hosts, starting now or today at --start. Names without '
+                'wildcards must match exactly one host. Wildcards (* and ?) '
+                'must match entire host names. Prefix a name with @ to '
+                'select a host group instead (@Linux).'))
+        create_action.add_argument(
+            '--start', type=parse_start, metavar='HH:MM', help=(
+                'Start the window at this time today (local time) '
+                'instead of now'))
+        create_action.add_argument(
+            'title', help='Title; must be unique')
+        create_action.add_argument(
+            'duration', type=parse_duration, help=(
+                'How long, for example: 90m, 2h, 1h30m or 1d'))
+        create_action.add_argument(
+            'hosts', nargs='+', metavar='HOST|@GROUP', help=(
+                'Hostname or @hostgroup (* and ? are allowed)'))
+
+        add_action = actions.add_parser(
+            'add', parents=[sub_connection],
+            help='add hosts to a maintenance window',
+            description=(
+                'Add hosts and host groups to an existing maintenance '
+                'window that has not expired. The targets are matched as '
+                'for create.'))
+        add_action.add_argument(
+            'target', metavar='TITLE|ID', help=(
+                'Title (exactly) or id of the maintenance window'))
+        add_action.add_argument(
+            'hosts', nargs='+', metavar='HOST|@GROUP', help=(
+                'Hostname or @hostgroup (* and ? are allowed)'))
+
+        remove_action = actions.add_parser(
+            'remove', parents=[sub_connection],
+            help='remove maintenance windows',
+            description=(
+                'Remove maintenance windows by title or id. The title may '
+                'contain wildcards (* and ?) and match many windows: use '
+                '--dry-run to see which.'))
+        remove_action.add_argument(
+            '--state', type=parse_states, help=(
+                'Only remove windows in these states: any, or a comma '
+                'separated list of active, pending, recurring, expired '
+                '(default: any)'))
+        remove_action.add_argument(
+            '-n', '--dry-run', action='store_true', help=(
+                'Only show which maintenance windows would be removed'))
+        remove_action.add_argument(
+            'targets', nargs='+', metavar='TITLE|ID', help=(
+                'Id, or title of the maintenance window (* and ? are '
+                'allowed)'))
+        parser.set_defaults(func=cmd_maint)
 
     else:
         raise NotImplementedError(mode)
@@ -984,6 +1394,163 @@ def cmd_data(zint, args):
     return 0
 
 
+def cmd_maint(zint, args):
+    return {
+        'list': cmd_maint_list,
+        'create': cmd_maint_create,
+        'add': cmd_maint_add,
+        'remove': cmd_maint_remove,
+    }[args.action](zint, args)
+
+
+def cmd_maint_list(zint, args):
+    now_ts = int(get_now().timestamp())
+
+    rows = []
+    for maintenance in zint.get_maintenances(args.state):
+        state, until = maintenance_state(maintenance, now_ts)
+        if state not in args.state:
+            continue
+        targets = sorted(host['name'] for host in maintenance['hosts'])
+        targets.extend(sorted(
+            '@' + group['name'] for group in maintenance['hostgroups']))
+        rows.append((
+            until, int(maintenance['maintenanceid']),
+            '{:>6}  {:9}  {}  {}: {}'.format(
+                maintenance['maintenanceid'], state, format_ts(until),
+                maintenance['name'], ', '.join(targets))))
+
+    for until, maintenanceid, row in sorted(rows):
+        print(row)
+
+    # Do not stay silent: an empty list looks like something is broken.
+    if not rows:
+        print('no maintenance windows in state {}'.format(
+            format_states(args.state)), file=sys.stderr)
+    return 0
+
+
+def cmd_maint_create(zint, args):
+    window = MaintenanceWindow.plan(get_now(), args.duration, args.start)
+    hosts, groups = resolve_maintenance_targets(zint, args.hosts)
+
+    if hosts:
+        print('{} host{}: {}'.format(
+            len(hosts), '' if len(hosts) == 1 else 's',
+            ', '.join(sorted(host.name for host in hosts))), file=sys.stderr)
+    if groups:
+        print('{} host group{}: {}'.format(
+            len(groups), '' if len(groups) == 1 else 's',
+            ', '.join(sorted(group['name'] for group in groups))),
+            file=sys.stderr)
+    print('from {} until {}'.format(
+        format_ts(window.start), format_ts(window.end)), file=sys.stderr)
+
+    maintenanceid = zint.create_maintenance(
+        args.title, [host._hostinfo['hostid'] for host in hosts],
+        [group['groupid'] for group in groups], window.active_since,
+        window.active_till, window.start, window.duration)
+    print('created maintenance {} {!r} until {}'.format(
+        maintenanceid, args.title, format_ts(window.end)))
+    return 0
+
+
+def cmd_maint_add(zint, args):
+    maintenances = zint.get_maintenances()
+    matches = [
+        m for m in maintenances
+        if m['maintenanceid'] == args.target or m['name'] == args.target]
+    if not matches:
+        raise ZMaintError('no maintenance with title or id {!r}'.format(
+            args.target))
+    if len(matches) > 1:
+        raise ZMaintError(
+            '{!r} is both a title and an id, use the id'.format(args.target))
+    maintenance = matches[0]
+
+    state, until = maintenance_state(
+        maintenance, int(get_now().timestamp()))
+    if state == 'EXPIRED':
+        raise ZMaintError(
+            'maintenance {} {!r} has expired; adding hosts to it does '
+            'nothing'.format(
+                maintenance['maintenanceid'], maintenance['name']))
+
+    hosts, groups = resolve_maintenance_targets(zint, args.hosts)
+    current_hostids = [host['hostid'] for host in maintenance['hosts']]
+    current_groupids = [
+        group['groupid'] for group in maintenance['hostgroups']]
+    new_hosts = [
+        host for host in hosts
+        if host._hostinfo['hostid'] not in current_hostids]
+    new_groups = [
+        group for group in groups if group['groupid'] not in current_groupids]
+
+    already = len(hosts) - len(new_hosts) + len(groups) - len(new_groups)
+    if already:
+        print('{} already in the maintenance, skipped'.format(already),
+              file=sys.stderr)
+    if not (new_hosts or new_groups):
+        print('nothing to add to maintenance {} {!r}'.format(
+            maintenance['maintenanceid'], maintenance['name']))
+        return 0
+
+    zint.update_maintenance(
+        maintenance['maintenanceid'],
+        hostids=(current_hostids + [
+            host._hostinfo['hostid'] for host in new_hosts]
+            if new_hosts else None),
+        groupids=(current_groupids + [
+            group['groupid'] for group in new_groups]
+            if new_groups else None))
+    print('added to maintenance {} {!r}: {}'.format(
+        maintenance['maintenanceid'], maintenance['name'], ', '.join(
+            sorted(host.name for host in new_hosts) +
+            sorted('@' + group['name'] for group in new_groups))))
+    return 0
+
+
+def cmd_maint_remove(zint, args):
+    maintenances = zint.get_maintenances(args.state)
+    if args.state:
+        now_ts = int(get_now().timestamp())
+        maintenances = [
+            m for m in maintenances
+            if maintenance_state(m, now_ts)[0] in args.state]
+
+    # Find everything first, so that nothing is removed if one fails.
+    found = []
+    for target in args.targets:
+        has_wildcards = '*' in target or '?' in target
+        title_regex = glob_to_regex(target)
+        matches = [
+            m for m in maintenances
+            if m['maintenanceid'] == target or
+            (title_regex.fullmatch(m['name']) if has_wildcards
+             else m['name'] == target)]
+        if not matches:
+            raise ZMaintError('no maintenance with title or id {!r}{}'.format(
+                target, ' in state ' + format_states(args.state)
+                if args.state else ''))
+        if len(matches) > 1 and not has_wildcards:
+            raise ZMaintError(
+                '{!r} is both a title and an id, use the id'.format(target))
+        for maintenance in matches:
+            if maintenance not in found:
+                found.append(maintenance)
+
+    # The server returns them in no particular order.
+    found.sort(key=lambda m: int(m['maintenanceid']))
+
+    if not args.dry_run:
+        zint.delete_maintenances(m['maintenanceid'] for m in found)
+    for maintenance in found:
+        print('{} maintenance {} {!r}'.format(
+            'would remove' if args.dry_run else 'removed',
+            maintenance['maintenanceid'], maintenance['name']))
+    return 0
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -1023,6 +1590,9 @@ def main(argv=None):
 
     try:
         return args.func(zint, args)
+    except ZMaintError as e:
+        print('zabdig: error: {}'.format(e), file=sys.stderr)
+        return 1
     except ZInterfaceError as e:
         print('fetch failed: {}'.format(e), file=sys.stderr)
         return 1
