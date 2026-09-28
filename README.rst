@@ -222,7 +222,9 @@ Admin API helpers
     $ zabdig -x 10.1.2.21
     intserver.example.com           10.1.2.21, 217.1.2.1 (zabbix-proxy.example.com)
 
-  *It will also list open alerts, but this is the most common invocation.*
+  It can also show current alerts (``zabdig --alerts``) and the latest item
+  values (``zabdig --data -i ITEM HOST``). Host lookup is the default and the
+  most common invocation. Use ``zabdig --MODE --help`` for details.
 
   This is only useful if you're using *Zabbix* for monitoring and have
   many hosts configured in it.
