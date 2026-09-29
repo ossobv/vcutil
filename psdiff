@@ -746,7 +746,7 @@ def netstat():
     # sockets. Since we're not specifying the exact list, we cannot exclude
     # it either. Silence the error instead.
     if set(error.splitlines()) != set(['RTNETLINK answers: Invalid argument']):
-        print(error, end='', file=sys.stderr)
+        sys.stderr.write(error)
 
     output = output.decode('ascii', 'replace')
 
