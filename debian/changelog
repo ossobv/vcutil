@@ -1,3 +1,10 @@
+vcutil (1.67) stable; urgency=low
+
+  * Fixes:
+    - psdiff: Fix so it works with python2 again
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Wed, 30 Sep 2026 08:51:31 +0200
+
 vcutil (1.66) stable; urgency=low
 
   * Improvements:
