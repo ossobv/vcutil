@@ -681,15 +681,31 @@ def ps_faxu(with_network=False):
         try:
             # Get listen addresses per pid in a dictionary:
             # {1234: ['tcp:0.0.0.0:80', 'tcp:0.0.0.0:443']}
-            sockets_by_pid = netstat()
+            error = None
+            for attempt in (1, 2, 3, 0,):
+                try:
+                    # Some processes spawn sockets that disappear before ss(8)
+                    # has the chance to see the owner. Retry a bunch of times
+                    # instead of failing immediately.
+                    sockets_by_pid = netstat()
+                except OSError as e:
+                    # sys.stderr.write('(retry)\n')
+                    error = e
+                    time.sleep(0.1 * attempt)
+                else:
+                    break
+            else:
+                raise error
         except (subprocess.CalledProcessError, OSError):
             # If there is no 'ss' (super-netstat) or we have too few perms
-            # to use it fruitfully, accept it.
+            # to use it fruitfully. Abort.
             # - CalledProcessError = ss returned non-zero
             # - FileNotFoundError(OSError) = there is no ss
             # - PermissionDeniedError(OSError) = we're not allowed to call ss
             warnings.warn(
-                '--net info requested but failed (no perms? no ss(1)?)')
+                '--net info requested but failed (no perms? no ss(8)?); '
+                'try --no-net; aborting...')
+            sys.exit(1)
 
     output = output.decode('ascii', 'replace')
 
@@ -1526,7 +1542,6 @@ if os.environ.get('RUNTESTS', '') not in ('', '0', 'n'):
                     Process.from_line(line) for line in lines)],
                 ['a  {user=root}', 'a  {user=zabbix}', 'b  {user=root}',
                  '  a  {user=root}'])
-
 
     class DiffTestCase(TestCase):
         def parse(self, *lines):
