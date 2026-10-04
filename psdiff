@@ -784,6 +784,14 @@ def netstat():
         addr, port = line[4].rsplit(':', 1)  # 0.0.0.0:12345 | [::]:12345
         is_ephemeral = None  # maybe
 
+        # Workaround old ss (iproute 4.x): 'fe80::%nic:1234' => '[fe80::]%nic'
+        if ':' in addr and '[' not in addr and ']' not in addr:
+            if '%' in addr:
+                ip, rest = addr.split('%', 1)
+                addr = '[' + ip + ']%' + rest
+            else:
+                addr = '[' + addr + ']'
+
         if len(line) < 7:
             # Some are handled by the kernel (module). Pretend we saw it
             # as kernel. (It will get appended to the INIT process.)
