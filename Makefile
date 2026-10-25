@@ -10,6 +10,7 @@ BINS = \
 	2json.py \
 	2json.rs \
 	2json.yaml \
+	apt-find-depchain \
 	apt-find-foreign \
 	argecho \
 	bson2json \

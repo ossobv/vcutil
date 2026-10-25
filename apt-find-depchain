@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+# apt-find-depchain (part of ossobv/vcutil) // wdoekes/2026 // Public Domain
+#
+# Lists all installed packages that depend, directly or transitively, on
+# the given packages. Only hard dependencies (Depends, Pre-Depends) are
+# followed; Recommends, Suggests, Conflicts, Breaks, Replaces and Enhances
+# are ignored. The chain is only followed through installed packages.
+#
+# Use this to find out what keeps a package installed, or what would go
+# if you removed it.
+#
+# Usage:
+#
+#   apt-find-depchain PACKAGE...
+#
+# Example:
+#
+#   $ apt-find-depchain libpython3.12
+#   libpython3.12-stdlib
+#   python3.12
+#   ...
+#
+# Note that packages listing PACKAGE only as an alternative ("a | b") are
+# included too, even if the other alternative would satisfy them.
+#
+import sys
+from collections import defaultdict
+from subprocess import CalledProcessError, check_output
+
+
+def check_english_output(command, **kwargs):
+    assert 'env' not in kwargs, kwargs
+    # Wipe all of LANG, LC_ALL, LC_MESSAGES to get C locale.
+    return check_output(command, env={}, **kwargs).decode('utf-8')
+
+
+def get_installed_packages():
+    def without_arch(s):
+        return s.split(':', 1)[0]
+
+    data = check_english_output(['dpkg', '-l'])
+    split = [
+        line.split(None, 2) for line in data.splitlines() if line[2:4] == '  ']
+    packages = [
+        without_arch(name) for mode, name, rest in split
+        if mode in ('ii', 'hi')]  # installed or installed+held
+    return set(packages)
+
+
+def get_rdepends(packages):
+    # Also possible:
+    # --installed --recurse
+    # That would give the dependency listing in one go (including PACKAGE).
+    options = [
+        '--no-recommends', '--no-suggests', '--no-conflicts', '--no-breaks',
+        '--no-replaces', '--no-enhances', '--']
+    data = check_english_output(['apt-cache', 'rdepends'] + options + packages)
+    lines = data.split('\n')  # we _want_ the extra empty line, against IdxErr
+
+    idx = 0
+    deps_by = defaultdict(set)
+    while packages and idx < len(lines):
+        package = packages.pop(0)
+        assert lines[idx + 0] == package, (package, lines[idx:(idx + 4)])
+        assert lines[idx + 1] == 'Reverse Depends:'
+        idx += 2
+        while lines[idx].startswith(('  ', ' |')):  # lists alternative-OR
+            dep = lines[idx][2:]  # no ":amd64" suffix here
+            deps_by[dep].add(package)
+            idx += 1
+
+    return deps_by
+
+
+def main():
+    if not sys.argv[1:]:
+        print('Usage: apt-find-depchain PACKAGE...', file=sys.stderr)
+        exit(1)
+
+    try:
+        installed_packages = get_installed_packages()
+        relevant_deps = set()
+        checked_deps = set()
+        packages_to_check = list(sys.argv[1:])
+
+        while packages_to_check:
+            checked_deps.update(packages_to_check)
+            deps_for = get_rdepends(packages_to_check)
+            packages_to_check.clear()
+
+            deps = set(deps_for.keys())  # forget about the sources for now
+            relevant_deps.update(installed_packages & deps)
+            new_deps = relevant_deps - checked_deps
+            packages_to_check.extend(new_deps)
+    except CalledProcessError as e:
+        print('ERROR: {}'.format(e), file=sys.stderr)
+        exit(1)
+
+    for installed_dep in sorted(relevant_deps):
+        print(installed_dep)
+
+
+if __name__ == '__main__':
+    main()
