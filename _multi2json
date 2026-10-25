@@ -487,36 +487,66 @@ class RustyIndent:
             return token
 
 
+def decode(input_, from_format):
+    if from_format in ('js', 'json'):  # JSON
+        return json.loads(input_)
+
+    if from_format == 'py':  # Python
+        import ast
+        return ast.literal_eval(input_)
+
+    if from_format == 'rs':  # Rust/Curlyindent
+        return RustyIndent(input_).parse()
+
+    if from_format in ('yaml', 'yml'):  # YAML
+        import yaml
+        return yaml.safe_load(input_)
+
+    print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
+    sys.exit(2)
+
+
+def encode(data, to_format):
+    if to_format in ('js', 'json'):  # JSON
+        return json.dumps(data, indent=2) + '\n'  # sort_keys=True?
+
+    if to_format in ('yaml', 'yml'):  # YAML
+        import yaml
+        return yaml.dump(data)  # options?
+
+    print(f'{sys.argv[0]}: unimplemented target format', file=sys.stderr)
+    sys.exit(2)
+
+
 def main():
-    output = UNKNOWN_FORMAT = object()
     whatami = os.path.basename(sys.argv[0])
     ext = whatami.rsplit('.', 1)[-1]
     input_ = sys.stdin.read()
 
-    try:
-        if ext == 'js':  # JSON
-            output = json.loads(input_)
-
-        elif ext == 'py':  # Python
-            import ast
-            output = ast.literal_eval(input_)
-
-        elif ext == 'rs':  # Rust/Curlyindent
-            output = RustyIndent(input_).parse()
-
-        elif ext in ('yaml', 'yml'):  # YAML
-            import yaml
-            output = yaml.safe_load(input_)
-
-    except Exception as e:
-        print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
-        sys.exit(1)
-
-    if output is UNKNOWN_FORMAT:
-        print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
+    if len(sys.argv) == 1:
+        forward = True
+    elif len(sys.argv) == 2 and sys.argv[1] in ('-r', '--rev', '--reverse'):
+        forward = False
+    else:
+        print(f'{sys.argv[0]}: invalid arguments', file=sys.stderr)
         sys.exit(2)
 
-    print(json.dumps(output, indent=2))  # sort_keys=True?
+    if forward:
+        try:
+            data = decode(input_, ext)
+        except Exception as e:
+            print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
+            sys.exit(1)
+        output = encode(data, 'js')
+    else:
+        try:
+            data = decode(input_, 'js')
+        except Exception as e:
+            print(f'{sys.argv[0]}: JSON parse error: {e}', file=sys.stderr)
+            sys.exit(1)
+        output = encode(data, ext)
+
+    print(output, end='')
 
 
 if __name__ == '__main__':

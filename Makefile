@@ -133,6 +133,9 @@ test:
 	RUNTESTS=1 ./pwhashck && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./sshglob && printf '\342\234\205\n\n'
 	RUNTESTS=1 ./_multi2json && printf '\342\234\205\n\n'
+	test "$$(echo '{"test":"word","false":[1,2,null,[],{},"six"]}' | \
+	  ./2json.yaml -r | ./2json.yaml | tr -d '\n ')" \
+	  = '{"false":[1,2,null,[],{},"six"],"test":"word"}'
 	$(MAKE) -f udiff.selftest && $(MAKE) -f udiff.selftest clean && \
 	  printf '\342\234\205\n\n'
 	python3 -m unittest discover tests
