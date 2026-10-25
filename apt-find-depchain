@@ -56,6 +56,8 @@ def get_all_installed_rdepends(packages):
     deps_by = defaultdict(set)
     while idx < maxidx:
         package = lines[idx + 0]
+        if ':' in package and not package.endswith(':'):  # grub-common:i386
+            package = package.rsplit(':', 1)[0]
         assert ' ' not in package and ':' not in package, lines[idx:(idx + 4)]
         assert lines[idx + 1] == 'Reverse Depends:', lines[idx:(idx + 4)]
         idx += 2
