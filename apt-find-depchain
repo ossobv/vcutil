@@ -7,11 +7,13 @@
 # are ignored. The chain is only followed through installed packages.
 #
 # Use this to find out what keeps a package installed, or what would go
-# if you removed it.
+# (or would be replaced) if you removed it. (Packages listing PACKAGE only
+# as an alternative ("a | b") are included too, even if the other
+# alternative would satisfy them.)
 #
 # Usage:
 #
-#   apt-find-depchain [-v] [-d DEPTH] PACKAGE...
+#   apt-find-depchain [-v] [-d DEPTH] [-t PACKAGE] PACKAGE...
 #
 # Example:
 #
@@ -22,8 +24,12 @@
 #
 # Use -v to show the direct dependencies and -d to limit the dependency depth.
 #
-# Note that packages listing PACKAGE only as an alternative ("a | b") are
-# included too, even if the other alternative would satisfy them.
+# Use -t to show (trace) a dependency chain for one or more packages:
+#
+#   $ apt-find-depchain libbrotli1 -t grub-efi-amd64-bin -t zabbix-agent
+#   grub-efi-amd64-bin -> grub-common -> libfreetype6 -> libbrotli1
+#   zabbix-agent -> libcurl3-gnutls -> libbrotli1
+#   zabbix-agent -> libcurl4 -> libbrotli1
 #
 import argparse
 import sys
@@ -35,19 +41,6 @@ def check_english_output(command, **kwargs):
     assert 'env' not in kwargs, kwargs
     # Wipe all of LANG, LC_ALL, LC_MESSAGES to get C locale.
     return check_output(command, env={}, **kwargs).decode('utf-8')
-
-
-def get_installed_packages():
-    def without_arch(s):
-        return s.split(':', 1)[0]
-
-    data = check_english_output(['dpkg', '-l'])
-    split = [
-        line.split(None, 2) for line in data.splitlines() if line[2:4] == '  ']
-    packages = [
-        without_arch(name) for mode, name, rest in split
-        if mode in ('ii', 'hi')]  # installed or installed+held
-    return set(packages)
 
 
 def get_all_installed_rdepends(packages):
@@ -82,13 +75,30 @@ def by_depth(roots, deps_for):
     seen = set(roots)
     level = roots
     while True:
-        level = set([
+        level = set(
             dep for dep, causes in deps_for.items()
-            if dep not in seen and not causes.isdisjoint(level)])
+            if dep not in seen and not causes.isdisjoint(level))
         if not level:
             break
         seen |= level
         yield level
+
+
+def trace_dependencies(package, roots, deps_for, maxdepth=None):
+    path = [package]
+
+    def walk():
+        pkg = path[-1]
+        if pkg in roots:
+            yield tuple(path)
+        elif not maxdepth or len(path) <= maxdepth:
+            for cause in sorted(deps_for[pkg]):
+                if cause not in path:
+                    path.append(cause)
+                    yield from walk()
+                    path.pop()
+
+    return walk()
 
 
 def main():
@@ -100,8 +110,12 @@ def main():
             'that would be removed/replaced when uninstalling a package.'))
     parser.add_argument(
         '-d', '--depth', action='store', type=int, help=(
-            'Stop at depth DEPTH. Use in combination with -v.'
-            '0 means inifinite.'))
+            'Stop at depth DEPTH. Use in combination with -v. '
+            '0 means infinite.'))
+    parser.add_argument(
+        '-t', '--trace', metavar='PACKAGE', action='append', help=(
+            'Show all dependency paths from PACKAGE to the given packages. '
+            'Use -d to limit the path length.'))
     parser.add_argument(
         '-v', '--verbose', action='store_true', help=(
             'Show dependent packages and dependency depth.'))
@@ -117,10 +131,27 @@ def main():
     try:
         deps_for = get_all_installed_rdepends(packages_to_check)
     except CalledProcessError as e:
-        print('ERROR: {}'.format(e), file=sys.stderr)
-        exit(1)
+        print('error: {}'.format(e), file=sys.stderr)
+        sys.exit(1)
 
-    if args.depth is None and not args.verbose:
+    if args.trace:
+        trace_args = list(sorted(set(args.trace)))
+        fail = False
+        for trace in trace_args:
+            if trace not in deps_for:
+                print('error: no {} installed that depends on {}'.format(
+                    trace, ' '.join(packages_to_check)))
+                fail = True
+        if fail:
+            sys.exit(1)
+
+        for trace in trace_args:
+            paths = trace_dependencies(
+                trace, set(packages_to_check), deps_for, args.depth)
+            for path in sorted(paths, key=len):
+                print(' -> '.join(path))
+
+    elif args.depth is None and not args.verbose:
         for dep in sorted(deps_for.keys()):
             print(dep)
 
@@ -131,7 +162,7 @@ def main():
             if args.depth and depth > args.depth:
                 break
             all_deps.update(deps)
-        for dep in sorted(sorted(all_deps)):
+        for dep in sorted(all_deps):
             print(dep)
 
     else:
