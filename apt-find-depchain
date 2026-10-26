@@ -13,7 +13,7 @@
 #
 # Usage:
 #
-#   apt-find-depchain [-v] [-d DEPTH] [-t PACKAGE] PACKAGE...
+#   apt-find-depchain [-v] [-d DEPTH] [-i PACKAGE] [-t PACKAGE] PACKAGE...
 #
 # Example:
 #
@@ -23,6 +23,7 @@
 #   ...
 #
 # Use -v to show the direct dependencies and -d to limit the dependency depth.
+# Ignore irrelevant packages using -i.
 #
 # Use -t to show (trace) a dependency chain for one or more packages:
 #
@@ -73,7 +74,7 @@ def get_all_installed_rdepends(packages):
     return deps_by
 
 
-def by_depth(roots, deps_for):
+def dependency_levels(roots, deps_for):
     seen = set(roots)
     level = roots
     while True:
@@ -84,6 +85,15 @@ def by_depth(roots, deps_for):
             break
         seen |= level
         yield level
+
+
+def without_packages(deps_for, roots, ignored):
+    for pkg in ignored:
+        deps_for.pop(pkg, None)
+    reachable = set(roots).union(*dependency_levels(roots, deps_for))
+    return dict(
+        (dep, causes & reachable) for dep, causes in deps_for.items()
+        if dep in reachable)
 
 
 def trace_dependencies(package, roots, deps_for, maxdepth=None):
@@ -112,8 +122,10 @@ def main():
             'that would be removed/replaced when uninstalling a package.'))
     parser.add_argument(
         '-d', '--depth', action='store', type=int, help=(
-            'Stop at depth DEPTH. Use in combination with -v. '
-            '0 means infinite.'))
+            'Stop at depth DEPTH. 0 means infinite.'))
+    parser.add_argument(
+        '-i', '--ignore', metavar='PACKAGE', action='append', help=(
+            'Ignore PACKAGE in output (because you deem it irrelevant.'))
     parser.add_argument(
         '-t', '--trace', metavar='PACKAGE', action='append', help=(
             'Show all dependency paths from PACKAGE to the given packages. '
@@ -136,13 +148,19 @@ def main():
         print('error: {}'.format(e), file=sys.stderr)
         sys.exit(1)
 
+    if args.ignore:
+        deps_for = without_packages(deps_for, packages_to_check, args.ignore)
+
     if args.trace:
         trace_args = list(sorted(set(args.trace)))
         fail = False
         for trace in trace_args:
             if trace not in deps_for:
-                print('error: no {} installed that depends on {}'.format(
-                    trace, ' '.join(packages_to_check)))
+                print(
+                    'error: no {} found that depends on [{}] when taking '
+                    'arguments into account'.format(
+                        trace, ' '.join(packages_to_check)),
+                    file=sys.stderr)
                 fail = True
         if fail:
             sys.exit(1)
@@ -158,7 +176,7 @@ def main():
             print(dep)
 
     elif not args.verbose:
-        deps_per_level = by_depth(packages_to_check, deps_for)
+        deps_per_level = dependency_levels(packages_to_check, deps_for)
         all_deps = set()
         for depth, deps in enumerate(deps_per_level, 1):
             if args.depth and depth > args.depth:
@@ -168,7 +186,7 @@ def main():
             print(dep)
 
     else:
-        deps_per_level = by_depth(packages_to_check, deps_for)
+        deps_per_level = dependency_levels(packages_to_check, deps_for)
         for depth, deps in enumerate(deps_per_level, 1):
             if args.depth and depth > args.depth:
                 break
