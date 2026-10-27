@@ -6,10 +6,6 @@ SYSCONFDIR = /etc
 SYSSBINDIR = /sbin
 
 BINS = \
-	2json.js \
-	2json.py \
-	2json.rs \
-	2json.yaml \
 	apt-find-depchain \
 	apt-find-foreign \
 	argecho \
@@ -81,6 +77,12 @@ BINS = \
 	zabdig \
 	_multi2json \
 
+BINSYMS = \
+	2json.js \
+	2json.py \
+	2json.rs \
+	2json.yaml
+
 SBINS = \
 	arpclaim \
 	arpfix \
@@ -147,6 +149,7 @@ deb:
 install:
 	install -d $(DESTDIR)$(BINDIR)
 	install $(BINS) $(DESTDIR)$(BINDIR)
+	cp -a $(BINSYMS) $(DESTDIR)$(BINDIR)/
 	install -d $(DESTDIR)$(SBINDIR)
 	install $(SBINS) $(DESTDIR)$(SBINDIR)
 	install -d $(DESTDIR)$(SYSSBINDIR)
@@ -157,7 +160,7 @@ install:
 
 make_has_all_files:
 	@bash -c "diff -pu <(git ls-files | grep -vF / | LC_ALL=C sort -V) \
-	  <(echo $(BINS) $(SBINS) $(SYSSBINS) $(OTHER) $(OTHERX) | \
+	  <(echo $(BINS) $(BINSYMS) $(SBINS) $(SYSSBINS) $(OTHER) $(OTHERX) | \
 	    tr ' ' '\n' | LC_ALL=C sort -V)"
 
 all_bins_are_executable:
