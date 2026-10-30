@@ -250,8 +250,6 @@ def apt_cache_policy(package_names):
 
 def get_packages_per_list():
     packages = OrderedDict(dpkg_l())
-    policies = dict(apt_cache_policy(packages.keys()))
-    lists = defaultdict(list)
 
     bad_states = [
         (name, state) for name, state in packages.items()
@@ -263,6 +261,9 @@ def get_packages_per_list():
         if stderr.isatty():
             msg = '\x1b[31m{}\x1b[0m'.format(msg)
         exit(msg)
+
+    policies = dict(apt_cache_policy(packages.keys()))
+    lists = defaultdict(list)
 
     for pkg_name in packages.keys():
         p = Package(
