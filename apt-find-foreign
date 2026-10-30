@@ -46,10 +46,13 @@ to check whether there exists updates to install.
 from argparse import ArgumentParser
 from collections import OrderedDict, defaultdict
 from subprocess import check_output
+from sys import exit, stderr
 from tempfile import TemporaryFile
 
 # Show entire package list for repo if there are at most this many:
 VERY_FEW_PACKAGES_LTE = 40
+
+GOOD_STATES = ('ii', 'hi', 'rc')
 
 CAT_LOCAL_ONLY = '(local only)'
 CAT_RC_ONLY = '(rc only)'
@@ -250,13 +253,23 @@ def get_packages_per_list():
     policies = dict(apt_cache_policy(packages.keys()))
     lists = defaultdict(list)
 
+    bad_states = [
+        (name, state) for name, state in packages.items()
+        if state not in GOOD_STATES]
+    if bad_states:
+        msg = 'Packages in bad dpkg state; resolve these first:\n{}'.format(
+            '\n'.join(
+                '  {}\t{}'.format(state, name) for name, state in bad_states))
+        if stderr.isatty():
+            msg = '\x1b[31m{}\x1b[0m'.format(msg)
+        exit(msg)
+
     for pkg_name in packages.keys():
         p = Package(
             pkg_name, state=packages[pkg_name], policy=policies[pkg_name])
         vstate = p.get_version_state()
 
-        if p.state not in ('ii', 'hi'):
-            assert p.state == 'rc', (p.name, p.state)
+        if p.state == 'rc':
             lists[CAT_RC_ONLY].append(p)
         elif vstate.version_in_list is None:  # exists in NO list
             lists[CAT_LOCAL_ONLY].append(p)
