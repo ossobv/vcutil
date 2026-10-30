@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ctre (part of ossobv/vcutil) // wdoekes/2023-2024 // Public Domain
+# ctre (part of ossobv/vcutil) // wdoekes/2023-2024,2026 // Public Domain
 #
 # Enhanced CTR (containerd CLI)
 #
@@ -21,17 +21,18 @@
 # starting the next one. This can confuse you into thinking a container is
 # started/stopped quickly.
 #
+from argparse import ArgumentParser
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from json import loads
 from re import compile
-from os import makedirs, rename
+from os import environ, makedirs, rename
 from os.path import dirname, basename
 from subprocess import PIPE, STDOUT, CalledProcessError, Popen, check_output
-from sys import argv, stderr
+from sys import stderr, exit
 from time import sleep, time
-import warnings
 from warnings import warn
+import warnings
 
 
 KEEP_IF_YOUNGER_THAN = (14 * 86400)
@@ -344,7 +345,7 @@ def remove_containers():
             lambda x: (x['k8s.ns'], x['k8s.pod'], x['updated'])))
         for obj in container_objects:
             try:
-                out = check_output(
+                check_output(
                     ['ctr', '-n', ns, 'containers', 'remove', obj['id']],
                     stderr=STDOUT,
                     ).decode()
@@ -661,39 +662,50 @@ def formatwarning(message, category, filename, lineno, line=None):
 warnings.formatwarning = formatwarning  # noqa
 
 
+def prune(force):
+    res = prunable_images_after_double_check()
+    if not res:
+        return
+
+    if not force:
+        print('NS', 'REF_TO_PRUNE')
+        for ns, image in res:
+            print(ns, image)
+        yn = ''
+        while not yn.strip() or yn.strip() not in 'YyNn':
+            yn = input('Prune (y/n)? ')
+        if yn.lower() not in 'Yy':
+            exit(1)
+
+    remove_images(res)
+
+    # We could do the following even when !res, but we choose to only
+    # do them when we appear to have more work anyway:
+    # - Enumerate and try to remove all containers. Those that are
+    #   running cannot be removed.
+    remove_containers()
+    # - Prune the content. Not entirely sure what this does, but it
+    #   does clean up stuff that is unused.
+    prune_content_references()
+
+
 def main():
-    if len(argv) in (2, 3) and argv[1] == 'prune':
-        force = (len(argv) == 3 and argv[2] in ('-f', '--force'))
-        res = prunable_images_after_double_check()
-        if res:
-            if not force:
-                print('NS', 'REF_TO_PRUNE')
-                for ns, image in res:
-                    print(ns, image)
-                yn = ''
-                while not yn.strip() or yn.strip() not in 'YyNn':
-                    yn = input('Prune (y/n)? ')
-                if yn.lower() not in 'Yy':
-                    exit(1)
+    parser = ArgumentParser(prog='ctre')
+    sub = parser.add_subparsers(dest='command', required=True)
 
-            # Remove the curated images.
-            remove_images(res)
+    p = sub.add_parser('prune', help='remove images not used recently')
+    p.add_argument('-f', '--force', action='store_true',
+                   help='skip confirmation')
 
-            # We could do the following even when !res, but we choose to only
-            # do them when we appear to have more work anyway:
-            # - Enumerate and try to remove all containers. Those that are
-            #   running cannot be removed.
-            remove_containers()
-            # - Prune the content. Not entirely sure what this does, but it
-            #   does clean up stuff that is unused.
-            prune_content_references()
+    sub.add_parser('record-image-starts',
+                   help='listen for container events and store image '
+                        'last-used time')
 
-    elif len(argv) == 2 and argv[1] == 'record-image-starts':
-        # Listen for events, check for container-add, lookup container image,
-        # store last-used-time.
-        record_image_starts()
+    args = parser.parse_args()
+    if args.command == 'prune':
+        prune(args.force)
     else:
-        raise ValueError('please use: ctre prune [-f]')
+        record_image_starts()
 
 
 if __name__ == '__main__':
