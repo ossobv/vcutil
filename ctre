@@ -21,12 +21,12 @@
 # starting the next one. This can confuse you into thinking a container is
 # started/stopped quickly.
 #
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentTypeError
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from json import loads
 from re import compile
-from os import environ, makedirs, rename
+from os import makedirs, rename
 from os.path import dirname, basename
 from subprocess import PIPE, STDOUT, CalledProcessError, Popen, check_output
 from sys import stderr, exit
@@ -35,6 +35,9 @@ from warnings import warn
 import warnings
 
 
+DURATION_RE = compile(r'(?:[0-9]+[smhdw])+')
+DURATION_PART_RE = compile(r'([0-9]+)([smhdw])')
+DURATION_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
 KEEP_IF_YOUNGER_THAN = (14 * 86400)
 NULL_TIME = '----------'
 TABSPLIT_RE = compile(r'\t+')
@@ -48,6 +51,7 @@ SIZE_UNITS = {
     ' GiB': 1024 * 1024 * 1024,
 }
 
+
 IMAGE_STARTS_DB = '/var/spool/ctre/image_starts'
 
 Blob = namedtuple('Blob', 'ns digest size age')
@@ -57,6 +61,36 @@ Image = namedtuple('Image', 'ns digest ref size age')
 
 class Skip(ValueError):
     pass
+
+
+def parse_duration(text):
+    """
+    Turn a duration like 90m, 2h or 1h30m into (whole minutes of) seconds.
+    """
+    if not DURATION_RE.fullmatch(text.lower()):
+        raise ArgumentTypeError(
+            'invalid duration {!r}, use for example 14d, or 1d12h'.format(
+                text))
+    seconds = sum(
+        int(num) * DURATION_UNITS[unit]
+        for num, unit in DURATION_PART_RE.findall(text.lower()))
+    seconds = (seconds + 59) // 60 * 60  # round up to whole minutes
+    if seconds == 0:
+        raise ArgumentTypeError('duration must not be zero')
+    return seconds
+
+
+def keep_until(text):
+    """
+    Turn a duration like 14d into a max_age, but check that it is not larger
+    than KEEP_IF_YOUNGER_THAN.
+    """
+    max_age = parse_duration(text)
+    if max_age > KEEP_IF_YOUNGER_THAN:
+        raise ArgumentTypeError(
+            'we only keep record for {}s, so a larger max_age to prune of {}s '
+            'does not make sense'.format(KEEP_IF_YOUNGER_THAN, max_age))
+    return max_age
 
 
 def split_by_header(lines):
@@ -266,30 +300,30 @@ def images_not_in_use(ns):
     return not_in_use
 
 
-def prunable_images(ns):
+def prunable_images(ns, max_age):
     ret = []
     for image in images_not_in_use(ns):
         # Check image creation time.
-        if image.age >= KEEP_IF_YOUNGER_THAN:
+        if image.age >= max_age:
             ret.append(image)
     return ret
 
 
-def get_all_prunable_images():
+def get_all_prunable_images(max_age):
     images = []
     for ns in namespaces():
-        for image in prunable_images(ns):
+        for image in prunable_images(ns, max_age=max_age):
             images.append((ns, image.ref))
     return images
 
 
-def prunable_images_after_double_check():
-    prunable = set(get_all_prunable_images())
+def prunable_images_after_double_check(max_age):
+    prunable = set(get_all_prunable_images(max_age))
     tnow = time()
     tmax = tnow + 15
 
     # Load data collected by ctre record-image-starts daemon
-    kv = load_image_starts(max_age=KEEP_IF_YOUNGER_THAN)
+    kv = load_image_starts(max_age=max_age)
     used_to_start_a_container_recently = set(kv.keys())
     prunable -= used_to_start_a_container_recently
 
@@ -304,7 +338,7 @@ def prunable_images_after_double_check():
         sleep(1.5)
         tnow = time()
 
-        prunable_next = set(get_all_prunable_images())
+        prunable_next = set(get_all_prunable_images(max_age))
         prunable &= prunable_next  # only keep those in both lists
 
     if stderr.isatty():
@@ -512,6 +546,10 @@ def load_image_starts(max_age):
     to_rm = set()
     for image_ref, (start, stop) in kv.items():
         # Check start/stop time of containers with this image.
+        # We drop old stopped containers and old containers that are
+        # still running. The latter is a compromise: ideally we'd leave
+        # them, but if we missed the stop-signal, we could keep them
+        # forever.
         if start < old and (stop is None or stop < old):
             to_rm.add(image_ref)
     for rm in to_rm:
@@ -525,8 +563,7 @@ def update_image_startstop(starttime, stoptime, ns, image_ref):
     temp = f'{filename}.tmp'
 
     # Load
-    kv = load_image_starts(
-        max_age=max(KEEP_IF_YOUNGER_THAN, 14 * 86400))  # prune to 14 days
+    kv = load_image_starts(max_age=KEEP_IF_YOUNGER_THAN)
 
     # Add
     try:
@@ -662,8 +699,8 @@ def formatwarning(message, category, filename, lineno, line=None):
 warnings.formatwarning = formatwarning  # noqa
 
 
-def prune(force):
-    res = prunable_images_after_double_check()
+def prune(max_age, force):
+    res = prunable_images_after_double_check(max_age)
     if not res:
         return
 
@@ -696,6 +733,9 @@ def main():
     p = sub.add_parser('prune', help='remove images not used recently')
     p.add_argument('-f', '--force', action='store_true',
                    help='skip confirmation')
+    p.add_argument('--max-age', default='14d', type=keep_until,
+                   help='keep only images used more recent than this; '
+                        'default "14d"')
 
     sub.add_parser('record-image-starts',
                    help='listen for container events and store image '
@@ -703,7 +743,7 @@ def main():
 
     args = parser.parse_args()
     if args.command == 'prune':
-        prune(args.force)
+        prune(args.max_age, args.force)
     else:
         record_image_starts()
 
