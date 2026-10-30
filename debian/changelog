@@ -1,3 +1,21 @@
+vcutil (1.68) stable; urgency=low
+
+  * Additions:
+    - apt-find-depchain: Tool to find package dependency (chains). A more
+      readable alternative to apt-cache rdepends
+
+  * Improvements:
+    - _multi2json: Add 2json.yaml -r to output json to yaml (reverse)
+    - ctre: Add --max-age=14d to the prune command
+
+  * Fixes:
+    - build: Fix so the 2json symlinks are actually symlinks
+    - psdiff: Fix mptcp/tcp consistency with bind port
+    - psdiff: IPv6 translation for older ss(8)
+    - psdiff: Make ss(8) call more resilient
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Fri, 30 Oct 2026 14:24:06 +0100
+
 vcutil (1.67) stable; urgency=low
 
   * Fixes:
