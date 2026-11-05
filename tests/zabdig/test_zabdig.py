@@ -64,7 +64,6 @@ class FakeZabbix(object):
     def __init__(self, **responses):
         self.responses = {
             'apiinfo.version': '7.0.5',
-            'user.login': 'TOKEN',
             'host.get': HOSTS,
             'proxy.get': PROXIES,
             # The server does a case insensitive contains-search.
@@ -75,8 +74,17 @@ class FakeZabbix(object):
         }
         self.responses.update(responses)
         self.calls = []
+        self.token = 'sometoken'
 
-    def post(self, zinterface, url, data):
+    def post(self, zinterface, url, data, headers):
+        # Auth goes in the header, never in the body; apiinfo.version
+        # must be called without it.
+        assert 'auth' not in data, data
+        auth = headers.get('Authorization')
+        if data['method'] == 'apiinfo.version':
+            assert auth is None, headers
+        else:
+            assert auth == 'Bearer ' + self.token, headers
         self.calls.append((data['method'], data['params']))
         response = self.responses[data['method']]
         return response(data['params']) if callable(response) else response
@@ -105,25 +113,35 @@ class TimezoneTestCase(TestCase):
 
 
 class ZabdigTestCase(TimezoneTestCase):
+    BASE_ARGV = ('-A', 'http://zabbix.invalid/api', '-T', 'sometoken')
+
     def setUp(self):
         super().setUp()
 
         # Never read the real ~/.zabbixrc or the keyring.
-        patcher = mock.patch.object(zabdig, 'CONF_FILE', '/nonexistent/rc')
+        for name, value in (
+                ('CONF_FILE', '/nonexistent/rc'),
+                ('OLD_CONF_FILES', ())):
+            patcher = mock.patch.object(zabdig, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.dict(os.environ)
         patcher.start()
         self.addCleanup(patcher.stop)
+        os.environ.pop('ZABBIX_API_TOKEN', None)
 
         self.fake = FakeZabbix()
 
     def zabdig(self, *args, **responses):
         "Run zabdig main(), return (exitcode, stdout, stderr)."
         self.fake.responses.update(responses)
-        argv = ['-A', 'http://zabbix.invalid/api', '-u', 'me', '-p', 'pw']
+        argv = list(self.BASE_ARGV)
         argv.extend(args)
         out, err = StringIO(), StringIO()
         with mock.patch.object(
                 zabdig.ZInterface, '_zabbix_post',
-                lambda zint, url, data: self.fake.post(zint, url, data)):
+                lambda zint, url, data, headers: self.fake.post(
+                    zint, url, data, headers)):
             with redirect_stdout(out), redirect_stderr(err):
                 ret = zabdig.main(argv)
         return ret, out.getvalue(), err.getvalue()
@@ -447,6 +465,58 @@ class CliTest(ZabdigTestCase):
         self.assertEqual((ret, out), (0, '0\n'))
 
 
+class AuthTest(ZabdigTestCase):
+    BASE_ARGV = ('-A', 'http://zabbix.invalid/api')
+
+    def test_token_from_environment(self):
+        os.environ['ZABBIX_API_TOKEN'] = 'sometoken'
+        ret, out, err = self.zabdig('pve1')
+        self.assertEqual(ret, 0, err)
+
+    def test_token_from_config_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', suffix='.ini') as fp:
+            fp.write('[org]\napi=http://zabbix.invalid/api\n'
+                     'token=othertoken\n')
+            fp.flush()
+            self.fake.token = 'othertoken'
+            with mock.patch.object(zabdig, 'CONF_FILE', fp.name):
+                ret, out, err = self.zabdig('pve1')
+        self.assertEqual(ret, 0, err)
+
+    def test_argument_beats_environment(self):
+        os.environ['ZABBIX_API_TOKEN'] = 'wrong'
+        ret, out, err = self.zabdig('-T', 'sometoken', 'pve1')
+        self.assertEqual(ret, 0, err)
+
+    def test_old_server_is_refused(self):
+        ret, out, err = self.zabdig(
+            '-T', 'sometoken', 'pve1', **{'apiinfo.version': '6.0.30'})
+        self.assertEqual(ret, 1)
+        self.assertIn('requires Zabbix 6.4+, server is 6.0.30', err)
+        self.assertEqual(self.fake.params_of('host.get'), [])
+
+    def test_rejected_token(self):
+        "Runs the real _zabbix_post, with a fake requests module."
+        posted = []
+
+        def post(url, data, headers):
+            posted.append(headers)
+            body = (
+                {'result': '7.0.5'} if 'Authorization' not in headers else
+                {'error': {'code': -32602, 'message': 'Invalid params.',
+                           'data': 'Not authorized.'}})
+            return mock.Mock(json=lambda: body)
+
+        out, err = StringIO(), StringIO()
+        with mock.patch.dict('sys.modules', requests=mock.Mock(post=post)):
+            with redirect_stdout(out), redirect_stderr(err):
+                ret = zabdig.main(list(self.BASE_ARGV) + ['-T', 'x', 'pve1'])
+        self.assertEqual(ret, 1)
+        self.assertIn('API token rejected', err.getvalue())
+        self.assertEqual(posted[1]['Authorization'], 'Bearer x')
+
+
 class DurationTest(TestCase):
     def test_valid(self):
         for text, seconds in (
@@ -748,10 +818,9 @@ class MaintCreateTest(ZabdigTestCase):
         self.assertEqual(self.fake.params_of('maintenance.create'), [])
 
     def test_connection_options_work_after_the_action_too(self):
-        ret, out, err = self.create('t', '1h', 'pve1', '-u', 'other')
+        self.fake.token = 'othertoken'
+        ret, out, err = self.create('t', '1h', 'pve1', '-T', 'othertoken')
         self.assertEqual(ret, 0, err)  # still has the -A from the start
-        self.assertEqual(
-            self.fake.params_of('user.login')[0]['username'], 'other')
 
 
 class MaintListRemoveTest(ZabdigTestCase):

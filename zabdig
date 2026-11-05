@@ -15,15 +15,18 @@
 #     $ zabdig walter.internal.lan
 #     10.32.1.5
 #
-# Configure by setting up a ~/.zabbixrc with sections:
+# Configure by setting up a ~/.config/zabdig.ini with sections:
 #
 #     [myorganisation]
 #     api=https://zabbix-server.example.com/api_jsonrpc.php
-#     user=myusername
-#     password=mypassword
+#     token=0123456789abcdef...
 #
-# (If you leave out user/password it will try to get it from your Secret
-# Storage API (keyring).)
+# Create the token in the Zabbix frontend under User settings > API tokens.
+# (If you leave out the token, it is taken from the ZABBIX_API_TOKEN
+# environment variable, or else from your Secret Storage API (keyring).)
+#
+# Authentication uses API tokens sent as Bearer header; this requires
+# Zabbix 6.4 or newer. Username/password login is no longer supported.
 #
 # If you have multiple zabbix servers you wish to speak to, add
 # additional sections. Use zabdig -g SECTION to select a different
@@ -76,9 +79,10 @@ from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
 from warnings import warn
 
-CONF_FILE = f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/.zabbixrc'
-if not os.path.exists(os.path.expanduser(CONF_FILE)):
-    CONF_FILE = '~/.zabbixrc'
+CONF_FILE = f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/zabdig.ini'
+OLD_CONF_FILES = (
+    f'{os.environ.get("XDG_CONFIG_HOME", "~/.config")}/.zabbixrc',
+    '~/.zabbixrc')
 
 
 class ZConfigError(ValueError):
@@ -447,18 +451,19 @@ class ZHost(ZBaseHost):
 
 
 class ZInterface(object):
-    def __init__(self, url, username, password):
-        if not url or not username or not password:
-            raise ZConfigError(
-                'cannot login without api/url, username and password')
+    def __init__(self, url, token):
+        if not url or not token:
+            raise ZConfigError('cannot connect without api/url and token')
 
         self.url = url
-        self.username = username
-        self.password = password
+        self.token = token
 
-        self.token = None
         self.postid = 0
         self.version = self._zabbix_version()
+        if self.version < (6, 4):
+            raise ZConfigError(
+                'API token (Bearer) auth requires Zabbix 6.4+, '
+                'server is {}'.format('.'.join(str(i) for i in self.version)))
 
     def _zabbix_call(self, method, params, auth=True):
         self.postid += 1
@@ -468,17 +473,18 @@ class ZInterface(object):
             'params': params,
             'id': self.postid,
         }
+        headers = {'Content-Type': 'application/json-rpc'}
         if auth:
-            data['auth'] = self.token  # can be 'null'
-        return self._zabbix_post(self.url, data)
+            # Some methods (apiinfo.version) refuse auth: only add it
+            # when asked.
+            headers['Authorization'] = 'Bearer {}'.format(self.token)
+        return self._zabbix_post(self.url, data, headers)
 
-    def _zabbix_post(self, url, data):
+    def _zabbix_post(self, url, data, headers):
         # Imported here, so --help and the tests work without python3-requests.
         import requests
 
-        res = requests.post(
-            url, data=json.dumps(data),
-            headers={'Content-Type': 'application/json-rpc'})
+        res = requests.post(url, data=json.dumps(data), headers=headers)
 
         try:
             js = res.json()
@@ -488,6 +494,13 @@ class ZInterface(object):
                     e, res.content[0:512]), data)
 
         if 'error' in js:
+            if js['error'].get('data') in (
+                    'Not authorized.', 'Not authorised.',
+                    'Session terminated, re-login, please.',
+                    'API token expired.'):
+                raise ZLoginError(
+                    'API token rejected (expired, revoked or wrong '
+                    'server?): {}'.format(js['error']['data']), data)
             raise ZInterfaceError(js['error'], data)
 
         return js['result']
@@ -497,43 +510,7 @@ class ZInterface(object):
         return tuple(
             (int(i) if i.isdigit() else i) for i in version_str.split('.'))
 
-    def _login(self):
-        if not self.token:
-            class PrivacyDict(dict):
-                "Don't show username/password in stack traces."
-                def __repr__(self):
-                    # Yes, this repr is broken for abnormal keys, but
-                    # we don't use those.
-                    return '{{{}}}'.format(', '.join(
-                        "'{}': '****'".format(key)
-                        for key in sorted(self.keys())))
-
-            try:
-                self.token = self._zabbix_call(
-                    'user.login',
-                    PrivacyDict(
-                        username=self.username,  # user->username since 6.0+
-                        password=self.password))
-            except ZInterfaceError as e:
-                if e.args[0] == {
-                        'code': -32602, 'message': 'Invalid params.',
-                        'data': (
-                            'Invalid parameter "/": unexpected parameter '
-                            '"username".')}:
-                    try:
-                        self.token = self._zabbix_call(
-                            'user.login',
-                            PrivacyDict(
-                                user=self.username,
-                                password=self.password))
-                    except ZInterfaceError as e2:
-                        raise ZLoginError(*e.args) from e2
-                else:
-                    raise ZLoginError(*e.args) from e
-
     def get_alerts(self, severity, enabled_only=True):
-        self._login()
-
         problems = self._zabbix_call(
             'problem.get',
             {'output': [
@@ -601,8 +578,6 @@ class ZInterface(object):
         return alerts
 
     def get_hosts(self, hostname_needle):
-        self._login()
-
         proxyid_label = 'proxyid'
         compat_replacement = {}
         if self.version < (7,):
@@ -641,8 +616,6 @@ class ZInterface(object):
                     e, host))
 
     def get_latest_data(self, hosts, items):
-        self._login()
-
         hostids = [host._hostinfo['hostid'] for host in hosts]
         results = []
 
@@ -693,8 +666,6 @@ class ZInterface(object):
         skip all expired ones: a window can be over while its active period
         is not. So the caller still needs to look at the state.
         """
-        self._login()
-
         params = {
             'output': ['maintenanceid', 'name', 'active_since',
                        'active_till'],
@@ -717,8 +688,6 @@ class ZInterface(object):
         return self._zabbix_call('maintenance.get', params)
 
     def get_hostgroups(self, name_needle):
-        self._login()
-
         return self._zabbix_call(
             'hostgroup.get',
             {'output': ['groupid', 'name'],
@@ -732,8 +701,6 @@ class ZInterface(object):
         maintenance; start_date and period (seconds) define the one time
         window inside it. Return its id.
         """
-        self._login()
-
         params = {
             'name': name,
             'active_since': active_since,
@@ -762,8 +729,6 @@ class ZInterface(object):
         Replace the hosts and/or host groups of a maintenance, whichever are
         not None. The rest of the maintenance is left alone.
         """
-        self._login()
-
         params = {'maintenanceid': maintenanceid}
         if hostids is not None:
             params['hosts'] = [{'hostid': hostid} for hostid in hostids]
@@ -772,14 +737,10 @@ class ZInterface(object):
         self._zabbix_call('maintenance.update', params)
 
     def delete_maintenances(self, maintenanceids):
-        self._login()
-
         self._zabbix_call('maintenance.delete', list(maintenanceids))
 
     def get_proxies(self):
         if not hasattr(self, '_get_proxies'):
-            self._login()
-
             host_label = 'name'
             compat_replacement = {}
             if self.version < (7,):
@@ -810,7 +771,13 @@ class ZInterface(object):
 class LocalConfig(object):
     def __init__(self):
         self.config = configparser.ConfigParser()
-        self.config.read(os.path.expanduser(CONF_FILE))  # silent failure
+        if not self.config.read(os.path.expanduser(CONF_FILE)):
+            for old in OLD_CONF_FILES:
+                if os.path.exists(os.path.expanduser(old)):
+                    warn(
+                        f'ignoring old config {old}; move it to {CONF_FILE} '
+                        f'and replace user/password with token')
+                    break
         if self.config.sections():
             self.section = self.config.sections()[0]
         else:
@@ -831,7 +798,6 @@ class LocalConfig(object):
 def get_from_secret_storage(section):
     "Requires python3-secretstorage for Freedesktop Secret Service API"
     import secretstorage
-    from base64 import b64decode, b64encode
     from contextlib import closing
 
     with closing(secretstorage.dbus_init()) as conn:
@@ -839,7 +805,7 @@ def get_from_secret_storage(section):
         if coll.is_locked():
             coll.unlock()
         # FIXME: section? or DEFAULT?
-        attrs = {'application': 'zabdig'}
+        attrs = {'application': 'zabdig', 'type': 'token'}
         if section:
             attrs['section'] = section
         res = [i for i in coll.search_items(attrs)]
@@ -847,23 +813,15 @@ def get_from_secret_storage(section):
         if not res:   # or True:
             import getpass
 
-            print('No password stored; add one?', attrs)
-            print('username: ', end='')
-            username = input().strip()
-            password = getpass.getpass('password: ')
-            user_pass = b64encode(
-                '{}:{}'.format(username, password).encode('utf-8'))
-            # FIXME: we should check auth first before storing..
-            # FIXME: we should ask for a new password if we get one of:
-            # fetch failed: [{'code': -32602, 'message': 'Invalid params.',
-            # 'data': 'Incorrect user name or password or account is \
-            # temporarily blocked.'}]
-            # fetch failed: [{'code': -32500, 'message': 'Application error.',
-            # 'data': 'Incorrect user name or password or account is \
-            # temporarily blocked.'}]
+            print('No API token stored; add one?', attrs)
+            token = getpass.getpass('API token: ').strip()
+            if not token:
+                raise ZConfigError('no API token given')
+            # FIXME: we should check the token before storing it, and ask
+            # for a new one if it gets rejected (ZLoginError).
             coll.create_item(
-                'zabdig user/pass', attributes=attrs,
-                replace=True, secret=user_pass)
+                'zabdig API token', attributes=attrs,
+                replace=True, secret=token.encode('utf-8'))
             res = [i for i in coll.search_items(attrs)]
 
         assert len(res) == 1, res
@@ -873,9 +831,7 @@ def get_from_secret_storage(section):
             dialog_dismissed = res[0].unlock()  # request user unlock
             if dialog_dismissed:
                 raise
-        user_pass = res[0].get_secret()
-        user, password = b64decode(user_pass).decode('utf-8').split(':', 1)
-        return (user, password)
+        return res[0].get_secret().decode('utf-8')
 
 
 def show_host(host):
@@ -1168,11 +1124,9 @@ def connection_options(default=None):
             'Zabbix json_rpc API URL, for example: '
             'https://zabbix.example.nl/api_jsonrpc.php'))
     connection.add_argument(
-        '-u', '--user', dest='user', default=default, help=(
-            'API username'))
-    connection.add_argument(
-        '-p', '--password', dest='password', default=default, help=(
-            'API password'))
+        '-T', '--token', dest='token', default=default, help=(
+            'Zabbix API token (beware: visible in the process list; prefer '
+            'the config file or the ZABBIX_API_TOKEN environment variable)'))
     return connection
 
 
@@ -1573,15 +1527,14 @@ def main(argv=None):
         args.section = lconf.section
 
     api = args.api or lconf.get('api')
-    user = args.user or lconf.get('user')
-    password = args.password or lconf.get('password')
-
-    # Ooh.. quick hacks!
-    if not user or not password:
-        (user, password) = get_from_secret_storage(args.section)
+    token = (
+        args.token or os.environ.get('ZABBIX_API_TOKEN')
+        or lconf.get('token'))
 
     try:
-        zint = ZInterface(api, user, password)
+        if not token:
+            token = get_from_secret_storage(args.section)
+        zint = ZInterface(api, token)
     except ZConfigError as e:
         print(
             'login failed: {}; see zabdig --help'.format(e),
