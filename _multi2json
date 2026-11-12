@@ -489,30 +489,32 @@ class RustyIndent:
 
 def decode(input_, from_format):
     if from_format in ('js', 'json'):  # JSON
-        return json.loads(input_)
+        return [json.loads(input_)]
 
     if from_format == 'py':  # Python
         import ast
-        return ast.literal_eval(input_)
+        return [ast.literal_eval(input_)]
 
     if from_format == 'rs':  # Rust/Curlyindent
-        return RustyIndent(input_).parse()
+        return [RustyIndent(input_).parse()]
 
     if from_format in ('yaml', 'yml'):  # YAML
         import yaml
-        return yaml.safe_load(input_)
+        return list(yaml.safe_load_all(input_))
 
     print(f'{sys.argv[0]}: unrecognised source format', file=sys.stderr)
     sys.exit(2)
 
 
-def encode(data, to_format):
+def encode(docs, to_format):
     if to_format in ('js', 'json'):  # JSON
-        return json.dumps(data, indent=2) + '\n'  # sort_keys=True?
+        return ''.join(
+            json.dumps(doc, indent=2) + '\n'  # sort_keys=True?
+            for doc in docs)
 
     if to_format in ('yaml', 'yml'):  # YAML
         import yaml
-        return yaml.dump(data)  # options?
+        return yaml.dump_all(docs)  # options?
 
     print(f'{sys.argv[0]}: unimplemented target format', file=sys.stderr)
     sys.exit(2)
@@ -533,18 +535,18 @@ def main():
 
     if forward:
         try:
-            data = decode(input_, ext)
+            docs = decode(input_, ext)
         except Exception as e:
             print(f'{sys.argv[0]}: {ext} decode error: {e}', file=sys.stderr)
             sys.exit(1)
-        output = encode(data, 'js')
+        output = encode(docs, 'js')
     else:
         try:
-            data = decode(input_, 'js')
+            docs = decode(input_, 'js')
         except Exception as e:
             print(f'{sys.argv[0]}: JSON parse error: {e}', file=sys.stderr)
             sys.exit(1)
-        output = encode(data, ext)
+        output = encode(docs, ext)
 
     print(output, end='')
 
