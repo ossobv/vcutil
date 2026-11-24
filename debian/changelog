@@ -1,3 +1,18 @@
+vcutil (1.69) stable; urgency=low
+
+  * Breaking:
+    - zabdig: Use API tokens (Bearer) instead of user/password login
+      (you need to use tokens instead of user/password in zabdig.ini)
+
+  * Improvements:
+    - apt-find-foreign: Fail on bad_states even faster
+    - _multi2json: Fix so 2json.yaml can read multiple docs
+
+  * Fixes:
+    - gitbackhub: Fix issue when git fetch gives us no output (anymore?)
+
+ -- Walter Doekes (work) <wjdoekes@osso.nl>  Tue, 24 Nov 2026 10:56:35 +0100
+
 vcutil (1.68) stable; urgency=low
 
   * Additions:
