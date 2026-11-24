@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# gitbackhub (part of ossobv/vcutil) // wdoekes/2015-2017 // Public Domain
+# gitbackhub (part of ossobv/vcutil) // wdoekes/2015-2017,2026 // Public Domain
 #
 # GitHub is cool. But since we aren't paying for it, we can't rely on
 # its availability. This script ensures that we get a daily backup of
@@ -172,7 +172,7 @@ class Repository(object):
         changeset = ChangeSet()
 
         output = str(output, 'utf-8').strip()
-        for lineno, line in enumerate(output.split('\n')):
+        for lineno, line in enumerate(output.splitlines()):
             # - [deleted]         (none)     -> origin/dependabot/npm...
             line_after_arrow = ''
             if '-> ' in line:
@@ -214,8 +214,9 @@ class Repository(object):
                     changeset.changes += 1
             # else: unexpected git output.
             else:
-                raise ValueError('Unexpected git output on line %d in:\n%s' %
-                                 (lineno + 1, output))
+                raise ValueError(
+                    'Unexpected git output on line %d in:\n%r' %
+                    (lineno + 1, output))
 
             if line.startswith(' '):
                 changeset.log.append(line)
