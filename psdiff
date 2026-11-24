@@ -8,6 +8,7 @@
 import argparse
 import collections
 import difflib
+import functools
 import os
 import re
 import subprocess
@@ -20,6 +21,15 @@ import warnings
 DBNAME = '/var/lib/psdiff.db'
 
 
+@functools.cache
+def get_ephemeral_ports():
+    # '32768<TAB>60999<LF>'
+    with open('/proc/sys/net/ipv4/ip_local_port_range', 'r') as fp:
+        ports = tuple(int(port) for port in fp.read().strip().split(None, 1))
+    assert 0 <= ports[0] < ports[1] < 65536, ports
+    return ports
+
+
 def human_key(s):
     """Sort key that handles numbers naturally. Works for IPs, ports, etc."""
     # On Python3, tuple([]) is slightly faster than [] or tuple() when passing
@@ -29,6 +39,20 @@ def human_key(s):
         for token in human_key.re.split(s)
         if token])  # against leading and trailing empty separators
 human_key.re = re.compile(r'(\d+)')  # noqa
+
+
+class BindAddr(collections.namedtuple('BindAddr', 'proto addr port')):
+    @classmethod
+    def from_string(cls, s):
+        proto, rest = s.split(':', 1)
+        addr, port = rest.rsplit(':', 1)
+        return cls(proto, addr, port)
+
+    def with_zero_port(self):
+        return self.__class__(self.proto, self.addr, '0')
+
+    def __str__(self):
+        return '{}:{}:{}'.format(self.proto, self.addr, self.port)
 
 
 class Process(object):
@@ -421,6 +445,17 @@ class ProcessFormatter(object):
 
 
 class FilteredProcessFormatter(ProcessFormatter):
+    @staticmethod
+    def clean_listen_address(s):
+        eph_min, eph_max = get_ephemeral_ports()
+        ba = BindAddr.from_string(s)
+        if (ba.proto in ('mptcp', 'tcp')
+                and (ba.addr == '127.0.0.1' or ba.addr == '[::1]')
+                and ba.port.isdigit()
+                and (eph_min <= int(ba.port) <= eph_max)):
+            return str(ba.with_zero_port())
+        return s
+
     def __init__(self, *args, **kwargs):
         self._include_once = set()
         super(FilteredProcessFormatter, self).__init__(*args, **kwargs)
@@ -440,6 +475,12 @@ class FilteredProcessFormatter(ProcessFormatter):
             if len(parts) == 7 and parts[4].isdigit() and parts[5] == 'of':
                 parts[4] = '0'
                 process.cmdline = ' '.join(parts)
+
+        elif process.cmdline == '/usr/bin/containerd':
+            # Alter fluctuating port args to :0.
+            if process._listens:
+                process._listens = set(
+                    self.clean_listen_address(s) for s in process._listens)
 
         elif process.cmdline.startswith((
                 '/usr/sbin/zabbix_proxy: ',
@@ -733,14 +774,6 @@ def ps_faxu(with_network=False):
             root.process_map[0].add_listens(sockets_by_pid[pid])
 
     return root
-
-
-def get_ephemeral_ports():
-    # '32768<TAB>60999<LF>'
-    with open('/proc/sys/net/ipv4/ip_local_port_range', 'r') as fp:
-        ports = tuple(int(port) for port in fp.read().strip().split(None, 1))
-    assert 0 <= ports[0] < ports[1] < 65536, ports
-    return ports
 
 
 def netstat():
